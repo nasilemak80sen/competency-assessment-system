@@ -1,27 +1,23 @@
-# ============================================================================
-# STREAMLIT DASHBOARD - CLEAN & STABLE REQUIREMENTS
-# ============================================================================
-
-# Core Framework
+# Core
 streamlit>=1.28
 streamlit-extras>=0.4
 
-# Data Handling
+# Data
 pandas>=1.5
 numpy>=1.24
 
-# Visualization
+# Charts
 plotly>=5.18
 matplotlib>=3.7
 seaborn>=0.13
 
-# Interactive Tables
+# Tables
 streamlit-aggrid>=1.0
 
-# Data Profiling (updated)
+# Profiling (KEEP but now will work with Python 3.11)
 ydata-profiling>=4.6
 
-# File Handling
+# Files
 openpyxl>=3.1
 xlrd>=2.0
 python-docx>=0.8.11
@@ -30,15 +26,15 @@ python-docx>=0.8.11
 SQLAlchemy>=2.0
 pyodbc>=5.0
 
-# Machine Learning (light use only)
+# ML/Stats
 scikit-learn>=1.3
 statsmodels>=0.14
 
-# Streamlit UI Enhancements
+# UI
 streamlit-lottie>=0.0.5
 streamlit-option-menu>=0.3.2
 
-# Utilities
+# Utils
 python-dotenv>=1.0
 requests>=2.31
 pytz>=2023.3
