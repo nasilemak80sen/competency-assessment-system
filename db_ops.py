@@ -504,7 +504,9 @@ def get_wide_dataframe(session: Session) -> pd.DataFrame:
     Reconstruct a 'wide' DataFrame (one row per person) with columns:
     Name, Staff Position, SG, Department, Age, Chat Status,
     B1..E2 (latest actual), R-B1..R-E2 (latest requirement), G--B1..G--E2 (latest gap)
-    Used by analytics.py for heatmaps, gaps, readiness, scatter.
+    and summary score columns such as Staff Base / Principal Base.
+    Used by analytics.py for heatmaps, gaps, readiness, scatter and the individual
+    assessment summary section.
     """
     people = session.query(Personnel).filter_by(is_deleted=False).all()
     rows = []
@@ -533,6 +535,36 @@ def get_wide_dataframe(session: Session) -> pd.DataFrame:
                 row[s.competency_code] = s.actual_score
                 row[f"R-{s.competency_code}"] = s.requirement_score
                 row[f"G--{s.competency_code}"] = s.gap_score
+
+        summary = (
+            session.query(SummaryScore)
+            .filter_by(personnel_id=p.id)
+            .order_by(SummaryScore.updated_at.desc(), SummaryScore.created_at.desc())
+            .first()
+        )
+        if summary is not None:
+            summary_columns = {
+                "staff_base": "Staff Base",
+                "staff_keys": "Staff Keys",
+                "staff_pacing": "Staff Pacing",
+                "staff_emerging": "Staff Emerging",
+                "staff_cti": "Staff CTI",
+                "principal_base": "Principal Base",
+                "principal_keys": "Principal Keys",
+                "principal_pacing": "Principal Pacing",
+                "principal_emerging": "Principal Emerging",
+                "principal_cti": "Principal CTI",
+                "custodian_base": "Custodian Base",
+                "custodian_keys": "Custodian Keys",
+                "custodian_pacing": "Custodian Pacing",
+                "custodian_emerging": "Custodian Emerging",
+                "custodian_cti": "Custodian CTI",
+            }
+            for attr, display_name in summary_columns.items():
+                value = getattr(summary, attr, None)
+                if value is not None:
+                    row[display_name] = value
+
         rows.append(row)
 
     return pd.DataFrame(rows)

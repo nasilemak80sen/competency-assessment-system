@@ -17,6 +17,7 @@ from config import (
     SCORE_COLS, REQ_COLS, GAP_COLS, COMP_TYPES,
     DEPARTMENTS, POSITIONS, CHAT_STATUS_OPTIONS, ASSESSMENT_LEVELS,
     GRADE_LABELS, HEATMAP_COLORSCALE, COMPETENCY_FULLNAMES,
+    SUMMARY_GROUPS,
 )
 from models import init_db, get_session, Personnel, Assessment
 from data_loader import load_master_data, load_ruler_and_tech_mapping
@@ -571,18 +572,16 @@ elif page == "🔍 Individual Assessment":
         department_section = " / ".join(
             str(v).strip()
             for v in [
-                person_row.get("Department"),
-                person_row.get("Section Name"),
+                person_row.get("department"),        # ← snake_case
+                person_row.get("section_name"),      # ← snake_case
             ]
             if pd.notna(v) and str(v).strip()
         ) or "N/A"
 
-        st.metric("Department / Section", department_section)
-
     with row1_col3:
         st.metric(
             "Current Assignment",
-            person_row.get("Current Assignment / Loc:") or "N/A",
+            person_row.get("current_assignment")
         )
 
     row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
@@ -593,25 +592,18 @@ elif page == "🔍 Individual Assessment":
         st.metric("Age", int(age_value) if pd.notna(age_value) else "N/A")
 
     with row2_col2:
-        st.metric("Employment", person_row.get("Employment Category") or "N/A")
+        st.metric("Employment", person_row.get("employment_category") or "N/A")
 
     with row2_col3:
-        st.metric("Contract Expiry", person_row.get("Contract Expire Date") or "N/A")
+        contract_date = person_row.get("contract_expire_date")
+        if pd.notna(contract_date):
+            formatted_date = contract_date.strftime("%Y-%m-%d") if not isinstance(contract_date, str) else contract_date
+        else:
+            formatted_date = "N/A"
+        st.metric("Contract Expiry", formatted_date)
 
     with row2_col4:
-        yearsval = person_row.get("Years in Salary Grade")
-
-        if pd.notna(yearsval):
-            total_months = round(float(yearsval) * 12)
-
-            years = total_months // 12
-            months = total_months % 12
-
-            salary_grade_display = f"{years}y {months}m"
-        else:
-            salary_grade_display = "N/A"
-
-        st.metric("Length in Grade", salary_grade_display)
+        yearsval = person_row.get("sg_years")
 
     # -------------------------------------------------------------------------
     # LOAD RULER DATA
@@ -916,6 +908,36 @@ elif page == "🔍 Individual Assessment":
         f"{readiness['strict_readiness']:.1f}% of assessed "
         f"competencies fully meet the selected target."
     )
+
+    # -------------------------------------------------------------------------
+    # SUMMARY SCORES (FROM EXCEL UPLOAD)
+    # -------------------------------------------------------------------------
+    summary_metrics = []
+    for role, cols in SUMMARY_GROUPS.items():
+        for col in cols:
+            if col in person_row.index and pd.notna(person_row[col]):
+                summary_metrics.append(
+                    {
+                        "Role": role,
+                        "Category": col,
+                        "Score": float(person_row[col]),
+                    }
+                )
+
+    if summary_metrics:
+        summary_df = pd.DataFrame(summary_metrics)
+        for role in summary_df["Role"].unique():
+            with st.expander(f"🎯 {role} Summary Scores", expanded=True):
+                role_df = summary_df[summary_df["Role"] == role].copy()
+                cols_grid = st.columns(min(5, len(role_df)))
+                for idx, (_, row) in enumerate(role_df.iterrows()):
+                    with cols_grid[idx % len(cols_grid)]:
+                        st.metric(
+                            row["Category"],
+                            f"{row['Score']:.1f}",
+                        )
+    else:
+        st.info("No summary score values were found for this personnel.")
 
     # -------------------------------------------------------------------------
     # ACTUAL VERSUS TARGET CHART
@@ -1562,8 +1584,14 @@ elif page == "📈 Trends (Age vs Grade)":
 
     st.subheader("Years in PET vs Overall Score")
     if "Years in PET" in fdf.columns and "Overall_avg" in fdf.columns:
-        fig2 = px.scatter(fdf, x="Years in PET", y="Overall_avg", color="Staff Position",
-                          hover_data=["Name"], trendline="ols")
+        fig2 = px.scatter(
+        fdf,
+        x="Years in PET",
+        y="Overall_avg",
+        color="Staff Position",
+        hover_data=["Name"],
+        trendline=None,
+    )
         st.plotly_chart(fig2, use_container_width=True)
 
 

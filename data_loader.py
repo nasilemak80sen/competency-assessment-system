@@ -16,6 +16,22 @@ from datetime import date
 from config import SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET
 
 
+def _normalize_summary_column_name(name: str) -> str:
+    if not isinstance(name, str):
+        return name
+    normalized = name.strip()
+    match = re.match(
+        r'^(Staff|Principal|Custodian)\s+(Base|Keys|Pacing|Emerging|CTI)\d*$',
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        prefix = match.group(1).title()
+        suffix = match.group(2).upper() if match.group(2).upper() == 'CTI' else match.group(2).title()
+        return f"{prefix} {suffix}"
+    return normalized
+
+
 def _safe_rule_val(val):
     if val is None:
         return None
@@ -43,8 +59,11 @@ def load_master_data(path: str) -> pd.DataFrame:
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb["All"]
 
-    # Build header list from row 3
-    headers = [ws.cell(3, c).value for c in range(1, ws.max_column + 1)]
+    # Build and normalize header list from row 3
+    headers = [
+        _normalize_summary_column_name(ws.cell(3, c).value)
+        for c in range(1, ws.max_column + 1)
+    ]
 
     # Read data rows (row 4 onwards), stop when Name is empty
     rows = []
@@ -59,6 +78,12 @@ def load_master_data(path: str) -> pd.DataFrame:
         rows.append(row)
 
     df = pd.DataFrame(rows)
+
+    # Normalize malformed summary header names such as Staff Base2 -> Staff Base
+    df.rename(
+        columns={col: _normalize_summary_column_name(col) for col in df.columns},
+        inplace=True,
+    )
 
     # ── Clean types ─────────────────────────────────────────────────────────
     # Numeric: scores, gaps, requirements, summaries, years
