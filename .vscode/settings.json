@@ -1,0 +1,10 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "git.ignoreLimitWarning": true,
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /d \"c:\\\\Users\\\\mnabielizzuddin\\.radz\\\\OneDrive - PETRONAS\\\\Reservoir Engineering\\\\Programming_Python_Projects\\\\Competency Assessment System\" ; python - <<\"PY\"\nimport openpyxl\nfrom pathlib import Path\npath = Path\\('RE_Fraternity_Jun2026_Master\\.xlsx'\\)\nwb = openpyxl\\.load_workbook\\(path, data_only=True\\)\nprint\\('SHEETS', wb\\.sheetnames\\)\nws = wb\\['Ruler'\\]\nprint\\('max_row', ws\\.max_row, 'max_col', ws\\.max_column\\)\nfor row in range\\(1, min\\(ws\\.max_row, 15\\)\\+1\\):\n    vals = \\[ws\\.cell\\(row, c\\)\\.value for c in range\\(1, min\\(ws\\.max_column, 20\\)\\+1\\)\\]\n    print\\(row, vals\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
