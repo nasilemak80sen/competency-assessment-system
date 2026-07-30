@@ -7,7 +7,7 @@ import re
 import numpy as np
 import pandas as pd
 from datetime import datetime, date
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, cast
 
 from sqlalchemy.orm import Session
 from models import Personnel, Assessment, CompetencyScore, SummaryScore, AuditLog
@@ -38,11 +38,11 @@ def _safe(val):
     return val
 
 
-def _log(session: Session, entity_type: str, entity_id: int,
+def _log(session: Session, entity_type: str, entity_id: Optional[int],
          action: str, old: dict, new: dict, by: str = "system"):
     try:
         session.add(AuditLog(
-            entity_type=entity_type, entity_id=entity_id,
+            entity_type=entity_type, entity_id=int(entity_id) if entity_id is not None else None,
             action=action, changed_by=by,
             old_values=json.dumps(old), new_values=json.dumps(new)
         ))
@@ -52,6 +52,30 @@ def _log(session: Session, entity_type: str, entity_id: int,
 
 
 # ── Personnel CRUD ────────────────────────────────────────────────────────────
+
+def _coerce_numeric(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (str,)):
+        text = value.strip()
+        if not text or text.lower() in {"nan", "none", "null"}:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def add_personnel(session: Session, data: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
     try:
@@ -106,8 +130,8 @@ def add_personnel(session: Session, data: Dict[str, Any]) -> Tuple[bool, str, Op
         session.add(p)
         session.flush()
         session.commit()
-        _log(session, "Personnel", p.id, "CREATE", {}, data)
-        return True, f"Added: {p.name}", p.id
+        _log(session, "Personnel", cast(int, p.id), "CREATE", {}, data)
+        return True, f"Added: {p.name}", cast(int, p.id)
     except Exception as e:
         session.rollback()
         return False, str(e), None
@@ -122,7 +146,7 @@ def update_personnel(session: Session, pid: int, data: Dict[str, Any]) -> Tuple[
         for k, v in data.items():
             if hasattr(p, k):
                 setattr(p, k, _safe(v))
-        p.updated_at = datetime.utcnow()
+        setattr(p, "updated_at", datetime.utcnow())
         session.commit()
         _log(session, "Personnel", pid, "UPDATE", old, data)
         return True, f"Updated: {p.name}"
@@ -136,8 +160,8 @@ def delete_personnel(session: Session, pid: int) -> Tuple[bool, str]:
         p = session.query(Personnel).filter_by(id=pid).first()
         if not p:
             return False, "Not found."
-        p.is_deleted = True
-        p.is_active = False
+        setattr(p, "is_deleted", True)
+        setattr(p, "is_active", False)
         session.commit()
         _log(session, "Personnel", pid, "DELETE", {"name": p.name}, {})
         return True, f"Deleted: {p.name}"
@@ -186,23 +210,29 @@ def add_assessment(session: Session, personnel_id: int, data: Dict) -> Tuple[boo
         session.add(a)
         session.flush()
         session.commit()
-        return True, "Assessment created.", a.id
+        return True, "Assessment created.", cast(int, a.id)
     except Exception as e:
         session.rollback()
         return False, str(e), None
 
 
-def add_competency_scores(session: Session, assessment_id: int,
-                          personnel_id: int, scores: Dict[str, Dict]) -> Tuple[bool, str]:
+def add_competency_scores(session: Session, assessment_id: Optional[int],
+                          personnel_id: Optional[int], scores: Dict[str, Dict]) -> Tuple[bool, str]:
     """
     scores = { "B1": {"actual": 3, "req": 3, "gap": 0}, ... }
     """
     try:
+        if assessment_id is None or personnel_id is None:
+            return False, "Assessment and personnel ids are required."
+
+        assessment_id = int(assessment_id)
+        personnel_id = int(personnel_id)
+
         for code, vals in scores.items():
-            actual = _safe(vals.get("actual"))
-            req    = _safe(vals.get("req"))
-            gap    = _safe(vals.get("gap"))
-            pct    = round((actual / req * 100), 1) if (req and req > 0 and actual is not None) else None
+            actual = _coerce_numeric(vals.get("actual"))
+            req    = _coerce_numeric(vals.get("req"))
+            gap    = _coerce_numeric(vals.get("gap"))
+            pct    = round((actual / req * 100), 1) if (req is not None and req > 0 and actual is not None) else None
             session.add(CompetencyScore(
                 assessment_id=assessment_id,
                 personnel_id=personnel_id,
@@ -261,14 +291,17 @@ def get_assessment_history(session: Session, personnel_id: int) -> pd.DataFrame:
 
 # ── Summary Score CRUD ────────────────────────────────────────────────────────
 
-def upsert_summary_score(session: Session, personnel_id: int, data: Dict) -> Tuple[bool, str]:
+def upsert_summary_score(session: Session, personnel_id: Optional[int], data: Dict) -> Tuple[bool, str]:
     try:
+        if personnel_id is None:
+            return False, "Personnel id is required."
+        personnel_id = int(personnel_id)
         existing = session.query(SummaryScore).filter_by(personnel_id=personnel_id).first()
         if existing:
             for k, v in data.items():
                 if hasattr(existing, k):
                     setattr(existing, k, _safe(v))
-            existing.updated_at = datetime.utcnow()
+            setattr(existing, "updated_at", datetime.utcnow())
         else:
             s = SummaryScore(personnel_id=personnel_id)
             for k, v in data.items():
@@ -331,8 +364,9 @@ def _build_ruler_requirements(row: pd.Series, ruler_map: Dict[str, Dict[str, Dic
         ruler_type = row.get("Background")
     sg = row.get("SG")
     if pd.isna(sg) or sg is None or str(sg).strip() == "":
-        sg = POSITION_TO_SG.get(_normalize_key(row.get("Staff Position") or ""), None)
-    reqs = _find_ruler_requirements(ruler_map, ruler_type, sg)
+        position_key = _normalize_key(row.get("Staff Position") or "") or ""
+        sg = POSITION_TO_SG.get(position_key, None)
+    reqs = _find_ruler_requirements(ruler_map, str(ruler_type or ""), str(sg or ""))
     return reqs or {}
 
 
@@ -411,9 +445,9 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
             for k, v in data.items():
                 if hasattr(existing, k):
                     setattr(existing, k, _safe(v))
-            existing.updated_at = datetime.utcnow()
+            setattr(existing, "updated_at", datetime.utcnow())
             session.flush()
-            pid = existing.id
+            pid = cast(int, existing.id)
             skipped += 1
         else:
             ok, msg, pid = add_personnel(session, data)
@@ -438,9 +472,11 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
                 req = _safe(row.get(rc))
             # NOTE: Excel's G--col uses (Requirement - Actual) convention.
             # We standardize internally to (Actual - Requirement): positive = exceeds target.
-            gap = round(actual - req, 2) if (actual is not None and req is not None) else None
-            if actual is not None or req is not None:
-                score_dict[sc] = {"actual": actual, "req": req, "gap": gap}
+            actual_num = _coerce_numeric(actual)
+            req_num = _coerce_numeric(req)
+            gap = round(actual_num - req_num, 2) if (actual_num is not None and req_num is not None) else None
+            if actual_num is not None or req_num is not None:
+                score_dict[sc] = {"actual": actual_num, "req": req_num, "gap": gap}
 
         if score_dict:
             adate = _safe(row.get("Last Assesment Date")) or date.today()
@@ -467,7 +503,7 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
                 )
                 session.add(a)
                 session.flush()
-                add_competency_scores(session, a.id, pid, score_dict)
+                add_competency_scores(session, cast(int, a.id), pid, score_dict)
 
         # ── Import summary scores ──────────────────────────────────────────
         sum_data = {

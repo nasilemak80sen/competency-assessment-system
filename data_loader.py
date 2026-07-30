@@ -16,9 +16,14 @@ from datetime import date
 from config import SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET
 
 
-def _normalize_summary_column_name(name: str) -> str:
+def _normalize_summary_column_name(name: object) -> str:
+    if name is None:
+        return ""
     if not isinstance(name, str):
-        return name
+        try:
+            name = str(name)
+        except Exception:
+            return ""
     normalized = name.strip()
     match = re.match(
         r'^(Staff|Principal|Custodian)\s+(Base|Keys|Pacing|Emerging|CTI)\d*$',

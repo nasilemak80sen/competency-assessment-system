@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from config import SCORE_COLS, REQ_COLS, GAP_COLS, COMP_TYPES, COMPETENCY_FULLNAMES
 
 
-def build_heatmap_matrix(df: pd.DataFrame, value_cols: List[str] = None) -> pd.DataFrame:
+def build_heatmap_matrix(df: pd.DataFrame, value_cols: Optional[List[str]] = None) -> pd.DataFrame:
     """
     df: personnel dataframe with score columns (B1..E2)
     Returns a matrix indexed by Name, columns = competencies, values = scores.
