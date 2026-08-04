@@ -3,7 +3,11 @@ Configuration - RE Fraternity Competency Assessment System v3.0
 All constants derived from actual Excel data structure.
 """
 
-DATABASE_URL = "sqlite:///re_competency.db"
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+DATABASE_PATH = (BASE_DIR / "re_competency.db").resolve()
+DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 
 # ── Salary Grades (SG column in Excel) ──────────────────────────────────────
 GRADE_LABELS = {

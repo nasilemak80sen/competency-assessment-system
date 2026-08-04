@@ -3,7 +3,37 @@ Configuration - RE Fraternity Competency Assessment System v3.0
 All constants derived from actual Excel data structure.
 """
 
-DATABASE_URL = "sqlite:///re_competency.db"
+import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+DATABASE_PATH = (BASE_DIR / "re_competency.db").resolve()
+DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+
+
+def resolve_excel_path() -> str:
+    """Resolve the workbook path from an environment variable or local project paths."""
+    env_path = os.getenv("COMPETENCY_EXCEL_PATH") or os.getenv("RE_EXCEL_PATH")
+    if env_path:
+        path = Path(env_path).expanduser()
+        if path.exists():
+            return str(path.resolve())
+
+    candidates = [
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsx",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsx",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsx"),
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate.resolve())
+
+    return str((BASE_DIR / "RE Fraternity Jul2026_Master.xlsx").resolve())
+
+
+EXCEL_PATH = resolve_excel_path()
+USE_LIVE_EXCEL_SOURCE = True
 
 # ── Salary Grades (SG column in Excel) ──────────────────────────────────────
 GRADE_LABELS = {
@@ -136,4 +166,3 @@ HEATMAP_COLORSCALE = [
 ]
 
 APP_TITLE = "RE Fraternity Competency Assessment System"
-EXCEL_PATH = "RE_Fraternity_Jun2026_Master.xlsx"

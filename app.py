@@ -14,13 +14,14 @@ import plotly.graph_objects as go
 import streamlit as st
 import config
 import data_loader
+from chart_builder import ChartBuilder, ChartCompatibility, DataElementInfo
 
 from config import (
     APP_TITLE, DATABASE_URL, PRIMARY, SECONDARY,
     SCORE_COLS, REQ_COLS, GAP_COLS, COMP_TYPES,
     DEPARTMENTS, POSITIONS, CHAT_STATUS_OPTIONS, ASSESSMENT_LEVELS,
     GRADE_LABELS, HEATMAP_COLORSCALE, COMPETENCY_FULLNAMES,
-    SUMMARY_GROUPS,
+    SUMMARY_GROUPS, EXCEL_PATH, USE_LIVE_EXCEL_SOURCE,
 )
 from models import init_db, get_session, Personnel, Assessment
 from data_loader import load_master_data, load_ruler_and_tech_mapping
@@ -300,34 +301,37 @@ if "data_version" not in st.session_state:
 def bump_version():
     st.session_state.data_version += 1
 
-# Excel Master Workbook Path
-EXCEL_PATH = os.path.join(os.path.dirname(__file__), "C:\\Users\\mnabielizzuddin.radz\\competency-assessment-system\\RE Fraternity Jul2026_Master.xlsx")
+# Excel Master Workbook Path (live source by default)
+EXCEL_PATH = EXCEL_PATH
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. CACHED DATA LOADERS (USES YOUR DATA_LOADER.PY)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data
 def load_wide_df(_version: int) -> pd.DataFrame:
-    """Loads database personnel records (or falls back to Excel if DB empty)."""
-    session = get_session(engine)
-    try:
-        df = db_ops.get_wide_dataframe(session)
-    finally:
-        session.close()
-        
-    if df is None or df.empty:
-        # Fallback to loading directly from master Excel file via data_loader
-        df = data_loader.load_master_data(EXCEL_PATH)
-    else:
-        df = an.add_category_averages(df)
-        
-    return df
+    """Load the latest personnel data directly from the Excel workbook."""
+    if not USE_LIVE_EXCEL_SOURCE:
+        session = get_session(engine)
+        try:
+            df = db_ops.get_wide_dataframe(session)
+        finally:
+            session.close()
+        return an.add_category_averages(df) if df is not None and not df.empty else pd.DataFrame()
 
-@st.cache_data
+    if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
+        raise FileNotFoundError(f"Excel workbook not found: {EXCEL_PATH}")
+
+    df = data_loader.load_master_data(EXCEL_PATH)
+    return an.add_category_averages(df)
+
+
 def load_ruler_and_mappings():
-    """Loads ruler requirements and tech competency labels from Excel."""
-    return data_loader.load_ruler_and_tech_mapping(EXCEL_PATH)
+    """Load ruler requirements and tech competency labels from Excel."""
+    if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
+        raise FileNotFoundError(f"Excel workbook not found: {EXCEL_PATH}")
+
+    r_map, t_labels = data_loader.load_ruler_and_tech_mapping(EXCEL_PATH)
+    return r_map, config.COMPETENCY_FULLNAMES
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. INITIALIZE SESSION STATE SAFELY
@@ -356,7 +360,7 @@ page = st.sidebar.radio("Navigate", [
     "🌡️ Competency Heatmap",
     "🔍 Individual Assessment",
     "🎯 Readiness & Gaps",
-    "📈 Trends (Age vs Grade)",
+    "📊 Chart Builder & Depth Analysis",
     "⚙️ Admin: Import Data",
     "⚙️ Admin: Personnel CRUD",
     "⚙️ Admin: Assessment Entry",
@@ -366,7 +370,6 @@ df = load_wide_df(st.session_state.data_version)
 
 if df.empty and not page.startswith("⚙️ Admin: Import"):
     st.warning("⚠️ No data in database yet. Go to **Admin: Import Data** to load the Excel master file.")
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: DASHBOARD HOME
@@ -381,6 +384,9 @@ if page == "🏠 Dashboard Home":
     stats = db_ops.get_stats_overview(session)
     session.close()
 
+        # =========================================================================
+    # TOP METRICS ROW
+    # =========================================================================
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Total Personnel", stats["total"])
@@ -388,57 +394,169 @@ if page == "🏠 Dashboard Home":
         assessed = df[SCORE_COLS].notna().any(axis=1).sum() if any(c in df.columns for c in SCORE_COLS) else 0
         st.metric("Assessed", int(assessed), f"{assessed/stats['total']*100:.0f}%" if stats['total'] else "")
     with c3:
-        st.metric("Chat Status: Yes", stats["chat_yes"])
+        # Male count
+        male_count = (df["Gender"] == "M").sum() if "Gender" in df.columns else 0
+        st.metric("Male", int(male_count))
     with c4:
-        st.metric("Chat Status: No (Pending)", stats["chat_no"])
-
+        # Female count
+        female_count = (df["Gender"] == "F").sum() if "Gender" in df.columns else 0
+        st.metric("Female", int(female_count))
+ 
     st.markdown("---")
+ 
+    # =========================================================================
+    # ROW 1: POSITION & DEPARTMENT DISTRIBUTIONS
+    # =========================================================================
     col1, col2 = st.columns(2)
-
+ 
     with col1:
-        st.subheader("Position Distribution")
+        st.subheader("📊 Position Distribution")
         pos = df["Staff Position"].value_counts().reset_index()
         pos.columns = ["Staff Position", "Count"]
         fig = px.bar(pos, x="Staff Position", y="Count", color="Staff Position",
-                     color_discrete_sequence=px.colors.sequential.Teal)
-        fig.update_layout(showlegend=False)
+                     color_discrete_sequence=px.colors.sequential.Teal,
+                     labels={"Count": "Number of Personnel"})
+        fig.update_layout(showlegend=False, height=400)
         st.plotly_chart(fig, use_container_width=True)
-
+ 
     with col2:
-        st.subheader("Department Distribution")
+        st.subheader("🏢 Department Distribution")
         dept = df["Department"].value_counts().reset_index()
         dept.columns = ["Department", "Count"]
         fig = px.pie(dept, names="Department", values="Count", hole=0.4,
                      color_discrete_sequence=px.colors.sequential.RdBu)
+        fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     col3, col4 = st.columns(2)
-
     with col3:
-        st.subheader("Chat Status Breakdown")
-        cs = df["Chat Status"].fillna("No Need").value_counts().reset_index()
-        cs.columns = ["Chat Status", "Count"]
-        fig = px.bar(cs, x="Chat Status", y="Count", color="Chat Status",
-                     color_discrete_map={"Yes": "#2E7D32", "No": "#C62828", "No Need": "#9E9E9E"})
+        st.subheader("🌏Section Name")
+        section = df["Section Name"].value_counts().reset_index()
+        section.columns = ["Section Name", "Count"]
+        fig = px.pie(section, names="Section Name", values="Count", hole=0.1,
+                     color_discrete_sequence=px.colors.sequential.Viridis)
+        fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
 
+    with col4 :
+        st.subheader("🌏Current Assignment Distribution")
+        assignment = df["Current Assignment / Loc:"].value_counts().reset_index()
+        assignment.columns = ["Current Assignment / Loc:", "Count"]
+        fig = px.pie(assignment, names="Current Assignment / Loc:", values="Count", hole=0.4,
+                             color_discrete_sequence=px.colors.sequential.Viridis)
+        fig.update_layout(height=400)
+        st.plotly_chart(fig, use_container_width=True)
+ 
+    st.markdown("---")
+ 
+    # =========================================================================
+    # ROW 2: GENDER DISTRIBUTION & GRADE DISTRIBUTION
+    # =========================================================================
+    col3, col4 = st.columns(2)
+ 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Gender Distribution (Pie Chart)
+    # ─────────────────────────────────────────────────────────────────────────
+    with col3:
+        st.subheader("👥 Gender Distribution")
+        
+        if "Gender" in df.columns:
+            # Count by gender
+            gender_counts = df["Gender"].value_counts().reset_index()
+            gender_counts.columns = ["Gender", "Count"]
+            
+            # Map M/F to readable labels
+            gender_map = {"M": "Male", "F": "Female"}
+            gender_counts["Gender"] = gender_counts["Gender"].map(gender_map)
+            
+            # Create pie chart
+            fig = px.pie(
+                gender_counts,
+                names="Gender",
+                values="Count",
+                hole=0.35,
+                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"},  # Blue for Male, Orange for Female
+                labels={"Count": "Number"}
+            )
+            fig.update_traces(
+                textposition="inside",
+                textinfo="label+percent"
+            )
+            fig.update_layout(height=400, showlegend=True)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Gender data not available")
+ 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Grade (SG) Distribution by Gender (Stacked Bar)
+    # ─────────────────────────────────────────────────────────────────────────
     with col4:
-        st.subheader("Assessment Completion by Department")
-        comp = an.assessment_completion_by_dept(df)
-        fig = px.bar(comp, x="Department", y="completion_pct", text="completion_pct",
-                     color="completion_pct", color_continuous_scale="Tealgrn",
-                     labels={"completion_pct": "Completion %"})
-        fig.update_traces(texttemplate="%{text:.0f}%", textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Grade (SG) Distribution")
-    sg = df["SG"].value_counts().reset_index()
-    sg.columns = ["SG", "Count"]
-    sg["Label"] = sg["SG"].map(GRADE_LABELS).fillna(sg["SG"])
-    fig = px.bar(sg.sort_values("SG"), x="SG", y="Count", text="Label",
-                 color="Count", color_continuous_scale="Blues")
-    st.plotly_chart(fig, use_container_width=True)
-
+        st.subheader("📈 Grade (SG) Distribution by Gender")
+        
+        if "SG" in df.columns and "Gender" in df.columns:
+            # Create pivot table: grades × gender
+            sg_gender = pd.crosstab(df["SG"], df["Gender"])
+            
+            # Rename columns to readable labels
+            sg_gender.columns = sg_gender.columns.map({"M": "Male", "F": "Female"})
+            
+            # Sort by numeric grade (P1-P10)
+            sg_gender = sg_gender.reindex([f"P{i}" for i in range(1, 11) if f"P{i}" in sg_gender.index])
+            
+            # Create stacked bar chart
+            fig = px.bar(
+                sg_gender.reset_index(),
+                x="SG",
+                y=["Male", "Female"],
+                barmode="stack",
+                title="",
+                labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
+                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
+            )
+            
+            fig.update_layout(
+                xaxis_title="Salary Grade",
+                yaxis_title="Number of Personnel",
+                height=400,
+                hovermode="x unified",
+                legend=dict(
+                    title="Gender",
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="right",
+                    x=0.99
+                )
+            )
+            
+            # Remove the text labels showing count (as requested)
+            fig.update_traces(textposition=None, texttemplate=None)
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Grade or Gender data not available")
+ 
+    st.markdown("---")
+ 
+    # =========================================================================
+    # ROW 3: ADDITIONAL INSIGHTS (Optional)
+    # =========================================================================
+    st.subheader("📊 Assessment Metrics by Category")
+    
+    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+    
+    # Calculate category averages
+    base_avg = df[[c for c in SCORE_COLS if c.startswith("B")]].mean().mean() if any(c in df.columns for c in [f"B{i}" for i in range(1, 13)]) else 0
+    knowledge_avg = df[[c for c in SCORE_COLS if c.startswith("K")]].mean().mean() if any(c in df.columns for c in [f"K{i}" for i in range(1, 6)]) else 0
+    pacing_avg = df[[c for c in SCORE_COLS if c.startswith("P") and not c.startswith("P") or (isinstance(c, str) and c[0]=="P" and len(c)==2)]].mean().mean() if any(c in df.columns for c in [f"P{i}" for i in range(1, 6)]) else 0
+    
+    with metrics_col1:
+        st.metric("Avg Base Competency Score", f"{base_avg:.2f}" if base_avg > 0 else "N/A")
+    
+    with metrics_col2:
+        st.metric("Avg Knowledge Score", f"{knowledge_avg:.2f}" if knowledge_avg > 0 else "N/A")
+    
+    with metrics_col3:
+        st.metric("Avg Pacing Score", f"{pacing_avg:.2f}" if pacing_avg > 0 else "N/A")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: PERSONNEL DIRECTORY
@@ -484,71 +602,996 @@ elif page == "👥 Personnel Directory":
     csv = show.to_csv(index=False).encode()
     st.download_button("⬇️ Download as CSV", csv, "personnel_directory.csv", "text/csv")
 
-
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # PAGE: COMPETENCY HEATMAP
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+
 elif page == "🌡️ Competency Heatmap":
     st.title("🌡️ Competency Heatmap")
 
+    st.caption(
+        "Explore actual competency scores across personnel. "
+        "Each row represents one person and each column represents "
+        "one competency."
+    )
+
     if df.empty:
+        st.warning("No personnel data is available.")
         st.stop()
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        f_dept = st.multiselect("Department", sorted(df["Department"].dropna().unique()), key="hm_dept")
-    with c2:
-        f_pos = st.multiselect("Position", sorted(df["Staff Position"].dropna().unique()), key="hm_pos")
-    with c3:
-        f_type = st.multiselect("Competency Type", list(COMP_TYPES.keys()),
-                                default=list(COMP_TYPES.keys()), key="hm_type")
+    # -------------------------------------------------------------------------
+    # FILTERS
+    # -------------------------------------------------------------------------
+
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+
+    with filter_col1:
+        f_dept = st.multiselect(
+            "Department",
+            options=sorted(
+                df["Department"]
+                .dropna()
+                .astype(str)
+                .unique()
+            ),
+            key="hm_dept",
+        )
+
+    with filter_col2:
+        f_pos = st.multiselect(
+            "Position",
+            options=sorted(
+                df["Staff Position"]
+                .dropna()
+                .astype(str)
+                .unique()
+            ),
+            key="hm_pos",
+        )
+
+    with filter_col3:
+        f_sg = st.multiselect(
+            "Salary Grade",
+            options=sorted(
+                df["SG"]
+                .dropna()
+                .astype(str)
+                .unique(),
+                key=lambda grade: grade_rank(grade) or 999,
+            ),
+            key="hm_sg",
+        )
+
+    with filter_col4:
+        f_type = st.multiselect(
+            "Competency Type",
+            options=list(COMP_TYPES.keys()),
+            default=list(COMP_TYPES.keys()),
+            format_func=lambda code: (
+                COMP_TYPES.get(code, {}).get(
+                    "label",
+                    code,
+                )
+            ),
+            key="hm_type",
+        )
+
+    control_col1, control_col2, control_col3 = st.columns(3)
+
+    with control_col1:
+        sort_option = st.selectbox(
+            "Sort personnel by",
+            options=[
+                "Name",
+                "Average score: high to low",
+                "Average score: low to high",
+                "Low-score cells: high to low",
+                "Assessment coverage: low to high",
+            ],
+            key="hm_sort",
+        )
+
+    with control_col2:
+        show_score_labels = st.checkbox(
+            "Show score inside cells",
+            value=True,
+            help=(
+                "Score labels are automatically hidden when too many "
+                "personnel are displayed."
+            ),
+            key="hm_show_labels",
+        )
+
+    with control_col3:
+        minimum_coverage = st.slider(
+            "Minimum assessment coverage",
+            min_value=0,
+            max_value=100,
+            value=0,
+            step=5,
+            format="%d%%",
+            key="hm_min_coverage",
+        )
+
+    # -------------------------------------------------------------------------
+    # APPLY FILTERS
+    # -------------------------------------------------------------------------
 
     fdf = df.copy()
+
     if f_dept:
-        fdf = fdf[fdf["Department"].isin(f_dept)]
+        fdf = fdf[
+            fdf["Department"].isin(f_dept)
+        ]
+
     if f_pos:
-        fdf = fdf[fdf["Staff Position"].isin(f_pos)]
+        fdf = fdf[
+            fdf["Staff Position"].isin(f_pos)
+        ]
+
+    if f_sg:
+        fdf = fdf[
+            fdf["SG"].isin(f_sg)
+        ]
+
+    # -------------------------------------------------------------------------
+    # SELECT COMPETENCY COLUMNS
+    # -------------------------------------------------------------------------
 
     value_cols = []
-    for t in f_type:
-        value_cols += [c for c in COMP_TYPES[t]["cols"] if c in fdf.columns]
+
+    for competency_type in f_type:
+        configured_columns = COMP_TYPES.get(
+            competency_type,
+            {},
+        ).get(
+            "cols",
+            [],
+        )
+
+        value_cols.extend(
+            column
+            for column in configured_columns
+            if column in fdf.columns
+        )
+
+    # Remove accidental duplicates while preserving order.
+    value_cols = list(
+        dict.fromkeys(value_cols)
+    )
 
     if not value_cols:
-        st.info("Select at least one competency type.")
+        st.info(
+            "Select at least one competency type."
+        )
         st.stop()
 
-    mat = an.build_heatmap_matrix(fdf, value_cols)
-
-    if mat.empty:
-        st.warning("No assessed personnel match these filters.")
+    if fdf.empty:
+        st.warning(
+            "No personnel match the selected filters."
+        )
         st.stop()
 
-    st.caption(f"Showing {len(mat)} assessed personnel × {len(value_cols)} competencies")
+    # -------------------------------------------------------------------------
+    # BUILD HEATMAP MATRIX
+    # -------------------------------------------------------------------------
 
-    fig = go.Figure(data=go.Heatmap(
-        z=mat.values,
-        x=mat.columns,
-        y=mat.index,
-        colorscale=HEATMAP_COLORSCALE,
-        zmin=0, zmax=5,
-        colorbar=dict(title="Score"),
-        hovertemplate="Person: %{y}<br>Competency: %{x}<br>Score: %{z}<extra></extra>"
-    ))
-    fig.update_layout(height=max(400, 20 * len(mat)), xaxis_nticks=len(value_cols))
-    st.plotly_chart(fig, use_container_width=True)
+    heatmap_data = fdf.copy()
 
-    st.subheader("Summary Statistics")
-    s1, s2, s3, s4 = st.columns(4)
-    flat = mat.values.flatten()
-    flat = flat[~np.isnan(flat)]
-    with s1:
-        st.metric("Average Score", f"{flat.mean():.2f}" if len(flat) else "N/A")
-    with s2:
-        st.metric("High Performers (≥4)", int((flat >= 4).sum()))
-    with s3:
-        st.metric("Needs Development (≤2)", int((flat <= 2).sum()))
-    with s4:
-        st.metric("Total Data Points", len(flat))
+    # Convert competency scores to numeric values.
+    for competency in value_cols:
+        heatmap_data[competency] = pd.to_numeric(
+            heatmap_data[competency],
+            errors="coerce",
+        )
+
+    # Create a readable and unique personnel label.
+    def build_personnel_label(row):
+        name = row.get("Name")
+        staff_id = row.get("Staff ID")
+        sg = row.get("SG")
+
+        name_display = (
+            str(name).strip()
+            if name is not None and pd.notna(name)
+            else "Unknown"
+        )
+
+        label_parts = [name_display]
+
+        if (
+            staff_id is not None
+            and pd.notna(staff_id)
+            and str(staff_id).strip()
+        ):
+            label_parts.append(
+                str(staff_id).strip()
+            )
+
+        if (
+            sg is not None
+            and pd.notna(sg)
+            and str(sg).strip()
+        ):
+            label_parts.append(
+                str(sg).strip()
+            )
+
+        return " | ".join(label_parts)
+
+    heatmap_data["Heatmap Label"] = (
+        heatmap_data.apply(
+            build_personnel_label,
+            axis=1,
+        )
+    )
+
+    # Remove personnel with no scores in the selected competencies.
+    heatmap_data = heatmap_data[
+        heatmap_data[value_cols]
+        .notna()
+        .any(axis=1)
+    ].copy()
+
+    if heatmap_data.empty:
+        st.warning(
+            "No assessed personnel match the selected filters."
+        )
+        st.stop()
+
+    # -------------------------------------------------------------------------
+    # PERSONNEL-LEVEL STATISTICS
+    # -------------------------------------------------------------------------
+
+    heatmap_data["Average Score"] = (
+        heatmap_data[value_cols]
+        .mean(axis=1)
+    )
+
+    heatmap_data["Assessed Competencies"] = (
+        heatmap_data[value_cols]
+        .notna()
+        .sum(axis=1)
+    )
+
+    heatmap_data["Missing Competencies"] = (
+        len(value_cols)
+        - heatmap_data["Assessed Competencies"]
+    )
+
+    heatmap_data["Assessment Coverage %"] = (
+        heatmap_data["Assessed Competencies"]
+        / len(value_cols)
+        * 100
+    )
+
+    heatmap_data["High Score Cells"] = (
+        heatmap_data[value_cols]
+        .ge(4)
+        .sum(axis=1)
+    )
+
+    heatmap_data["Low Score Cells"] = (
+        heatmap_data[value_cols]
+        .le(2)
+        .sum(axis=1)
+    )
+
+    # Apply assessment coverage filter.
+    heatmap_data = heatmap_data[
+        heatmap_data["Assessment Coverage %"]
+        >= minimum_coverage
+    ].copy()
+
+    if heatmap_data.empty:
+        st.warning(
+            "No personnel meet the selected minimum "
+            "assessment coverage."
+        )
+        st.stop()
+
+    # -------------------------------------------------------------------------
+    # SORT PERSONNEL
+    # -------------------------------------------------------------------------
+
+    if sort_option == "Name":
+        heatmap_data = heatmap_data.sort_values(
+            by="Name",
+            ascending=True,
+            na_position="last",
+        )
+
+    elif sort_option == "Average score: high to low":
+        heatmap_data = heatmap_data.sort_values(
+            by="Average Score",
+            ascending=False,
+            na_position="last",
+        )
+
+    elif sort_option == "Average score: low to high":
+        heatmap_data = heatmap_data.sort_values(
+            by="Average Score",
+            ascending=True,
+            na_position="last",
+        )
+
+    elif sort_option == "Low-score cells: high to low":
+        heatmap_data = heatmap_data.sort_values(
+            by=[
+                "Low Score Cells",
+                "Average Score",
+            ],
+            ascending=[
+                False,
+                True,
+            ],
+            na_position="last",
+        )
+
+    elif sort_option == "Assessment coverage: low to high":
+        heatmap_data = heatmap_data.sort_values(
+            by=[
+                "Assessment Coverage %",
+                "Name",
+            ],
+            ascending=[
+                True,
+                True,
+            ],
+            na_position="last",
+        )
+
+    mat = heatmap_data.set_index(
+        "Heatmap Label"
+    )[value_cols]
+
+    # -------------------------------------------------------------------------
+    # OVERALL METRICS
+    # -------------------------------------------------------------------------
+
+    score_values = mat.to_numpy(
+        dtype=float
+    )
+
+    valid_scores = score_values[
+        ~np.isnan(score_values)
+    ]
+
+    possible_cells = (
+        len(mat) * len(value_cols)
+    )
+
+    assessed_cells = len(valid_scores)
+
+    missing_cells = (
+        possible_cells - assessed_cells
+    )
+
+    coverage_pct = (
+        assessed_cells / possible_cells * 100
+        if possible_cells > 0
+        else 0.0
+    )
+
+    average_score = (
+        float(np.mean(valid_scores))
+        if assessed_cells > 0
+        else np.nan
+    )
+
+    high_score_cells = (
+        int((valid_scores >= 4).sum())
+        if assessed_cells > 0
+        else 0
+    )
+
+    low_score_cells = (
+        int((valid_scores <= 2).sum())
+        if assessed_cells > 0
+        else 0
+    )
+
+    st.markdown("---")
+
+    metric1, metric2, metric3, metric4, metric5 = st.columns(5)
+
+    metric1.metric(
+        "Personnel Shown",
+        len(mat),
+    )
+
+    metric2.metric(
+        "Average Score",
+        (
+            f"{average_score:.2f}"
+            if not np.isnan(average_score)
+            else "N/A"
+        ),
+    )
+
+    metric3.metric(
+        "High Score Cells",
+        high_score_cells,
+        help=(
+            "Number of individual competency scores "
+            "that are 4 or higher."
+        ),
+    )
+
+    metric4.metric(
+        "Low Score Cells",
+        low_score_cells,
+        help=(
+            "Number of individual competency scores "
+            "that are 2 or lower. This does not "
+            "automatically mean there is a target gap."
+        ),
+    )
+
+    metric5.metric(
+        "Assessment Coverage",
+        f"{coverage_pct:.1f}%",
+        help=(
+            "Populated competency-score cells divided "
+            "by all possible cells in the displayed matrix."
+        ),
+    )
+
+    st.caption(
+        f"Showing {len(mat)} personnel × "
+        f"{len(value_cols)} competencies. "
+        f"{assessed_cells:,} assessed cells and "
+        f"{missing_cells:,} missing cells."
+    )
+
+    # -------------------------------------------------------------------------
+    # HEATMAP DISPLAY
+    # -------------------------------------------------------------------------
+
+    st.subheader("Actual Competency Score Matrix")
+
+    st.caption(
+        "Rows represent personnel and columns represent competencies. "
+        "Borders separate each person and competency for easier reading. "
+        "Blank cells indicate that no score is available."
+    )
+
+    # Competency full names for hover information.
+    competency_name_map = (
+        st.session_state.get(
+            "competency_names",
+            {},
+        )
+        or COMPETENCY_FULLNAMES
+    )
+
+    competency_full_names = [
+        competency_name_map.get(
+            competency,
+            competency,
+        )
+        for competency in value_cols
+    ]
+
+    # Repeat competency names for every heatmap row.
+    hover_competency_names = np.tile(
+        np.array(
+            competency_full_names,
+            dtype=object,
+        ),
+        (
+            len(mat),
+            1,
+        ),
+    )
+
+    # Show numeric values only when the matrix remains readable.
+    display_cell_labels = (
+        show_score_labels
+        and len(mat) <= 40
+        and len(value_cols) <= 24
+    )
+
+    if display_cell_labels:
+        text_values = np.where(
+            np.isnan(score_values),
+            "",
+            np.round(score_values).astype(
+                object
+            ),
+        )
+
+        # Convert numeric objects to readable strings.
+        text_values = np.vectorize(
+            lambda value: (
+                ""
+                if value == ""
+                else str(int(value))
+            )
+        )(text_values)
+
+        text_template = "%{text}"
+    else:
+        text_values = None
+        text_template = None
+
+        if show_score_labels:
+            st.info(
+                "Score labels were hidden automatically because "
+                "the displayed matrix is too large. Hover over a "
+                "cell to see its score."
+            )
+
+    # Allocate enough vertical space for readable personnel rows,
+    # while avoiding an excessively tall page.
+    chart_height = min(
+        max(
+            500,
+            32 * len(mat) + 170,
+        ),
+        1800,
+    )
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=score_values,
+            x=value_cols,
+            y=mat.index.tolist(),
+            text=text_values,
+            texttemplate=text_template,
+            textfont={
+                "size": 11,
+                "color": "white",
+            },
+            customdata=hover_competency_names,
+            colorscale=HEATMAP_COLORSCALE,
+            zmin=0,
+            zmax=5,
+
+            # These gaps create visible borders around cells.
+            xgap=1.5,
+            ygap=1.5,
+
+            colorbar={
+                "title": {
+                    "text": "Score",
+                },
+                "tickmode": "array",
+                "tickvals": [0, 1, 2, 3, 4, 5],
+                "ticktext": ["0", "1", "2", "3", "4", "5"],
+                "len": 0.85,
+            },
+            hoverongaps=False,
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Competency: %{x}<br>"
+                "Competency Name: %{customdata}<br>"
+                "Actual Score: %{z:.0f}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    fig.update_layout(
+        height=chart_height,
+        plot_bgcolor="#30343F",
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin={
+            "l": 20,
+            "r": 40,
+            "t": 20,
+            "b": 80,
+        },
+        xaxis={
+            "title": "Competency",
+            "side": "top",
+            "tickangle": 0,
+            "tickmode": "array",
+            "tickvals": value_cols,
+            "ticktext": value_cols,
+            "showgrid": False,
+            "fixedrange": False,
+        },
+        yaxis={
+            "title": "",
+            "autorange": "reversed",
+            "showgrid": False,
+            "tickfont": {
+                "size": 11,
+            },
+            "automargin": True,
+            "fixedrange": False,
+        },
+        hoverlabel={
+            "bgcolor": "#FFFFFF",
+            "font": {
+                "color": "#1F2937",
+                "size": 12,
+            },
+        },
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "displayModeBar": True,
+            "displaylogo": False,
+            "scrollZoom": True,
+            "modeBarButtonsToRemove": [
+                "lasso2d",
+                "select2d",
+            ],
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": "competency_heatmap",
+                "height": chart_height,
+                "width": 1800,
+                "scale": 2,
+            },
+        },
+    )
+
+    # -------------------------------------------------------------------------
+    # SUMMARY TABLES
+    # -------------------------------------------------------------------------
+
+    st.markdown("---")
+    st.subheader("📋 Heatmap Analysis Summary")
+
+    st.caption(
+        "Use the personnel summary to identify broad score patterns. "
+        "Use the competency summary to identify common strengths, "
+        "low-score concentrations, and assessment-data gaps."
+    )
+
+    personnel_tab, competency_tab, category_tab = st.tabs(
+        [
+            "Personnel Summary",
+            "Competency Summary",
+            "Category Summary",
+        ]
+    )
+
+    # -------------------------------------------------------------------------
+    # PERSONNEL SUMMARY TABLE
+    # -------------------------------------------------------------------------
+
+    with personnel_tab:
+        personnel_summary = heatmap_data[
+            [
+                "Name",
+                "Staff ID",
+                "Department",
+                "Staff Position",
+                "SG",
+                "Assessed Competencies",
+                "Missing Competencies",
+                "Assessment Coverage %",
+                "High Score Cells",
+                "Low Score Cells",
+            ]
+        ].copy()
+        
+        personnel_summary["Assessment Coverage %"] = (
+            personnel_summary[
+                "Assessment Coverage %"
+            ]
+            .round(1)
+        )
+
+        personnel_summary = personnel_summary.rename(
+            columns={
+                "High Score Cells": "Scores ≥4",
+                "Low Score Cells": "Scores ≤2",
+            }
+        )
+
+        st.dataframe(
+            personnel_summary,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Average Score": st.column_config.NumberColumn(
+                    "Average Score",
+                    format="%.2f",
+                ),
+                "Assessment Coverage %":
+                    st.column_config.ProgressColumn(
+                        "Assessment Coverage",
+                        min_value=0,
+                        max_value=100,
+                        format="%.1f%%",
+                    ),
+                "Assessed Competencies":
+                    st.column_config.NumberColumn(
+                        "Assessed",
+                        format="%d",
+                    ),
+                "Missing Competencies":
+                    st.column_config.NumberColumn(
+                        "Missing",
+                        format="%d",
+                    ),
+            },
+        )
+
+        st.download_button(
+            "⬇️ Download Personnel Summary",
+            data=personnel_summary.to_csv(
+                index=False
+            ).encode("utf-8"),
+            file_name=(
+                "heatmap_personnel_summary.csv"
+            ),
+            mime="text/csv",
+        )
+
+    # -------------------------------------------------------------------------
+    # COMPETENCY SUMMARY TABLE
+    # -------------------------------------------------------------------------
+
+    with competency_tab:
+        competency_records = []
+
+        for competency in value_cols:
+            competency_scores = pd.to_numeric(
+                mat[competency],
+                errors="coerce",
+            )
+
+            valid_competency_scores = (
+                competency_scores.dropna()
+            )
+
+            assessed_count = len(
+                valid_competency_scores
+            )
+
+            missing_count = (
+                len(mat) - assessed_count
+            )
+
+            competency_coverage = (
+                assessed_count / len(mat) * 100
+                if len(mat) > 0
+                else 0.0
+            )
+
+            competency_records.append(
+                {
+                    "Competency": competency,
+                    "Competency Name":
+                        competency_name_map.get(
+                            competency,
+                            competency,
+                        ),
+                    "Category":
+                        COMP_TYPES.get(
+                            competency[0],
+                            {},
+                        ).get(
+                            "label",
+                            competency[0],
+                        ),
+                    "Average Score": (
+                        valid_competency_scores.mean()
+                        if assessed_count > 0
+                        else np.nan
+                    ),
+                    "Minimum Score": (
+                        valid_competency_scores.min()
+                        if assessed_count > 0
+                        else np.nan
+                    ),
+                    "Maximum Score": (
+                        valid_competency_scores.max()
+                        if assessed_count > 0
+                        else np.nan
+                    ),
+                    "Assessed Personnel":
+                        assessed_count,
+                    "Missing Personnel":
+                        missing_count,
+                    "Coverage %":
+                        competency_coverage,
+                    "Scores ≥4": int(
+                        (
+                            valid_competency_scores
+                            >= 4
+                        ).sum()
+                    ),
+                    "Scores ≤2": int(
+                        (
+                            valid_competency_scores
+                            <= 2
+                        ).sum()
+                    ),
+                }
+            )
+
+        competency_summary = pd.DataFrame(
+            competency_records
+        )
+
+        competency_summary["Average Score"] = (
+            competency_summary["Average Score"]
+            .round(2)
+        )
+
+        competency_summary["Minimum Score"] = (
+            competency_summary["Minimum Score"]
+            .round(0)
+            .astype("Int64")
+        )
+
+        competency_summary["Maximum Score"] = (
+            competency_summary["Maximum Score"]
+            .round(0)
+            .astype("Int64")
+        )
+
+        competency_summary["Coverage %"] = (
+            competency_summary["Coverage %"]
+            .round(1)
+        )
+
+        competency_summary = (
+            competency_summary.sort_values(
+                by=[
+                    "Average Score",
+                    "Scores ≤2",
+                ],
+                ascending=[
+                    True,
+                    False,
+                ],
+                na_position="last",
+            )
+        )
+
+        st.dataframe(
+            competency_summary,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Coverage %":
+                    st.column_config.ProgressColumn(
+                        "Assessment Coverage",
+                        min_value=0,
+                        max_value=100,
+                        format="%.1f%%",
+                    ),
+            },
+        )
+
+        st.download_button(
+            "⬇️ Download Competency Summary",
+            data=competency_summary.to_csv(
+                index=False
+            ).encode("utf-8"),
+            file_name=(
+                "heatmap_competency_summary.csv"
+            ),
+            mime="text/csv",
+        )
+
+    # -------------------------------------------------------------------------
+    # CATEGORY SUMMARY TABLE
+    # -------------------------------------------------------------------------
+
+    with category_tab:
+        category_records = []
+
+        for category_code in f_type:
+            category_columns = [
+                competency
+                for competency in COMP_TYPES.get(
+                    category_code,
+                    {},
+                ).get(
+                    "cols",
+                    [],
+                )
+                if competency in mat.columns
+            ]
+
+            if not category_columns:
+                continue
+
+            category_values = (
+                mat[category_columns]
+                .to_numpy(dtype=float)
+            )
+
+            valid_category_values = (
+                category_values[
+                    ~np.isnan(category_values)
+                ]
+            )
+
+            possible_category_cells = (
+                len(mat)
+                * len(category_columns)
+            )
+
+            assessed_category_cells = len(
+                valid_category_values
+            )
+
+            category_coverage = (
+                assessed_category_cells
+                / possible_category_cells
+                * 100
+                if possible_category_cells > 0
+                else 0.0
+            )
+
+            category_records.append(
+                {
+                    "Category Code": category_code,
+                    "Category":
+                        COMP_TYPES.get(
+                            category_code,
+                            {},
+                        ).get(
+                            "label",
+                            category_code,
+                        ),
+                    "Competencies":
+                        len(category_columns),
+                    "Scores ≥4": int(
+                        (
+                            valid_category_values
+                            >= 4
+                        ).sum()
+                    ),
+                    "Scores ≤2": int(
+                        (
+                            valid_category_values
+                            <= 2
+                        ).sum()
+                    ),
+                    "Assessed Cells":
+                        assessed_category_cells,
+                    "Missing Cells": (
+                        possible_category_cells
+                        - assessed_category_cells
+                    ),
+                    "Coverage %":
+                        category_coverage,
+                }
+            )
+
+        category_summary = pd.DataFrame(
+            category_records
+        )
+
+        if category_summary.empty:
+            st.info(
+                "No competency categories are available "
+                "for the selected filters."
+            )
+        else:
+            category_summary["Coverage %"] = (
+                category_summary["Coverage %"]
+                .round(1)
+            )
+
+            st.dataframe(
+                category_summary,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Coverage %":
+                        st.column_config.ProgressColumn(
+                            "Assessment Coverage",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f%%",
+                        ),
+                },
+            )
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: INDIVIDUAL ASSESSMENT
@@ -596,7 +1639,6 @@ elif page == "🔍 Individual Assessment":
         return "🔴 Major Gap"
 
     # --- Code #1 Engine Functions ---
-
     def _build_target_gap_dataframe(person_row, target_sg, selected_ruler_requirements, tech_labels):
         """Builds the gap analysis dataframe matching actual scores against a specific Target SG."""
         target_reqs = selected_ruler_requirements.get(target_sg, {})
@@ -708,12 +1750,9 @@ elif page == "🔍 Individual Assessment":
     # =========================================================================
     # PAGE SETUP (Code #2 Layout)
     # =========================================================================
-
     st.set_page_config(layout="wide", page_title="Individual Assessment")
     st.title("👤 Individual Assessment & Development Profile")
     st.markdown("---")
-
-    
 
     # Personnel Selection (Code #2 Layout)
     if df.empty:
@@ -739,25 +1778,30 @@ elif page == "🔍 Individual Assessment":
         
         profile_col1, profile_col2, profile_col3, profile_col4 = st.columns(4)
         with profile_col1:
-            st.metric("Position / Grade", f"{person_row.get('staff_position', 'N/A')} ({person_row.get('sg', 'N/A')})")
+            st.metric("Position / Grade", f"{person_row.get('Staff Position')} ({person_row.get('SG')})")
         with profile_col2:
-            st.metric("Department", person_row.get("department", "N/A"))
+            st.metric("Department / Unit", f"{person_row.get('Department')} ({person_row.get('Sub Unit')})")
         with profile_col3:
-            st.metric("Current Assignment", person_row.get("current_assignment", "N/A"))
+            st.metric("Current Assignment", person_row.get("Current Assignment / Loc:"))
         with profile_col4:
-            st.metric("Email", person_row.get("email", "N/A"))
-            
+            st.metric("Years in PETRONAS", int(person_row.get("Years in PET", 0)) if pd.notna(person_row.get("Years in PET")) else "Not Applicable")
+
         stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
         with stats_col1:
-            st.metric("Age", int(person_row.get("age", 0)) if pd.notna(person_row.get("age")) else "N/A")
+            st.metric("Age", int(person_row.get("Age", 0)) if pd.notna(person_row.get("Age")) else "N/A")
         with stats_col2:
-            st.metric("Employment Type", person_row.get("employment_category", "N/A"))
+            st.metric("Employment Type", person_row.get("Employment Category"))
         with stats_col3:
-            st.metric("Contract Expiry", str(person_row.get("contract_expire_date", "N/A")))
+            st.metric("Contract Expiry", str(person_row.get("Contract Expire Date"))if pd.notna(person_row.get("Contract Expire Date")) else "Not Applicable")
         with stats_col4:
-            st.metric("Length in Grade", "N/A") # Placeholder
-    st.markdown("---")
+            st.metric("Length in Grade", int(person_row.get("Years in Salary Grade", 0)) if pd.notna(person_row.get("Years in Salary Grade")) else "Not Applicable")
 
+        st.markdown("### 💪🏼 Strength  & Interest")
+        st.info(f"Strength: {person_row.get('Strength')}")
+        st.info(f"Interest: {person_row.get('Interest')}")
+        
+
+    st.markdown("---")
     # =========================================================================
     # SECTION 2: TARGET SELECTION & ENGINE (Code #1 Logic)
     # =========================================================================
@@ -807,11 +1851,70 @@ elif page == "🔍 Individual Assessment":
     # =========================================================================
     # SECTION 3: TECH CLASS REFERENCE (Code #2 Expander)
     # =========================================================================
-    with st.expander("📚 Tech Class Reference", expanded=False):
-        st.markdown("**Understanding Competency Codes**")
-        st.markdown("B: Base | K: Key | P: Pacing | E: Emerging")
+    with st.expander("📚 Tech Class Reference - Competency Definitions", expanded=False):
+        st.markdown("**Understanding Competency Codes and Their Meanings**")
+        st.markdown("Reference this table to understand what each competency code (e.g., B1, K1, P1, E1) represents in the assessment.")
+        st.markdown("")
+        
+        # Build reference data from config.COMP_TYPES and COMPETENCY_FULLNAMES
+        # Sorted numerically: B1-B12, K1-K5, P1-P5, E1-E2
+        
+        ref_data = []
+        
+        # Process by category in order: B, K, P, E
+        for category_key in ["B", "K", "P", "E"]:
+            category_info = COMP_TYPES.get(category_key, {})
+            category_name = category_info.get("label", "Unknown")
+            codes = category_info.get("cols", [])
+            
+            for code in codes:
+                full_name = COMPETENCY_FULLNAMES.get(code, f"Unknown - {code}")
+                ref_data.append({
+                    'Category': category_name,
+                    'Code': code,
+                    'Competency Name': full_name,
+                })
+        
+        ref_df = pd.DataFrame(ref_data)
+        
+        # Display using Streamlit dataframe with custom column config
+        st.dataframe(
+            ref_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Category": st.column_config.TextColumn(
+                    "Category",
+                    width=140,
+                    help="Type of competency"
+                ),
+                "Code": st.column_config.TextColumn(
+                    "Code",
+                    width=60,
+                    help="Competency identifier (e.g., B1, K3, P2)"
+                ),
+                "Competency Name": st.column_config.TextColumn(
+                    "Competency Name",
+                    width=400,
+                    help="Full name and description of the competency"
+                ),
+            }
+        )
+        
+        # Add helpful notes
+        st.markdown("---")
+        st.markdown("**Category Definitions:**")
+        category_defs = {
+            "🔹 Base Competency (B1-B12)": "Core technical competencies required for reservoir engineering work",
+            "🔹 Knowledge (K1-K5)": "Specialized knowledge areas in reservoir engineering and management",
+            "🔹 Pacing (P1-P5)": "Professional competencies related to advanced complex systems",
+            "🔹 Emerging (E1-E2)": "Emerging technologies and future-focused competencies",
+        }
+        
+        for category, description in category_defs.items():
+            st.markdown(f"**{category}:** {description}")
+    
     st.markdown("---")
-
     # =========================================================================
     # SECTION 4: ASSESSMENT SUMMARY (Code #1 Metrics + Code #2 Layout)
     # =========================================================================
@@ -856,7 +1959,7 @@ elif page == "🔍 Individual Assessment":
             fig_bar.add_trace(go.Bar(
                 x=df_gap["Competency Code"],
                 y=df_gap["Actual Score"],
-                name="Actual",
+                    name="Actual",
                 marker_color="#1f77b4"
             ))
             fig_bar.add_trace(go.Scatter(
@@ -876,26 +1979,75 @@ elif page == "🔍 Individual Assessment":
                 radar_actual = radar_df["Actual Score"].tolist()
                 radar_target = radar_df["Target Score"].tolist()
                 radar_names = radar_df["Competency Code"].tolist()
-
+        
+                # Get theme-based colors from config
+                from config import PRIMARY, SECONDARY, LIGHT_BG
+                
+                # Determine font color based on background brightness
+                # If background is light, use dark font; if dark, use light font
+                # For PETRONAS theme (#003D5C is dark), use white or light gray
+                axis_font_color = "white"  # Or use: "#F0F4F8" for light gray on dark
+                
                 fig_radar = go.Figure()
+                
                 # Actual Profile
                 fig_radar.add_trace(
                     go.Scatterpolar(
-                        r=radar_actual + [radar_actual[0]], theta=radar_names + [radar_names[0]], fill="toself", name="Actual", line=dict(color="#1f77b4", width=2, ),
-                        fillcolor="rgba(31,119,180,0.30)"
+                        r=radar_actual + [radar_actual[0]], 
+                        theta=radar_names + [radar_names[0]], 
+                        fill="toself", 
+                        name="Actual", 
+                        line=dict(color=PRIMARY, width=2),  # ← Use config color
+                        fillcolor=f"rgba(0, 61, 92, 0.30)"  # ← PETRONAS blue with transparency
                     )
                 )
+                
                 # Target Profile (Dashed)
                 fig_radar.add_trace(
                     go.Scatterpolar(
-                        r=radar_target + [radar_target[0]],theta=radar_names + [radar_names[0]],fill="none", name=f"Target ({target_sg})", 
-                        line=dict(color="red", width=2, dash="dash",),))
+                        r=radar_target + [radar_target[0]],
+                        theta=radar_names + [radar_names[0]],
+                        fill="none", 
+                        name=f"Target ({target_sg})", 
+                        line=dict(color="#E63946", width=2, dash="dash"),  # ← Red for contrast
+                    )
+                )
+                
+                # UPDATED: Automated font color
                 fig_radar.update_layout(
-                    title="Competency Profile", height=400, showlegend=True, polar=dict(
-                        radialaxis=dict( visible=True, range=[0, 5],dtick=1,)),)
+                    title="Competency Profile", 
+                    height=400, 
+                    showlegend=True, 
+                    polar=dict(
+                        radialaxis=dict(
+                            visible=True, 
+                            range=[0, 5],
+                            dtick=1,
+                            # ← AUTOMATED: Font adapts to background
+                            tickfont=dict(
+                                size=11,
+                                color=axis_font_color,  # Dynamic color
+                                family="Arial"
+                            ),
+                            gridcolor="rgba(200, 200, 200, 0.5)",
+                            gridwidth=1,
+                            showline=True,
+                            linecolor=axis_font_color,
+                            linewidth=1,
+                        ),
+                        angularaxis=dict(
+                            tickfont=dict(
+                                size=10,
+                                color=axis_font_color,  # Dynamic color
+                                family="Arial"
+                            )
+                        ),
+                        bgcolor="rgba(240, 240, 240, 0.3)"
+                    ),
+                )
                 st.plotly_chart(fig_radar, use_container_width=True)
 
-                st.markdown("---")
+        st.markdown("---")
         # =========================================================================
         # SECTION 6: GAP ANALYSIS TABLES (Code #1 Sorting + Code #2 UI configs)
         # =========================================================================
@@ -960,6 +2112,8 @@ elif page == "🔍 Individual Assessment":
     with col_hist:
         st.info("Trend visualization will appear here if historical data exists.")
         # fig_trend = px.line(...) # Restore DB call for history here
+        fig_trend = px.line(title="Assessment Trend (Placeholder)")
+        st.plotly_chart(fig_trend, use_container_width=True)
 
     with col_export:
         if target_sg and st.button("📥 Export as PDF", use_container_width=True):
@@ -1024,56 +2178,367 @@ elif page == "🎯 Readiness & Gaps":
 
         st.dataframe(gap_df, use_container_width=True, hide_index=True)
 
-
 # ═════════════════════════════════════════════════════════════════════════════
-# PAGE: TRENDS (AGE VS GRADE SCATTER)
+# PAGE: CHART BUILDER - DYNAMIC CHART CREATION WITH DATA ELEMENT SELECTION
 # ═════════════════════════════════════════════════════════════════════════════
-elif page == "📈 Trends (Age vs Grade)":
-    st.title("📈 Age vs Grade Analysis")
-
+elif page == "📊 Chart Builder & Depth Analysis":
+    st.title("📊 Dynamic Chart Builder")
+    
+    st.markdown("""
+    Create custom charts by selecting data elements from your dataset.
+    The system will:
+    - Analyze data types automatically
+    - Recommend compatible chart types
+    - Show warnings if data elements aren't suitable for analysis
+    - Apply filters to focus on specific data subsets
+    """)
+    
     if df.empty:
         st.stop()
+    
+    # Initialize session state for chart builder
+    if "cb_filters" not in st.session_state:
+        st.session_state.cb_filters = {}
+    if "cb_x_element" not in st.session_state:
+        st.session_state.cb_x_element = None
+    if "cb_y_element" not in st.session_state:
+        st.session_state.cb_y_element = None
+    if "cb_chart_type" not in st.session_state:
+        st.session_state.cb_chart_type = None
+    
+    # ─────────────────────────────────────────────────────────────────────
+    # STEP 1: Select and Apply Filters
+    # ─────────────────────────────────────────────────────────────────────
+    with st.expander("🔽 Step 1: Apply Filters (Optional)", expanded=False):
+        st.markdown("Filter your data to focus on specific personnel or criteria")
+        
+        filter_cols = st.columns(3)
+        filters = {}
+        
+        # Create filter options
+        with filter_cols[0]:
+            dept_filter = st.multiselect(
+                "Department",
+                sorted(df["Department"].dropna().unique()),
+                key="chart_dept_filter"
+            )
+            if dept_filter:
+                filters["Department"] = dept_filter
+        
+        with filter_cols[1]:
+            pos_filter = st.multiselect(
+                "Staff Position",
+                sorted(df["Staff Position"].dropna().unique()),
+                key="chart_pos_filter"
+            )
+            if pos_filter:
+                filters["Staff Position"] = pos_filter
+        
+        with filter_cols[2]:
+            sg_filter = st.multiselect(
+                "Salary Grade (SG)",
+                sorted(df["SG"].dropna().unique()),
+                key="chart_sg_filter"
+            )
+            if sg_filter:
+                filters["SG"] = sg_filter
+        
+        # Apply filters
+        if filters:
+            filtered_df = df.copy()
+            for col, values in filters.items():
+                filtered_df = filtered_df[filtered_df[col].isin(values)]
 
-    c1, c2 = st.columns(2)
-    with c1:
-        f_dept = st.multiselect("Filter by Department", sorted(df["Department"].dropna().unique()), key="sc_dept")
-    with c2:
-        f_pos = st.multiselect("Filter by Position", sorted(df["Staff Position"].dropna().unique()), key="sc_pos")
-
-    fdf = df.copy()
-    if f_dept:
-        fdf = fdf[fdf["Department"].isin(f_dept)]
-    if f_pos:
-        fdf = fdf[fdf["Staff Position"].isin(f_pos)]
-
-    scatter_df = an.scatter_age_vs_grade(fdf)
-
-    if scatter_df.empty:
-        st.warning("No data available for the selected filters.")
+            if filtered_df.empty:
+                st.warning("⚠️ Filters resulted in no records. Please adjust your filters.")
+                filtered_df = df.copy()
+                st.session_state.cb_filters = {}
+            else:
+                st.session_state.cb_filters = filters
+                st.info(f"✅ Filters applied: Showing {len(filtered_df)} of {len(df)} records")
+        else:
+            filtered_df = df.copy()
+            st.session_state.cb_filters = {}
+            st.info(f"📊 No filters applied: Using all {len(df)} records")
+    
+    # Apply filters to working dataframe
+    working_df = df.copy()
+    if st.session_state.cb_filters:
+        for col, values in st.session_state.cb_filters.items():
+            working_df = working_df[working_df[col].isin(values)]
+    
+    # ─────────────────────────────────────────────────────────────────────
+    # STEP 2: Select Data Elements for X and Y Axes
+    # ─────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("📈 Step 2: Select Data Elements")
+    
+    # Get available numeric and categorical columns
+    numeric_cols = []
+    categorical_cols = []
+    
+    for col in working_df.select_dtypes(include=[np.number]).columns:
+        if col not in ["id"]:
+            numeric_cols.append(col)
+    
+    for col in working_df.select_dtypes(include=[object]).columns:
+        unique_count = working_df[col].nunique()
+        if 1 < unique_count <= 50:  # Reasonable number for categorical
+            categorical_cols.append(col)
+    
+    # Also consider datetime columns
+    datetime_cols = []
+    for col in working_df.select_dtypes(include=['datetime64']).columns:
+        datetime_cols.append(col)
+    
+    all_selectable = numeric_cols + categorical_cols + datetime_cols
+    
+    if not all_selectable:
+        st.error("❌ No suitable data elements found for charting.")
         st.stop()
-
-    color_col = "Overall_avg" if "Overall_avg" in scatter_df.columns else None
-
-    fig = px.scatter(
-        scatter_df, x="Age", y="SG", color=color_col, hover_data=["Name", "Staff Position", "Department"],
-        category_orders={"SG": sorted(df["SG"].dropna().unique())},
-        color_continuous_scale="Tealgrn", title="Age vs Salary Grade (colored by Overall Avg Score)"
-    )
-    fig.update_layout(height=600)
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Years in PET vs Overall Score")
-    if "Years in PET" in fdf.columns and "Overall_avg" in fdf.columns:
-        fig2 = px.scatter(
-        fdf,
-        x="Years in PET",
-        y="Overall_avg",
-        color="Staff Position",
-        hover_data=["Name"],
-        trendline=None,
-    )
-        st.plotly_chart(fig2, use_container_width=True)
-
+    
+    col_select1, col_select2 = st.columns(2)
+    
+    with col_select1:
+        x_element = st.selectbox(
+            "🔴 X-Axis Data Element",
+            all_selectable,
+            index=0,
+            key="chart_x_select"
+        )
+        st.session_state.cb_x_element = x_element
+    
+    with col_select2:
+        y_element = st.selectbox(
+            "🔵 Y-Axis Data Element (optional, for paired charts)",
+            ["— No Y-Axis —"] + [col for col in all_selectable if col != x_element],
+            key="chart_y_select"
+        )
+        st.session_state.cb_y_element = None if y_element == "— No Y-Axis —" else y_element
+    
+    # ─────────────────────────────────────────────────────────────────────
+    # STEP 3: Analyze Data Elements and Check Compatibility
+    # ─────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🔍 Step 3: Data Analysis & Compatibility Check")
+    
+    # Analyze X element
+    x_info = ChartCompatibility.analyze_data_element(working_df[x_element], x_element)
+    
+    # Analyze Y element if selected
+    y_info = None
+    if st.session_state.cb_y_element:
+        y_info = ChartCompatibility.analyze_data_element(
+            working_df[st.session_state.cb_y_element],
+            st.session_state.cb_y_element
+        )
+    
+    # Display data element info
+    info_col1, info_col2 = st.columns(2)
+    
+    with info_col1:
+        st.markdown(f"#### 🔴 X-Axis: **{x_element}**")
+        st.write(f"- **Type**: {x_info.data_type.value}")
+        st.write(f"- **Unique Values**: {x_info.unique_count}")
+        st.write(f"- **Missing Values**: {x_info.null_count}")
+        if x_info.numeric_range:
+            st.write(f"- **Range**: {x_info.numeric_range[0]:.2f} to {x_info.numeric_range[1]:.2f}")
+        if x_info.sample_values:
+            st.write(f"- **Sample**: {', '.join(str(v)[:15] for v in x_info.sample_values[:3])}")
+    
+    if y_info:
+        with info_col2:
+            st.markdown(f"#### 🔵 Y-Axis: **{st.session_state.cb_y_element}**")
+            st.write(f"- **Type**: {y_info.data_type.value}")
+            st.write(f"- **Unique Values**: {y_info.unique_count}")
+            st.write(f"- **Missing Values**: {y_info.null_count}")
+            if y_info.numeric_range:
+                st.write(f"- **Range**: {y_info.numeric_range[0]:.2f} to {y_info.numeric_range[1]:.2f}")
+            if y_info.sample_values:
+                st.write(f"- **Sample**: {', '.join(str(v)[:15] for v in y_info.sample_values[:3])}")
+    
+    # ─────────────────────────────────────────────────────────────────────
+    # STEP 4: Check for Data Issues and Provide Suggestions
+    # ─────────────────────────────────────────────────────────────────────
+    suggestions = ChartCompatibility.get_suggestions(x_info, y_info)
+    
+    if suggestions["has_issues"]:
+        with st.warning("⚠️ Data Compatibility Issues Detected"):
+            for issue in suggestions["issues"]:
+                st.write(f"  {issue}")
+            st.markdown("---")
+            if suggestions["suggestions"]:
+                st.write("**💡 Suggestions:**")
+                for suggestion in suggestions["suggestions"]:
+                    st.write(f"  {suggestion}")
+    else:
+        st.success("✅ Data elements look good for analysis!")
+    
+    # ─────────────────────────────────────────────────────────────────────
+    # STEP 5: Get Compatible Chart Types
+    # ─────────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("📊 Step 4: Select Chart Type")
+    
+    compatible_charts = ChartCompatibility.get_compatible_charts(x_info, y_info)
+    
+    # Filter to only compatible charts
+    fully_compatible = {
+        name: info for name, info in compatible_charts.items()
+        if info["is_compatible"]
+    }
+    
+    if not fully_compatible:
+        st.error("❌ No compatible chart types for these data elements. Please adjust your selection.")
+        st.stop()
+    
+    # Display compatible charts with descriptions
+    st.markdown("**Available Chart Types:**")
+    chart_cols = st.columns(min(3, len(fully_compatible)))
+    
+    selected_chart = st.selectbox("Select Chart Type", list(fully_compatible.keys()), 
+                                  format_func=lambda x: f"{fully_compatible[x].get('icon', '📊')} {x}", 
+                                  key="chart_type_select")
+    chart_buttons = {}
+    
+    for idx, (chart_name, chart_info) in enumerate(fully_compatible.items()):
+        with chart_cols[idx % len(chart_cols)]:
+            # Create a nice button/card for each chart
+            if st.button(
+                f"{chart_info['requirements']['icon']} {chart_name}",
+                use_container_width=True,
+                key=f"chart_btn_{chart_name}",
+                help=chart_info['requirements']['description']
+            ):
+                selected_chart = chart_name
+                st.session_state.cb_chart_type = chart_name
+    
+    # Display incompatible charts for reference
+    incompatible_charts = {
+        name: info for name, info in compatible_charts.items()
+        if not info["is_compatible"]
+    }
+    
+    if incompatible_charts:
+        with st.expander("ℹ️ Incompatible Chart Types (Why?)"):
+            for chart_name, chart_info in incompatible_charts.items():
+                st.write(f"- **{chart_name}**: {chart_info['reason']}")
+    
+    # Use stored chart type if no button was clicked
+    if st.session_state.cb_chart_type and not selected_chart:
+        if st.session_state.cb_chart_type in fully_compatible:
+            selected_chart = st.session_state.cb_chart_type
+    
+    # ─────────────────────────────────────────────────────────────────────
+    # STEP 6: Generate Chart
+    # ─────────────────────────────────────────────────────────────────────
+    if selected_chart or st.session_state.cb_chart_type in fully_compatible:
+        chart_type = selected_chart or st.session_state.cb_chart_type
+        
+        st.markdown("---")
+        st.subheader(f"📊 {chart_type}")
+        
+        try:
+            # Initialize chart builder
+            builder = ChartBuilder(working_df)
+            
+            # Create the appropriate chart
+            if chart_type == "Scatter Plot":
+                fig = builder.create_scatter_plot(
+                    x_col=x_element,
+                    y_col=st.session_state.cb_y_element,
+                    color_col=None,
+                    title=f"{x_element} vs {st.session_state.cb_y_element}"
+                )
+            
+            elif chart_type == "Line Chart":
+                fig = builder.create_line_chart(
+                    x_col=x_element,
+                    y_col=st.session_state.cb_y_element,
+                    title=f"Trend of {st.session_state.cb_y_element} over {x_element}"
+                )
+            
+            elif chart_type == "Bar Chart":
+                fig = builder.create_bar_chart(
+                    x_col=x_element,
+                    y_col=st.session_state.cb_y_element,
+                    title=f"{st.session_state.cb_y_element} by {x_element}"
+                )
+            
+            elif chart_type == "Stacked Bar Chart":
+                fig = builder.create_bar_chart(
+                    x_col=x_element,
+                    y_col=st.session_state.cb_y_element,
+                    stacked=True,
+                    title=f"Stacked: {st.session_state.cb_y_element} by {x_element}"
+                )
+            
+            elif chart_type == "Histogram":
+                fig = builder.create_histogram(
+                    x_col=x_element,
+                    title=f"Distribution of {x_element}",
+                    nbins=30
+                )
+            
+            elif chart_type == "Box Plot":
+                fig = builder.create_box_plot(
+                    x_col=x_element,
+                    y_col=st.session_state.cb_y_element,
+                    title=f"Distribution of {st.session_state.cb_y_element} by {x_element}"
+                )
+            
+            elif chart_type == "Pie Chart":
+                if len(working_df[x_element].unique()) > 10:
+                    st.warning("⚠️ Pie chart works best with ≤10 categories. Showing top 10.")
+                fig = builder.create_pie_chart(
+                    x_col=x_element,
+                    y_col=st.session_state.cb_y_element,
+                    title=f"Composition: {x_element}"
+                )
+            
+            elif chart_type == "Bubble Chart":
+                st.info("💡 Bubble Chart uses the Y-axis value for bubble size")
+                fig = builder.create_bubble_chart(
+                    x_col=x_element,
+                    y_col=st.session_state.cb_y_element,
+                    size_col=st.session_state.cb_y_element,
+                    title=f"{x_element} vs {st.session_state.cb_y_element}"
+                )
+            
+            # Display the chart
+            st.plotly_chart(fig, use_container_width=True, key=f"chart_{chart_type}")
+            
+            # Display summary statistics
+            st.markdown("---")
+            st.subheader("📋 Data Summary")
+            
+            summary_cols = st.columns(4)
+            
+            with summary_cols[0]:
+                st.metric("Records Displayed", len(working_df))
+            
+            with summary_cols[1]:
+                st.metric("X-Axis Unique Values", x_info.unique_count)
+            
+            if y_info:
+                with summary_cols[2]:
+                    st.metric("Y-Axis Unique Values", y_info.unique_count)
+                with summary_cols[3]:
+                    st.metric("Complete Pairs", len(working_df[[x_element, st.session_state.cb_y_element]].dropna()))
+            else:
+                with summary_cols[2]:
+                    st.metric("Non-null Values", len(working_df[x_element].dropna()))
+        except ValueError as e:
+            st.error(f"❌ Value Error: {str(e)}")
+            st.info("💡 Tip: Make sure both axes have valid numeric values")
+        except KeyError as e:
+            st.error(f"❌ Column '{str(e)}' not found in data")
+        except Exception as e:
+            st.error(f"❌ Unexpected error: {str(e)}")
+            with st.expander("Error details"):
+                st.exception(e)
+    else:
+        st.info("👈 Select a chart type above to generate your visualization")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: ADMIN - IMPORT DATA
@@ -1083,7 +2548,8 @@ elif page == "⚙️ Admin: Import Data":
 
     st.info("""
     Upload the RE Fraternity Master Excel file (the 'All' tab will be used).
-    The importer reads:
+    The app now reads the workbook directly from the configured Excel source on each refresh, so this import page is optional.
+    The importer still reads:
     - Header row 3, data from row 4 onward
     - Personnel demographics & employment info
     - Competency scores (B1-B12, K1-K5, P1-P5, E1-E2) + targets (R-...) + gaps (G--...)
@@ -1166,7 +2632,6 @@ elif page == "⚙️ Admin: Import Data":
         else:
             st.session_state.confirm_reset = True
             st.warning("Click again to confirm reset. This deletes ALL data permanently.")
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: ADMIN - PERSONNEL CRUD
@@ -1271,7 +2736,6 @@ elif page == "⚙️ Admin: Personnel CRUD":
                 else:
                     st.error(msg)
 
-
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: ADMIN - ASSESSMENT ENTRY
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1341,7 +2805,6 @@ elif page == "⚙️ Admin: Assessment Entry":
             else:
                 session.close()
                 st.error(msg)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 st.sidebar.markdown("---")

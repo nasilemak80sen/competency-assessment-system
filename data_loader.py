@@ -12,6 +12,7 @@ import re
 import pandas as pd
 import numpy as np
 import openpyxl
+import data_loader
 from datetime import date
 from config import SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET
 
