@@ -513,10 +513,10 @@ tech_labels = st.session_state.tech_labels
 # SIDEBAR NAVIGATION
 # ─────────────────────────────────────────────────────────────────────────────
 st.sidebar.title("📊 " + APP_TITLE)
-page = st.sidebar.radio("Navigate", [
+page = st.sidebar.radio("User Menu", [
     "🏠 Dashboard Home",
     "🌡️ Competency Heatmap",
-    "🔍 Individual Assessment",
+    "👤 Individual Assessment & Talent Profile",
     "🎯 Readiness & Gaps",
     "📊 Chart Builder & Depth Analysis",
     "⚙️ Admin: Import Data",
@@ -587,22 +587,90 @@ if page == "🏠 Dashboard Home":
         st.plotly_chart(fig, use_container_width=True)
 
     col3, col4 = st.columns(2)
+
+    # =====================================================
+    # SECTION NAME DISTRIBUTION
+    # =====================================================
     with col3:
-        st.subheader("🌏Section Name")
-        section = df["Section Name"].value_counts().reset_index()
+        st.subheader("🌏 Section Distribution")
+
+        section = (
+            df["Section Name"]
+            .value_counts()
+            .reset_index()
+        )
+
         section.columns = ["Section Name", "Count"]
-        fig = px.pie(section, names="Section Name", values="Count", hole=0.1,
-                     color_discrete_sequence=px.colors.sequential.Viridis)
-        fig.update_layout(height=400)
+
+        # Sort descending
+        section = section.sort_values("Count", ascending=True)
+
+        fig = px.bar(
+            section,
+            x="Count",
+            y="Section Name",
+            orientation="h",
+            text="Count",
+            color="Count",
+            color_continuous_scale="Viridis",
+        )
+
+        fig.update_traces(
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>"
+        )
+
+        fig.update_layout(
+            height=500,
+            showlegend=False,
+            coloraxis_showscale=False,
+            margin=dict(l=10, r=20, t=40, b=20),
+            xaxis_title="Number of Personnel",
+            yaxis_title="",
+        )
+
         st.plotly_chart(fig, use_container_width=True)
 
-    with col4 :
-        st.subheader("🌏Current Assignment Distribution")
-        assignment = df["Current Assignment / Loc:"].value_counts().reset_index()
-        assignment.columns = ["Current Assignment / Loc:", "Count"]
-        fig = px.pie(assignment, names="Current Assignment / Loc:", values="Count", hole=0.4,
-                             color_discrete_sequence=px.colors.sequential.Viridis)
-        fig.update_layout(height=400)
+    # =====================================================
+    # CURRENT ASSIGNMENT DISTRIBUTION
+    # =====================================================
+    with col4:
+        st.subheader("🌏 Current Assignment Distribution")
+
+        assignment = df["Current Assignment / Loc:"].value_counts()
+
+        top10 = assignment.head(10)
+        others = assignment.iloc[10:].sum()
+
+        assignment = pd.concat([ top10,  pd.Series({"Others": others}) ]).reset_index()
+        assignment.columns = ["Current Assignment", "Count"]
+
+        assignment = assignment.sort_values("Count", ascending=True)
+
+        fig = px.bar(
+            assignment,
+            x="Count",
+            y="Current Assignment",
+            orientation="h",
+            text="Count",
+            color="Count",
+            color_continuous_scale="Viridis",
+        )
+
+        fig.update_traces(
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>"
+        )
+
+        fig.update_layout(
+            height=500,
+            showlegend=False,
+            coloraxis_showscale=False,
+            margin=dict(l=10, r=20, t=40, b=20),
+            xaxis_title="Number of Personnel",
+            yaxis_title="",
+        )
+
         st.plotly_chart(fig, use_container_width=True)
  
     st.markdown("---")
@@ -698,23 +766,8 @@ if page == "🏠 Dashboard Home":
     # =========================================================================
     # ROW 3: ADDITIONAL INSIGHTS (Optional)
     # =========================================================================
-    st.subheader("📊 Assessment Metrics by Category")
     
-    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
-    
-    # Calculate category averages
-    base_avg = df[[c for c in SCORE_COLS if c.startswith("B")]].mean().mean() if any(c in df.columns for c in [f"B{i}" for i in range(1, 13)]) else 0
-    knowledge_avg = df[[c for c in SCORE_COLS if c.startswith("K")]].mean().mean() if any(c in df.columns for c in [f"K{i}" for i in range(1, 6)]) else 0
-    pacing_avg = df[[c for c in SCORE_COLS if c.startswith("P") and not c.startswith("P") or (isinstance(c, str) and c[0]=="P" and len(c)==2)]].mean().mean() if any(c in df.columns for c in [f"P{i}" for i in range(1, 6)]) else 0
-    
-    with metrics_col1:
-        st.metric("Avg Base Competency Score", f"{base_avg:.2f}" if base_avg > 0 else "N/A")
-    
-    with metrics_col2:
-        st.metric("Avg Knowledge Score", f"{knowledge_avg:.2f}" if knowledge_avg > 0 else "N/A")
-    
-    with metrics_col3:
-        st.metric("Avg Pacing Score", f"{pacing_avg:.2f}" if pacing_avg > 0 else "N/A")
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: PERSONNEL DIRECTORY
@@ -1770,7 +1823,6 @@ elif page == "🔍 Individual Assessment":
     from data_loader import load_master_data, load_ruler_and_tech_mapping
     from datetime import datetime
 
-    st.title("🔍 Individual Assessment")
     st.markdown("---")
 
     # Assume these backend modules exist in your environment
@@ -1899,7 +1951,7 @@ elif page == "🔍 Individual Assessment":
     # PAGE SETUP (Code #2 Layout)
     # =========================================================================
 
-    st.title("👤 Individual Assessment & Development Profile")
+    st.title("👤 Individual Assessment & Talent Profile")
     st.markdown("---")
 
     # Personnel Selection (Code #2 Layout)
