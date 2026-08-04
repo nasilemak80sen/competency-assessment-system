@@ -333,6 +333,164 @@ def load_ruler_and_mappings():
     r_map, t_labels = data_loader.load_ruler_and_tech_mapping(EXCEL_PATH)
     return r_map, config.COMPETENCY_FULLNAMES
 
+def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_assessment_report.pdf"):
+    """Create a PDF report for the selected competency assessment."""
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    if not isinstance(metrics, (tuple, list)) or len(metrics) < 2:
+        strict_readiness = 0.0
+        weighted_readiness = 0.0
+        category_readiness = {}
+    else:
+        strict_readiness = float(metrics[0]) if metrics[0] is not None else 0.0
+        weighted_readiness = float(metrics[1]) if metrics[1] is not None else 0.0
+        category_readiness = metrics[2] if len(metrics) > 2 else {}
+
+    if df_gap is None:
+        df_gap = pd.DataFrame(columns=["Status"])
+
+    pdf_buffer = BytesIO()
+    document = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=landscape(A4),
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    elements = []
+
+    employee_name = person_row.get("Name") or "Not Available"
+    staff_id = person_row.get("Staff ID") or "Not Available"
+    current_sg = person_row.get("SG") or "Not Available"
+    staff_position = person_row.get("Staff Position") or "Not Available"
+    department = person_row.get("Department") or "Not Available"
+    ruler_type = person_row.get("Ruler Type") or "Not Available"
+
+    elements.append(Paragraph("Individual Competency Assessment Report", styles["Title"]))
+    elements.append(Spacer(1, 8))
+
+    personnel_data = [
+        ["Employee", str(employee_name), "Staff ID", str(staff_id)],
+        ["Position", str(staff_position), "Current Grade", str(current_sg)],
+        ["Department", str(department), "Target Grade", str(target_sg)],
+        ["Career Ruler", str(ruler_type), "Report Date", datetime.now().strftime("%d %b %Y")],
+    ]
+
+    personnel_table = Table(personnel_data, colWidths=[32 * mm, 70 * mm, 32 * mm, 70 * mm])
+    personnel_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#00A19C")),
+                ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#00A19C")),
+                ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
+                ("TEXTCOLOR", (2, 0), (2, -1), colors.white),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    elements.append(personnel_table)
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph("Readiness Summary", styles["Heading2"]))
+
+    met_count = int((df_gap["Status"] == "✅ Met").sum()) if "Status" in df_gap.columns else 0
+    minor_count = int((df_gap["Status"] == "🟡 Minor Gap").sum()) if "Status" in df_gap.columns else 0
+    major_count = int((df_gap["Status"] == "🔴 Major Gap").sum()) if "Status" in df_gap.columns else 0
+    unassessed_count = int((df_gap["Status"] == "Not Assessed").sum()) if "Status" in df_gap.columns else 0
+
+    readiness_data = [
+        ["Weighted Readiness", "Strict Readiness", "Met", "Minor Gaps", "Major Gaps", "Not Assessed"],
+        [f"{weighted_readiness:.1f}%", f"{strict_readiness:.1f}%", str(met_count), str(minor_count), str(major_count), str(unassessed_count)],
+    ]
+
+    readiness_table = Table(readiness_data, repeatRows=1)
+    readiness_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    elements.append(readiness_table)
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph(f"Competency Gap Analysis to {target_sg}", styles["Heading2"]))
+
+    gap_table_data: list[list[object]] = [["Category", "Code", "Competency", "Actual", "Target", "Gap", "Status"]]
+    for _, row in df_gap.iterrows():
+        actual_value = row.get("Actual Score")
+        target_value = row.get("Target Score")
+        gap_value = row.get("Gap")
+
+        actual_display = str(int(round(float(actual_value)))) if pd.notna(actual_value) else "-"
+        target_display = str(int(round(float(target_value)))) if pd.notna(target_value) else "-"
+        gap_display = str(int(round(float(gap_value)))) if pd.notna(gap_value) else "-"
+
+        gap_table_data.append(
+            [
+                str(row.get("Category", "")),
+                str(row.get("Competency Code", "")),
+                Paragraph(str(row.get("Competency Name", "")), styles["BodyText"]),
+                actual_display,
+                target_display,
+                gap_display,
+                str(row.get("Status", "")),
+            ]
+        )
+
+    gap_table = Table(gap_table_data, repeatRows=1, colWidths=[25 * mm, 16 * mm, 90 * mm, 18 * mm, 18 * mm, 18 * mm, 30 * mm])
+    gap_table_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003D5C")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (1, -1), "CENTER"),
+        ("ALIGN", (3, 1), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+        ("PADDING", (0, 0), (-1, -1), 4),
+    ]
+
+    for table_row_number, (_, row) in enumerate(df_gap.iterrows(), start=1):
+        status = row.get("Status")
+        if status == "✅ Met":
+            background = colors.HexColor("#C8E6C9")
+        elif status == "🟡 Minor Gap":
+            background = colors.HexColor("#FFF9C4")
+        elif status == "🔴 Major Gap":
+            background = colors.HexColor("#FFCDD2")
+        else:
+            background = colors.HexColor("#E0E0E0")
+        gap_table_style.append(("BACKGROUND", (6, table_row_number), (6, table_row_number), background))
+
+    gap_table.setStyle(TableStyle(gap_table_style))
+    elements.append(gap_table)
+
+    if category_readiness:
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph("Category Readiness", styles["Heading2"]))
+        summary_lines = [f"{name}: {value:.1f}%" for name, value in category_readiness.items()]
+        elements.append(Paragraph(", ".join(summary_lines), styles["BodyText"]))
+
+    document.build(elements)
+    pdf_buffer.seek(0)
+    return pdf_buffer
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. INITIALIZE SESSION STATE SAFELY
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1734,19 +1892,6 @@ elif page == "🔍 Individual Assessment":
                 
         return strict_readiness, weighted_readiness, cat_readiness
 
-    def export_to_pdf(person_row, target_sg, df_gap, metrics):
-        """PDF Export stub preserving Code #2 UI pattern."""
-        from io import BytesIO
-        from reportlab.pdfgen import canvas
-        pdf_buffer = BytesIO()
-        c = canvas.Canvas(pdf_buffer)
-        c.drawString(100, 750, f"Assessment Report: {person_row.get('Name', 'N/A')}")
-        c.drawString(100, 730, f"Target Grade: {target_sg}")
-        c.drawString(100, 710, f"Weighted Readiness: {metrics[1]:.1f}%")
-        c.save()
-        pdf_buffer.seek(0)
-        return pdf_buffer
-
     # =========================================================================
     # PAGE SETUP (Code #2 Layout)
     # =========================================================================
@@ -2106,6 +2251,7 @@ elif page == "🔍 Individual Assessment":
     # =========================================================================
     # SECTION 7 & 8: HISTORY & EXPORT (Code #2 Layout)
     # =========================================================================
+    
     st.markdown("### 📅 Assessment History & Export")
     col_hist, col_export = st.columns([0.8, 0.2])
 
@@ -2116,16 +2262,51 @@ elif page == "🔍 Individual Assessment":
         st.plotly_chart(fig_trend, use_container_width=True)
 
     with col_export:
-        if target_sg and st.button("📥 Export as PDF", use_container_width=True):
-            with st.spinner("Generating PDF..."):
-                pdf = export_to_pdf(person_row, target_sg, df_gap, (strict_readiness, weighted_readiness))
-                st.download_button(
-                    label="⬇️ Download Report",
-                    data=pdf,
-                    file_name=f"Assessment_{selected_name}_{target_sg}.pdf",
-                    mime="application/pdf"
+        with col_export:
+            if target_sg is None:
+                st.info("Select a target salary grade before exporting.")
+
+            elif df_gap.empty:
+                st.info("No assessment results are available to export.")
+
+            else:
+                # Make the employee name safe for use in file names and widget keys.
+                safe_name = re.sub(
+                    r"[^A-Za-z0-9_-]+",
+                    "_",
+                    str(selected_name).strip(),
+                ).strip("_")
+
+                metrics = (
+                    strict_readiness,
+                    weighted_readiness,
+                    cat_readiness,
                 )
-                st.success("Ready!")
+
+                try:
+                    pdf_buffer = export_to_pdf(
+                        person_row=person_row,
+                        target_sg=target_sg,
+                        df_gap=df_gap,
+                        metrics=metrics,
+                    )
+                    pdf_bytes = pdf_buffer.getvalue()
+                except Exception as exc:
+                    st.error(f"❌ PDF export failed: {exc}")
+                    pdf_bytes = None
+
+                if pdf_bytes is not None:
+                    st.download_button(
+                        label="📥 Download PDF Report",
+                        data=pdf_bytes,
+                        file_name=(
+                            f"Assessment_{safe_name}_{target_sg}_"
+                            f"{datetime.now():%Y%m%d}.pdf"
+                        ),
+                        mime="application/pdf",
+                        key=f"download_pdf_{safe_name}_{target_sg}",
+                        use_container_width=True,
+                    )
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: READINESS & GAPS
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2195,6 +2376,66 @@ elif page == "📊 Chart Builder & Depth Analysis":
     
     if df.empty:
         st.stop()
+
+    st.markdown("---")
+    st.subheader("👥 Personnel Competency Comparison")
+    st.markdown("Select 1 to 3 personnel to compare their competency profiles using radar charts.")
+
+    if "Name" in df.columns:
+        personnel_names = sorted(df["Name"].dropna().unique())
+    else:
+        personnel_names = []
+
+    selected_comparison_people = st.multiselect(
+        "Select up to 3 personnel",
+        personnel_names,
+        max_selections=3,
+        key="personnel_comparison_select",
+    )
+
+    if selected_comparison_people:
+        comparison_competencies = [col for col in SCORE_COLS if col in df.columns]
+        if comparison_competencies:
+            comparison_cols = st.columns(len(selected_comparison_people))
+            for idx, person_name in enumerate(selected_comparison_people):
+                person_row = df[df["Name"] == person_name].iloc[0]
+                values = []
+                for competency in comparison_competencies:
+                    raw_value = person_row.get(competency)
+                    try:
+                        numeric_value = float(raw_value)
+                    except (TypeError, ValueError):
+                        numeric_value = 0.0
+                    values.append(numeric_value)
+
+                fig_compare = go.Figure()
+                fig_compare.add_trace(
+                    go.Scatterpolar(
+                        r=values + [values[0]],
+                        theta=comparison_competencies + [comparison_competencies[0]],
+                        fill="toself",
+                        name=person_name,
+                        line=dict(color=PRIMARY, width=2),
+                        fillcolor=f"rgba(0, 61, 92, 0.25)",
+                    )
+                )
+                fig_compare.update_layout(
+                    title=f"{person_name}",
+                    height=320,
+                    polar=dict(
+                        radialaxis=dict(visible=True, range=[0, 5], dtick=1),
+                        bgcolor="rgba(240, 240, 240, 0.15)",
+                    ),
+                    margin=dict(l=30, r=30, t=50, b=30),
+                )
+                with comparison_cols[idx]:
+                    st.plotly_chart(fig_compare, use_container_width=True)
+        else:
+            st.info("No competency score columns are available for comparison.")
+    else:
+        st.info("Choose 1 to 3 personnel to view their competency radar profiles.")
+
+    st.markdown("---")
     
     # Initialize session state for chart builder
     if "cb_filters" not in st.session_state:
@@ -2509,25 +2750,7 @@ elif page == "📊 Chart Builder & Depth Analysis":
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{chart_type}")
             
             # Display summary statistics
-            st.markdown("---")
-            st.subheader("📋 Data Summary")
             
-            summary_cols = st.columns(4)
-            
-            with summary_cols[0]:
-                st.metric("Records Displayed", len(working_df))
-            
-            with summary_cols[1]:
-                st.metric("X-Axis Unique Values", x_info.unique_count)
-            
-            if y_info:
-                with summary_cols[2]:
-                    st.metric("Y-Axis Unique Values", y_info.unique_count)
-                with summary_cols[3]:
-                    st.metric("Complete Pairs", len(working_df[[x_element, st.session_state.cb_y_element]].dropna()))
-            else:
-                with summary_cols[2]:
-                    st.metric("Non-null Values", len(working_df[x_element].dropna()))
         except ValueError as e:
             st.error(f"❌ Value Error: {str(e)}")
             st.info("💡 Tip: Make sure both axes have valid numeric values")
