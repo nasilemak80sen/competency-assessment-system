@@ -1765,6 +1765,7 @@ elif page == "🔍 Individual Assessment":
     import re
     import analytics as an
     import db_ops as db_ops
+    import reportlab 
     from models import get_session, init_db, Personnel, Assessment
     from data_loader import load_master_data, load_ruler_and_tech_mapping
     from datetime import datetime
@@ -1927,7 +1928,7 @@ elif page == "🔍 Individual Assessment":
         with profile_col1:
             st.metric("Position / Grade", f"{person_row.get('Staff Position')} ({person_row.get('SG')})")
         with profile_col2:
-            st.metric("Department / Unit", f"{person_row.get('Department')} ({person_row.get('Sub Unit')})")
+            st.metric("Department / Unit", f"{person_row.get('Department')} ({person_row.get('Section Name')})")
         with profile_col3:
             st.metric("Current Assignment", person_row.get("Current Assignment / Loc:"))
         with profile_col4:
@@ -2133,7 +2134,7 @@ elif page == "🔍 Individual Assessment":
                 # Determine font color based on background brightness
                 # If background is light, use dark font; if dark, use light font
                 # For PETRONAS theme (#003D5C is dark), use white or light gray
-                axis_font_color = "white"  # Or use: "#F0F4F8" for light gray on dark
+                axis_font_color = "#20419a"  # Or use: "#F0F4F8" for light gray on dark
                 
                 fig_radar = go.Figure()
                 
@@ -2144,8 +2145,8 @@ elif page == "🔍 Individual Assessment":
                         theta=radar_names + [radar_names[0]], 
                         fill="toself", 
                         name="Actual", 
-                        line=dict(color=PRIMARY, width=2),  # ← Use config color
-                        fillcolor=f"rgba(0, 61, 92, 0.30)"  # ← PETRONAS blue with transparency
+                        line=dict(color="#20419A", width=2),  # ← Use config color
+                        fillcolor=f"rgba(0, 161, 156, 0.35)"  # ← PETRONAS blue with transparency
                     )
                 )
                 
@@ -2156,7 +2157,7 @@ elif page == "🔍 Individual Assessment":
                         theta=radar_names + [radar_names[0]],
                         fill="none", 
                         name=f"Target ({target_sg})", 
-                        line=dict(color="#E63946", width=2, dash="dash"),  # ← Red for contrast
+                        line=dict(color="#FF0000", width=2),  # ← Red for contrast
                     )
                 )
                 
@@ -2166,30 +2167,19 @@ elif page == "🔍 Individual Assessment":
                     height=400, 
                     showlegend=True, 
                     polar=dict(
-                        radialaxis=dict(
-                            visible=True, 
-                            range=[0, 5],
-                            dtick=1,
-                            # ← AUTOMATED: Font adapts to background
-                            tickfont=dict(
-                                size=11,
-                                color=axis_font_color,  # Dynamic color
-                                family="Arial"
+                        radialaxis=dict( visible=True, range=[0, 5],dtick=1, # ← AUTOMATED: Font adapts to background
+                            tickfont=dict( size=11, color=axis_font_color, family="Arial",  # Dynamic color family="Arial"
                             ),
-                            gridcolor="rgba(200, 200, 200, 0.5)",
+                            gridcolor="#2A2C2B",
                             gridwidth=1,
                             showline=True,
                             linecolor=axis_font_color,
                             linewidth=1,
                         ),
                         angularaxis=dict(
-                            tickfont=dict(
-                                size=10,
-                                color=axis_font_color,  # Dynamic color
-                                family="Arial"
-                            )
+                            tickfont=dict( size=10, color="#008564",family="Arial")
                         ),
-                        bgcolor="rgba(240, 240, 240, 0.3)"
+                        bgcolor="rgba(240, 240, 240, 0.5)"
                     ),
                 )
                 st.plotly_chart(fig_radar, use_container_width=True)
@@ -2417,8 +2407,8 @@ elif page == "📊 Chart Builder & Depth Analysis":
                         theta=comparison_competencies + [comparison_competencies[0]],
                         fill="toself",
                         name=person_name,
-                        line=dict(color=PRIMARY, width=2),
-                        fillcolor=f"rgba(0, 61, 92, 0.25)",
+                        line=dict(color="#00a19c", width=2),
+                        fillcolor=f"rgba(0, 161, 156, 0.35)",
                     )
                 )
                 fig_compare.update_layout(
