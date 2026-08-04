@@ -1897,7 +1897,7 @@ elif page == "🔍 Individual Assessment":
     # =========================================================================
     # PAGE SETUP (Code #2 Layout)
     # =========================================================================
-    st.set_page_config(layout="wide", page_title="Individual Assessment")
+
     st.title("👤 Individual Assessment & Development Profile")
     st.markdown("---")
 
