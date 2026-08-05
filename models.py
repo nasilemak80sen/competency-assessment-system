@@ -170,7 +170,7 @@ class CVDocument(Base):
 
     personnel_id = Column(
         Integer,
-        ForeignKey("personnel.name"),
+        ForeignKey("personnel.id"),
         nullable=False,
         index=True,
     )

@@ -37,6 +37,7 @@ USE_LIVE_EXCEL_SOURCE = True
 
 # ── Salary Grades (SG column in Excel) ──────────────────────────────────────
 GRADE_LABELS = {
+    "UPTREX": "UPTREX",
     "P1": "Executive Level 1",
     "P2": "Executive Level 2",
     "P3": "Senior Executive",
@@ -46,13 +47,12 @@ GRADE_LABELS = {
     "P7": "Principal",
     "P8": "Senior Principal",
     "CDH": "Custodian / Head",
-    "UPTREX": "UPTREX",
 }
 
 # Staff Position → SG mapping (from data)
 POSITION_TO_SG = {
-    "Executive": "P3",
-    "Snr RE": "P4",
+    "Senior Executive": "P3",
+    "Senior Reservoir Engineer": "P4",
     "Staff": "P5",
     "Principal": "P7",
     "Specialist": "P6",
@@ -187,12 +187,12 @@ CV_ALLOWED_FILE_TYPES = {
 
 
 # ── PETRONAS Colors ──────────────────────────────────────────────────────────
-PRIMARY   = "#003D5C"
-SECONDARY = "#00A3A3"
-SUCCESS   = "#2E7D32"
-WARNING   = "#F57C00"
+PRIMARY   = "#00a19c"
+SECONDARY = "#20419a"
+SUCCESS   = "#763f98"
+WARNING   = "#fdb924"
 DANGER    = "#C62828"
-INFO      = "#1565C0"
+INFO      = "#bfd730"
 LIGHT_BG  = "#F0F4F8"
 
 # Score color scale for heatmaps

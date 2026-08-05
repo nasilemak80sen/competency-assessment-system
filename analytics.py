@@ -131,7 +131,7 @@ def assessment_completion_by_dept(df: pd.DataFrame) -> pd.DataFrame:
 
 def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
     """Data for Age vs SG scatter, including Overall_avg for color/size."""
-    cols = ["Name", "Age", "SG", "Staff Position", "Department"]
+    cols = ["Name", "Age", "SG", "Staff Position", "Department", "Years in PET", "Overall_avg"]
     cols = [c for c in cols if c in df.columns]
     out = df[cols].copy()
     if "Overall_avg" in df.columns:

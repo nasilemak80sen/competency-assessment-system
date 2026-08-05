@@ -45,7 +45,6 @@ GRADE_POSITION_MAP = {
     for grade in grades
 }
 
-
 def grade_rank(sg_value):
     """
     Convert salary grade into a numeric rank.
@@ -70,7 +69,6 @@ def grade_rank(sg_value):
 
     return int(match.group(1))
 
-
 def normalize_ruler_type(value):
     """
     Normalise ruler names so dictionary lookups remain consistent.
@@ -91,7 +89,6 @@ def normalize_ruler_type(value):
 
     return aliases.get(normalized, normalized)
 
-
 def sort_grades(grades):
     """
     Sort salary grades numerically.
@@ -106,7 +103,6 @@ def sort_grades(grades):
         grades,
         key=lambda grade: grade_rank(grade) or 999,
     )
-
 
 def build_target_gap_dataframe(
     person_row,
@@ -192,7 +188,6 @@ def build_target_gap_dataframe(
 
     return pd.DataFrame(records)
 
-
 def calculate_readiness_metrics(gap_df):
     """
     Calculate both strict and weighted readiness.
@@ -273,15 +268,25 @@ def calculate_readiness_metrics(gap_df):
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide",
                     initial_sidebar_state="expanded")
-
-st.markdown(f"""
+st.markdown("""
 <style>
-.block-container {{ padding-top: 1.2rem; }}
-h1, h2, h3 {{ color: {PRIMARY}; }}
-.metric-box {{
-    background:#F0F4F8; border-radius:10px; padding:14px 18px;
-    border-left:5px solid {SECONDARY};
-}}
+/* Navigation buttons styling */
+div[data-testid="stHorizontalBlock"] > div:has([data-testid="stButton"]) button {
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+/* Active button styling */
+div[data-testid="stHorizontalBlock"] > div:has([data-testid="stButton"]) button:hover {
+    background-color: #00a19c;
+    color: white;
+}
+
+/* Navigation container background */
+[data-testid="stContainer"] {
+    padding: 1rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -289,12 +294,12 @@ h1, h2, h3 {{ color: {PRIMARY}; }}
 # 1. DATABASE & FILE PATH SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 import data_loader
+
 @st.cache_resource
 def get_engine():
     engine = init_db(DATABASE_URL)
     Base.metadata.create_all(engine)
     return engine
-
 engine = get_engine()
 
 if "data_version" not in st.session_state:
@@ -309,7 +314,6 @@ EXCEL_PATH = EXCEL_PATH
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. CACHED DATA LOADERS (USES YOUR DATA_LOADER.PY)
 # ─────────────────────────────────────────────────────────────────────────────
-
 def load_wide_df(_version: int) -> pd.DataFrame:
     """Load the latest personnel data directly from the Excel workbook."""
     if not USE_LIVE_EXCEL_SOURCE:
@@ -325,7 +329,6 @@ def load_wide_df(_version: int) -> pd.DataFrame:
 
     df = data_loader.load_master_data(EXCEL_PATH)
     return an.add_category_averages(df)
-
 
 def load_ruler_and_mappings():
     """Load ruler requirements and tech competency labels from Excel."""
@@ -526,6 +529,9 @@ page = st.sidebar.radio("User Menu", [
     "⚙️ Admin: Assessment Entry",
 ])
 
+from navigation import render_navigation
+page = render_navigation()
+
 df = load_wide_df(st.session_state.data_version)
 
 if df.empty and not page.startswith("⚙️ Admin: Import"):
@@ -544,26 +550,86 @@ if page == "🏠 Dashboard Home":
     stats = db_ops.get_stats_overview(session)
     session.close()
 
-        # =========================================================================
+    # =========================================================================
     # TOP METRICS ROW
     # =========================================================================
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Total Personnel", stats["total"])
-    with c2:
-        assessed = df[SCORE_COLS].notna().any(axis=1).sum() if any(c in df.columns for c in SCORE_COLS) else 0
-        st.metric("Assessed", int(assessed), f"{assessed/stats['total']*100:.0f}%" if stats['total'] else "")
-    with c3:
-        # Male count
-        male_count = (df["Gender"] == "M").sum() if "Gender" in df.columns else 0
-        st.metric("Male", int(male_count))
-    with c4:
-        # Female count
-        female_count = (df["Gender"] == "F").sum() if "Gender" in df.columns else 0
-        st.metric("Female", int(female_count))
- 
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    # Total personnel
+    total_personnel = len(df)
+    # Male personnel
+    male_count = ( df["Gender"] .astype(str) .str.strip() .str.upper() .eq("M") .sum() if "Gender" in df.columns else 0)
+    # Female personnel
+    female_count = ( df["Gender"] .astype(str) .str.strip() .str.upper() .eq("F") .sum() if "Gender" in df.columns else 0 )
+    # CDH employees
+    cdh_count = ( df["Employment Category"] .astype(str) .str.strip() .str.upper() .eq("CDH") .sum() if "Employment Category" in df.columns else 0)
+    # Permanent employees
+    permanent_count = ( df["Employment Category"] .astype(str) .str.strip() .str.upper() .eq("PERMANENT") .sum() if "Employment Category" in df.columns else 0 )
+
+    with c1: st.metric( "Total Personnel", int(total_personnel),)
+    with c2: st.metric( "Male", int(male_count), )
+    with c3: st.metric( "Female", int(female_count), )
+    with c4: st.metric( "CDH Employees", int(cdh_count),)
+    with c5: st.metric( "Permanent Employees", int(permanent_count),)
+
     st.markdown("---")
- 
+    st.subheader("📈 Age vs Salary Grade Analysis")
+
+    c1, c2, c3 = st.columns(3)
+    with c1: f_name = st.multiselect("Filter by Personnel", sorted(df["Name"].dropna().unique()), key="dash_name")
+    with c2: f_unit = st.multiselect("Filter by Unit Name", sorted(df["Unit Name"].dropna().unique()), key="dash_unit1")
+    with c3: f_pos = st.multiselect("Filter by Position", sorted(df["Staff Position"].dropna().unique()), key="dash_pos1")
+
+    tab2d, tab3d = st.tabs([ "📊 Career Distribution (2D)", "🌐 Career Progression (3D)" ])
+
+    fdf1 = df.copy()
+    if f_name: fdf1 = fdf1[fdf1["Name"].isin(f_name)]
+    if f_unit: fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
+    if f_pos: fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
+    
+    sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8","P9", "P10" ]
+            
+    scatter_df2 = an.scatter_age_vs_grade(fdf1)
+    
+    with tab2d:
+    # 2D Scatter code
+        st.info(
+            """
+            **Purpose**
+            This chart compares **Age** against **Salary Grade (SG)**.
+            It helps identify:
+            • Employees progressing faster than peers
+            • Senior employees remaining at lower grades
+            • Overall distribution of grades across age groups
+            """
+        )
+
+        fig = px.scatter(scatter_df2, x="Age", y="SG", color="Overall_avg",
+            hover_data=[ "Name", "Staff Position", "Department", "Years in PET",],
+            category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
+            color_continuous_scale="Tealgrn", title="Age vs Salary Grade")
+
+        fig.update_traces( marker=dict(size=10, opacity=0.75, line=dict(width=1,color="white") ))
+        fig.update_layout( height=700, xaxis_title="Age", yaxis_title="Salary Grade", plot_bgcolor="white")
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab3d:
+    # 3D Scatter code   
+        fig = px.scatter_3d (scatter_df2, x="Age", y="SG", z="Years in PET", color="Overall_avg",
+        hover_data=[ "Name", "Staff Position", "Department", "Years in PET", "Overall_avg"],
+        category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
+        color_continuous_scale="Tealgrn", title="Career Progression Landscape")
+    
+        fig.update_traces( marker=dict(size=5, opacity=0.75, line=dict(width=1,color="white") ))
+        fig.update_layout( height=800,scene=dict( xaxis=dict(title="Age"), 
+                                                 yaxis=dict(title="Salary Grade", tickmode="array", 
+                                                            tickvals=list(range(1, 11)), 
+                                                            ticktext=[f"P{i}" for i in range(1, 11)] ),
+                                                 zaxis=dict( title="Years in PET")))
+                
+        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("---")
     # =========================================================================
     # ROW 1: POSITION & DEPARTMENT DISTRIBUTIONS
     # =========================================================================
@@ -607,29 +673,15 @@ if page == "🏠 Dashboard Home":
         # Sort descending
         section = section.sort_values("Count", ascending=True)
 
-        fig = px.bar(
-            section,
-            x="Count",
-            y="Section Name",
-            orientation="h",
-            text="Count",
-            color="Count",
-            color_continuous_scale="Viridis",
-        )
+        fig = px.bar( section, x="Count", y="Section Name", orientation="h", 
+                     text="Count", color="Count", color_continuous_scale="Viridis",)
 
         fig.update_traces(
-            textposition="outside",
-            hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>"
-        )
+            textposition="outside", hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>")
 
         fig.update_layout(
-            height=500,
-            showlegend=False,
-            coloraxis_showscale=False,
-            margin=dict(l=10, r=20, t=40, b=20),
-            xaxis_title="Number of Personnel",
-            yaxis_title="",
-        )
+            height=500, showlegend=False, coloraxis_showscale=False, margin=dict(l=10, r=20, t=40, b=20), 
+            xaxis_title="Number of Personnel", yaxis_title="",)
 
         st.plotly_chart(fig, use_container_width=True)
 
@@ -649,30 +701,16 @@ if page == "🏠 Dashboard Home":
 
         assignment = assignment.sort_values("Count", ascending=True)
 
-        fig = px.bar(
-            assignment,
-            x="Count",
-            y="Current Assignment",
-            orientation="h",
-            text="Count",
-            color="Count",
-            color_continuous_scale="Viridis",
-        )
+        fig = px.bar( assignment, x="Count", y="Current Assignment", orientation="h",
+            text="Count", color="Count", color_continuous_scale="Viridis",)
 
         fig.update_traces(
             textposition="outside",
             hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>"
         )
 
-        fig.update_layout(
-            height=500,
-            showlegend=False,
-            coloraxis_showscale=False,
-            margin=dict(l=10, r=20, t=40, b=20),
-            xaxis_title="Number of Personnel",
-            yaxis_title="",
-        )
-
+        fig.update_layout( height=500, showlegend=False, coloraxis_showscale=False,
+                          margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Number of Personnel", yaxis_title="",)
         st.plotly_chart(fig, use_container_width=True)
  
     st.markdown("---")
@@ -733,38 +771,21 @@ if page == "🏠 Dashboard Home":
             
             # Create stacked bar chart
             fig = px.bar(
-                sg_gender.reset_index(),
-                x="SG",
-                y=["Male", "Female"],
-                barmode="stack",
-                title="",
-                labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
-                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
-            )
+                sg_gender.reset_index(),x="SG", y=["Male", "Female"],
+                barmode="stack", title="", labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
+                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"})
             
             fig.update_layout(
-                xaxis_title="Salary Grade",
-                yaxis_title="Number of Personnel",
-                height=400,
-                hovermode="x unified",
-                legend=dict(
-                    title="Gender",
-                    yanchor="top",
-                    y=0.99,
-                    xanchor="right",
-                    x=0.99
-                )
-            )
-            
+                xaxis_title="Salary Grade", yaxis_title="Number of Personnel", height=400, hovermode="x unified",
+                legend=dict( title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99)) 
             # Remove the text labels showing count (as requested)
+
             fig.update_traces(textposition=None, texttemplate=None)
-            
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Grade or Gender data not available")
  
     st.markdown("---")
- 
     # =========================================================================
     # ROW 3: ADDITIONAL INSIGHTS (Optional)
     # =========================================================================
@@ -1993,17 +2014,25 @@ elif page == "👤 Individual Assessment & Talent Profile":
         with stats_col4:
             st.metric("Length in Grade", int(person_row.get("Years in Salary Grade", 0)) if pd.notna(person_row.get("Years in Salary Grade")) else "Not Applicable")
 
-        st.markdown("### 💪🏼 Strength  & Interest")
-        st.info(f"Strength: {person_row.get('Strength')}")
-        st.info(f"Interest: {person_row.get('Interest')}")
-    
-    st.markdown("---")
+        st.markdown("### 💪🏼 Talent Profile")
+        col1, col2, col3 = st.columns(3)
 
+        with col1:
+            st.markdown("#### 💪 Strength")
+            st.success(person_row.get("Strength"))
+
+        with col2:
+            st.markdown("#### ❤️ Interest")
+            st.info(person_row.get("Interest"))
+
+        with col3:
+            st.markdown("#### 🎓 Background")
+            st.warning(person_row.get("Background"))
+
+    st.markdown("---")
     # =========================================================================
     # CV DOCUMENTS
     # =========================================================================
-
-    st.markdown("---")
     st.subheader("📄 Curriculum Vitae & Supporting Documents")
 
     personnel_id = person_row.get("id")
@@ -2592,9 +2621,6 @@ elif page == "📊 Chart Builder & Depth Analysis":
     - Show warnings if data elements aren't suitable for analysis
     - Apply filters to focus on specific data subsets
     """)
-    
-    if df.empty:
-        st.stop()
 
     st.markdown("---")
     st.subheader("👥 Personnel Competency Comparison")
@@ -3151,7 +3177,26 @@ elif page == "⚙️ Admin: Personnel CRUD":
             names = sorted(df["Name"].dropna().unique())
             sel = st.selectbox("Select person", names, key="edit_sel")
             row = df[df["Name"] == sel].iloc[0]
-            pid = int(row["id"])
+            pid = None
+            if "id" in row.index and pd.notna(row["id"]):
+                pid = int(row["id"])
+            else:
+                session = get_session(engine)
+                try:
+                    person = None
+                    staff_id = row.get("Staff ID")
+                    if staff_id is not None and not pd.isna(staff_id):
+                        person = session.query(Personnel).filter(Personnel.staff_id == str(staff_id)).first()
+                    if person is None:
+                        person = session.query(Personnel).filter(Personnel.name == row.get("Name")).first()
+                    if person:
+                        pid = person.id
+                finally:
+                    session.close()
+
+            if pid is None:
+                st.info("No database personnel ID for this person. Import data to enable editing.")
+                st.stop()
 
             with st.form("edit_form"):
                 c1, c2, c3 = st.columns(3)
@@ -3189,7 +3234,26 @@ elif page == "⚙️ Admin: Personnel CRUD":
             names = sorted(df["Name"].dropna().unique())
             sel = st.selectbox("Select person to delete", names, key="del_sel")
             row = df[df["Name"] == sel].iloc[0]
-            pid = int(row["id"])
+            pid = None
+            if "id" in row.index and pd.notna(row["id"]):
+                pid = int(row["id"])
+            else:
+                session = get_session(engine)
+                try:
+                    person = None
+                    staff_id = row.get("Staff ID")
+                    if staff_id is not None and not pd.isna(staff_id):
+                        person = session.query(Personnel).filter(Personnel.staff_id == str(staff_id)).first()
+                    if person is None:
+                        person = session.query(Personnel).filter(Personnel.name == row.get("Name")).first()
+                    if person:
+                        pid = person.id
+                finally:
+                    session.close()
+
+            if pid is None:
+                st.info("No database personnel ID for this person. Import data to enable deletion.")
+                st.stop()
 
             st.warning(f"⚠️ This will soft-delete **{sel}** (Staff ID: {row['Staff ID']})")
             if st.button("Confirm Delete", type="primary"):
@@ -3217,7 +3281,26 @@ elif page == "⚙️ Admin: Assessment Entry":
     names = sorted(df["Name"].dropna().unique())
     sel = st.selectbox("Select Personnel", names)
     row = df[df["Name"] == sel].iloc[0]
-    pid = int(row["id"])
+    pid = None
+    if "id" in row.index and pd.notna(row["id"]):
+        pid = int(row["id"])
+    else:
+        session = get_session(engine)
+        try:
+            person = None
+            staff_id = row.get("Staff ID")
+            if staff_id is not None and not pd.isna(staff_id):
+                person = session.query(Personnel).filter(Personnel.staff_id == str(staff_id)).first()
+            if person is None:
+                person = session.query(Personnel).filter(Personnel.name == row.get("Name")).first()
+            if person:
+                pid = person.id
+        finally:
+            session.close()
+
+    if pid is None:
+        st.info("No database personnel ID for this person. Import data to enable assessment entry.")
+        st.stop()
 
     st.markdown(f"**{sel}** — {row.get('Staff Position')} ({row.get('SG')}) — {row.get('Department')}")
 

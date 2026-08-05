@@ -1031,7 +1031,7 @@ def get_cv_stats(
     )
 
     return {
-        "total_personnel": total_personnel,
+        "total": total_personnel,
         "personnel_with_cv": personnel_with_cv,
         "personnel_without_cv": max(
             total_personnel - personnel_with_cv,
