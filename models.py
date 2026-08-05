@@ -69,9 +69,12 @@ class Personnel(Base):
 
     assessments     = relationship("Assessment",     back_populates="personnel", cascade="all, delete-orphan")
     summary_scores  = relationship("SummaryScore",   back_populates="personnel", cascade="all, delete-orphan")
+    cv_documents = relationship("CVDocument", back_populates="personnel", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Personnel {self.staff_id} – {self.name}>"
+
+    
 
 
 class Assessment(Base):
@@ -147,6 +150,101 @@ class SummaryScore(Base):
 
     personnel   = relationship("Personnel", back_populates="summary_scores")
 
+class CVDocument(Base):
+    """
+    One row per document discovered in the CV list worksheet.
+
+    A person can have multiple documents, such as:
+        CV
+        Resume
+        SMA Record
+        Assessment Result
+    """
+
+    __tablename__ = "cv_documents"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+    )
+
+    personnel_id = Column(
+        Integer,
+        ForeignKey("personnel.name"),
+        nullable=False,
+        index=True,
+    )
+
+    file_name = Column(
+        String(500),
+        nullable=False,
+    )
+
+    file_type = Column(
+        String(20),
+    )
+
+    cv_status = Column(
+        String(30),
+    )
+
+    local_file_path = Column(
+        Text,
+    )
+
+    local_file_url = Column(
+        Text,
+    )
+
+    sharepoint_url = Column(
+        Text,
+    )
+
+    modified_date = Column(
+        DateTime,
+    )
+
+    match_method = Column(
+        String(200),
+    )
+
+    notes = Column(
+        Text,
+    )
+
+    source_name = Column(
+        String(250),
+    )
+
+    source_staff_id = Column(
+        String(30),
+    )
+
+    source_position = Column(
+        String(100),
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+    )
+
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    personnel = relationship(
+        "Personnel",
+        back_populates="cv_documents",
+    )
+
+    def __repr__(self):
+        return (
+            f"<CVDocument personnel_id={self.personnel_id} "
+            f"file={self.file_name}>"
+        )
 
 class AuditLog(Base):
     __tablename__ = "audit_log"

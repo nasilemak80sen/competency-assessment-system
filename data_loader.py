@@ -8,13 +8,14 @@ Reads RE_Fraternity_Jul2026_Master.xlsx correctly:
 UPDATED: load_ruler_and_tech_mapping() now handles separated ruler structure
 where each row has explicit ruler_type + SG (no merging).
 """
+import os
+from urllib.parse import quote, urljoin
 import re
 import pandas as pd
 import numpy as np
 import openpyxl
-import data_loader
 from datetime import date
-from config import SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET
+from config import SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, SHAREPOINT_CV_ROOT_URL, CV_ALLOWED_FILE_TYPES
 
 
 def _normalize_summary_column_name(name: object) -> str:
@@ -545,7 +546,322 @@ def get_gap_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_req_matrix(df: pd.DataFrame) -> pd.DataFrame:
+
     """Return sub-DataFrame: Name + all requirement/target columns."""
     cols = ["Name", "Staff Position", "SG", "Department"] + \
            [c for c in REQ_COLS if c in df.columns]
     return df[cols].copy()
+
+def _clean_cv_value(value):
+    """
+    Convert blank Excel values into None and trim text values.
+    """
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(value, str):
+        value = value.strip()
+
+        if not value:
+            return None
+
+    return value
+
+
+def _normalise_staff_id(value):
+    """
+    Normalize Staff IDs read from Excel.
+
+    Examples:
+        1019423.0 -> 1019423
+        " 1019423 " -> 1019423
+    """
+    value = _clean_cv_value(value)
+
+    if value is None:
+        return None
+
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+
+    cleaned = str(value).strip()
+
+    cleaned = re.sub(
+        r"\.0$",
+        "",
+        cleaned,
+    )
+
+    return cleaned or None
+
+
+def _normalise_person_name(value):
+    """
+    Normalize names for matching only.
+
+    The original name is still retained for display.
+    """
+    value = _clean_cv_value(value)
+
+    if value is None:
+        return None
+
+    normalized = str(value).lower().strip()
+
+    replacements = {
+        "@": " ",
+        ".": " ",
+        ",": " ",
+        "'": "",
+        "-": " ",
+        "_": " ",
+        "(": " ",
+        ")": " ",
+        "&": " and ",
+    }
+
+    for old_value, new_value in replacements.items():
+        normalized = normalized.replace(
+            old_value,
+            new_value,
+        )
+
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        normalized,
+    )
+
+    return normalized.strip() or None
+
+
+def _build_sharepoint_cv_url(hyperlink_target):
+    """
+    Convert the CV-list hyperlink target into a complete
+    SharePoint HTTPS URL.
+
+    The current workbook contains relative targets such as:
+
+        Executive/Employee%20Name/CV.pdf
+    """
+    target = _clean_cv_value(
+        hyperlink_target
+    )
+
+    if target is None:
+        return None
+
+    target = str(target).strip()
+
+    # Already a complete web URL.
+    if target.lower().startswith(
+        ("https://", "http://")
+    ):
+        return target
+
+    # Do not expose file:/// links as SharePoint URLs.
+    if target.lower().startswith(
+        "file:///"
+    ):
+        return None
+
+    # Convert Windows separators in case the target uses them.
+    target = target.replace("\\", "/")
+
+    # Preserve existing %20 encoding while escaping literal spaces.
+    target = target.replace(" ", "%20")
+
+    return urljoin(
+        SHAREPOINT_CV_ROOT_URL,
+        target.lstrip("/"),
+    )
+
+
+def load_cv_list(path: str) -> pd.DataFrame:
+    """
+    Load the CV list worksheet, including actual Excel hyperlink targets.
+
+    pandas.read_excel() reads only the visible hyperlink text,
+    such as 'Open in SharePoint'. openpyxl is required to read
+    cell.hyperlink.target.
+    """
+    workbook = openpyxl.load_workbook(
+        path,
+        data_only=False,
+        read_only=False,
+    )
+
+    if CV_LIST_SHEET not in workbook.sheetnames:
+        return pd.DataFrame(
+            columns=CV_LIST_COLUMNS
+        )
+
+    worksheet = workbook[CV_LIST_SHEET]
+
+    headers = {}
+
+    for column_number in range(
+        1,
+        worksheet.max_column + 1,
+    ):
+        raw_header = worksheet.cell(
+            row=1,
+            column=column_number,
+        ).value
+
+        if raw_header is None:
+            continue
+
+        cleaned_header = str(
+            raw_header
+        ).strip()
+
+        headers[cleaned_header] = (
+            column_number
+        )
+
+    records = []
+
+    for row_number in range(
+        2,
+        worksheet.max_row + 1,
+    ):
+        record = {}
+
+        for column_name in CV_LIST_COLUMNS:
+            column_number = headers.get(
+                column_name
+            )
+
+            if column_number is None:
+                continue
+
+            record[column_name] = (
+                _clean_cv_value(
+                    worksheet.cell(
+                        row=row_number,
+                        column=column_number,
+                    ).value
+                )
+            )
+
+        # Skip completely blank rows.
+        if not any(
+            value is not None
+            for value in record.values()
+        ):
+            continue
+
+        # Extract actual hyperlink targets.
+        local_link_column = headers.get(
+            "Local File Link"
+        )
+
+        sharepoint_link_column = headers.get(
+            "SharePoint URL"
+        )
+
+        local_target = None
+        sharepoint_target = None
+
+        if local_link_column is not None:
+            local_cell = worksheet.cell(
+                row=row_number,
+                column=local_link_column,
+            )
+
+            if local_cell.hyperlink:
+                local_target = (
+                    local_cell.hyperlink.target
+                )
+
+        if sharepoint_link_column is not None:
+            sharepoint_cell = worksheet.cell(
+                row=row_number,
+                column=sharepoint_link_column,
+            )
+
+            if sharepoint_cell.hyperlink:
+                sharepoint_target = (
+                    sharepoint_cell.hyperlink.target
+                )
+
+        record["Local File Link"] = (
+            local_target
+            or record.get("Local File Path")
+        )
+
+        record["SharePoint URL"] = (
+            _build_sharepoint_cv_url(
+                sharepoint_target
+            )
+        )
+
+        record["Staff ID"] = (
+            _normalise_staff_id(
+                record.get("Staff ID")
+            )
+        )
+
+        record["Normalized Name"] = (
+            _normalise_person_name(
+                record.get("Name")
+            )
+        )
+
+        file_type = _clean_cv_value(
+            record.get("File Type")
+        )
+
+        if file_type is not None:
+            record["File Type"] = (
+                str(file_type)
+                .strip()
+                .upper()
+            )
+
+        modified_value = record.get("Modified Date")
+        modified_date = None
+        if modified_value is not None and not pd.isna(modified_value):
+            modified_date = pd.to_datetime(
+                modified_value,
+                errors="coerce",
+            )
+
+        record["Modified Date"] = (
+            None
+            if modified_date is None or pd.isna(modified_date)
+            else modified_date.to_pydatetime()
+        )
+
+        records.append(record)
+
+    cv_dataframe = pd.DataFrame(
+        records
+    )
+
+    if cv_dataframe.empty:
+        return cv_dataframe
+
+    # Keep only supported document types.
+    cv_dataframe = cv_dataframe[
+        cv_dataframe["File Type"].isin(
+            CV_ALLOWED_FILE_TYPES
+        )
+    ].copy()
+
+    # A document record must have a file name.
+    cv_dataframe = cv_dataframe[
+        cv_dataframe["CV File Name"]
+        .notna()
+    ].copy()
+
+    return cv_dataframe.reset_index(
+        drop=True
+    )
