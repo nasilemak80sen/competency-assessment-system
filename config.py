@@ -147,6 +147,45 @@ COMPETENCY_FULLNAMES = {
     "E2": "Advanced Technologies and Novel Solutions",
 }
 
+# =============================================================================
+# CV DOCUMENT CONFIGURATION
+# =============================================================================
+
+CV_LIST_SHEET = "CV list"
+
+CV_LIST_COLUMNS = [
+    "Name",
+    "Staff ID",
+    "Staff Position",
+    "CV Status",
+    "CV File Name",
+    "File Type",
+    "Local File Path",
+    "Local File Link",
+    "SharePoint URL",
+    "Modified Date",
+    "Match Method",
+    "Notes",
+]
+
+# SharePoint folder corresponding to the local:
+# Reservoir Engineering - SKG10 folder.
+#
+# Keep the trailing slash.
+SHAREPOINT_CV_ROOT_URL = (
+    "https://petronas.sharepoint.com/"
+    "teams/ts_coe_dpereservoirengineer/"
+    "Shared%20Documents/General/"
+    "RE%20Leadership%20Teams/SKG10/"
+)
+
+CV_ALLOWED_FILE_TYPES = {
+    "PDF",
+    "DOC",
+    "DOCX",
+}
+
+
 # ── PETRONAS Colors ──────────────────────────────────────────────────────────
 PRIMARY   = "#003D5C"
 SECONDARY = "#00A3A3"

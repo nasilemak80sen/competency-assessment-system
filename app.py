@@ -17,14 +17,14 @@ import data_loader
 from chart_builder import ChartBuilder, ChartCompatibility, DataElementInfo
 
 from config import (
-    APP_TITLE, DATABASE_URL, PRIMARY, SECONDARY,
+    APP_TITLE, CV_LIST_SHEET, DATABASE_URL, PRIMARY, SECONDARY,
     SCORE_COLS, REQ_COLS, GAP_COLS, COMP_TYPES,
     DEPARTMENTS, POSITIONS, CHAT_STATUS_OPTIONS, ASSESSMENT_LEVELS,
     GRADE_LABELS, HEATMAP_COLORSCALE, COMPETENCY_FULLNAMES,
-    SUMMARY_GROUPS, EXCEL_PATH, USE_LIVE_EXCEL_SOURCE,
+    SUMMARY_GROUPS, EXCEL_PATH, USE_LIVE_EXCEL_SOURCE, CV_LIST_SHEET
 )
-from models import init_db, get_session, Personnel, Assessment
-from data_loader import load_master_data, load_ruler_and_tech_mapping
+from models import Base, init_db, get_session, Personnel, Assessment
+from data_loader import load_master_data, load_ruler_and_tech_mapping, load_cv_list
 import db_ops
 import analytics as an
 # =============================================================================
@@ -291,7 +291,9 @@ h1, h2, h3 {{ color: {PRIMARY}; }}
 import data_loader
 @st.cache_resource
 def get_engine():
-    return init_db(DATABASE_URL)
+    engine = init_db(DATABASE_URL)
+    Base.metadata.create_all(engine)
+    return engine
 
 engine = get_engine()
 
@@ -767,8 +769,6 @@ if page == "🏠 Dashboard Home":
     # ROW 3: ADDITIONAL INSIGHTS (Optional)
     # =========================================================================
     
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: PERSONNEL DIRECTORY
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1807,7 +1807,7 @@ elif page == "🌡️ Competency Heatmap":
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: INDIVIDUAL ASSESSMENT
 # ═════════════════════════════════════════════════════════════════════════════
-elif page == "🔍 Individual Assessment":
+elif page == "👤 Individual Assessment & Talent Profile":
     
     import streamlit as st
     import pandas as pd
@@ -1822,7 +1822,7 @@ elif page == "🔍 Individual Assessment":
     from models import get_session, init_db, Personnel, Assessment
     from data_loader import load_master_data, load_ruler_and_tech_mapping
     from datetime import datetime
-
+    st.title("👤 Individual Assessment & Talent Profile")
     st.markdown("---")
 
     # Assume these backend modules exist in your environment
@@ -1951,25 +1951,21 @@ elif page == "🔍 Individual Assessment":
     # PAGE SETUP (Code #2 Layout)
     # =========================================================================
 
-    st.title("👤 Individual Assessment & Talent Profile")
-    st.markdown("---")
-
     # Personnel Selection (Code #2 Layout)
     if df.empty:
         st.error("No personnel data available.")
         st.stop()
 
     names = sorted(df["Name"].dropna().unique())
-    col_select, col_refresh = st.columns([0.9, 0.1])
-
+    col_select = st.columns(1)[0]
     with col_select:
         selected_name = st.selectbox("Select Personnel", names, key="personnel_select")
+        person_row = df[df["Name"] == selected_name].iloc[0]
+
+    col_refresh = st.columns(1)[0]
     with col_refresh:
-        if st.button("🔄 Refresh"):
-            st.rerun()
-
-    person_row = df[df["Name"] == selected_name].iloc[0]
-
+            if st.button("🔄 Refresh", type="secondary"):
+                st.rerun()
     # =========================================================================
     # SECTION 1: PERSONNEL PROFILE HEADER (Code #2 Card Style)
     # =========================================================================
@@ -1992,16 +1988,195 @@ elif page == "🔍 Individual Assessment":
         with stats_col2:
             st.metric("Employment Type", person_row.get("Employment Category"))
         with stats_col3:
-            st.metric("Contract Expiry", str(person_row.get("Contract Expire Date"))if pd.notna(person_row.get("Contract Expire Date")) else "Not Applicable")
+            contract_expiry = person_row.get("Contract Expire Date")
+            st.metric( "Contract Expiry Date", pd.to_datetime(contract_expiry).strftime("%d %b %Y") if contract_expiry is not None and pd.notna(contract_expiry) else "Not Applicable",)
         with stats_col4:
             st.metric("Length in Grade", int(person_row.get("Years in Salary Grade", 0)) if pd.notna(person_row.get("Years in Salary Grade")) else "Not Applicable")
 
         st.markdown("### 💪🏼 Strength  & Interest")
         st.info(f"Strength: {person_row.get('Strength')}")
         st.info(f"Interest: {person_row.get('Interest')}")
-        
+    
+    st.markdown("---")
+
+    # =========================================================================
+    # CV DOCUMENTS
+    # =========================================================================
 
     st.markdown("---")
+    st.subheader("📄 Curriculum Vitae & Supporting Documents")
+
+    personnel_id = person_row.get("id")
+
+    if personnel_id is None or pd.isna(personnel_id):
+        st.info(
+            "No database personnel ID is available "
+            "for CV retrieval."
+        )
+    else:
+        session = get_session(engine)
+
+        try:
+            cv_documents = db_ops.get_cv_documents(
+                session,
+                int(personnel_id),
+            )
+        finally:
+            session.close()
+
+        if cv_documents.empty:
+            st.info(
+                "No CV or supporting document is registered "
+                "for this personnel."
+            )
+        else:
+            # Use the most recently modified document as the primary CV.
+            primary_document = cv_documents.iloc[0]
+
+            primary_url = primary_document.get(
+                "SharePoint URL"
+            )
+
+            primary_file = primary_document.get(
+                "CV File Name"
+            )
+
+            primary_type = primary_document.get(
+                "File Type"
+            )
+
+            primary_modified_value = primary_document.get(
+                "Modified Date"
+            )
+            primary_modified = None
+            if primary_modified_value is not None and not pd.isna(
+                primary_modified_value
+            ):
+                primary_modified = pd.to_datetime(
+                    primary_modified_value,
+                    errors="coerce",
+                )
+
+            modified_display = (
+                primary_modified.strftime(
+                    "%d %b %Y"
+                )
+                if primary_modified is not None and pd.notna(primary_modified)
+                else "Date unavailable"
+            )
+
+            cv_col1, cv_col2, cv_col3 = st.columns(
+                [2, 1, 1]
+            )
+
+            with cv_col1:
+                st.metric(
+                    "Latest Document",
+                    primary_file or "CV document",
+                )
+
+            with cv_col2:
+                st.metric(
+                    "File Type",
+                    primary_type or "N/A",
+                )
+
+            with cv_col3:
+                st.metric(
+                    "Last Modified",
+                    modified_display,
+                )
+
+            if (
+                primary_url is not None
+                and pd.notna(primary_url)
+                and str(primary_url).strip()
+            ):
+                st.link_button(
+                    "📄 Open Latest Document in SharePoint",
+                    str(primary_url).strip(),
+                    use_container_width=True,
+                )
+            else:
+                st.warning(
+                    "The latest document does not have "
+                    "a valid SharePoint URL."
+                )
+
+            if len(cv_documents) > 1:
+                with st.expander(
+                    f"View all documents "
+                    f"({len(cv_documents)})"
+                ):
+                    for document_number, document in (
+                        cv_documents.iterrows()
+                    ):
+                        document_url = document.get(
+                            "SharePoint URL"
+                        )
+
+                        document_name = document.get(
+                            "CV File Name"
+                        ) or "Document"
+
+                        document_type = document.get(
+                            "File Type"
+                        ) or "Unknown"
+
+                        document_modified_value = document.get(
+                            "Modified Date"
+                        )
+                        document_modified = None
+                        if document_modified_value is not None and not pd.isna(
+                            document_modified_value
+                        ):
+                            document_modified = pd.to_datetime(
+                                document_modified_value,
+                                errors="coerce",
+                            )
+
+                        document_modified_display = (
+                            document_modified.strftime(
+                                "%d %b %Y"
+                            )
+                            if document_modified is not None and pd.notna(
+                                document_modified
+                            )
+                            else "Date unavailable"
+                        )
+
+                        item_col1, item_col2 = (
+                            st.columns([4, 1])
+                        )
+
+                        with item_col1:
+                            st.markdown(
+                                f"**{document_name}**  \n"
+                                f"{document_type} | "
+                                f"Modified "
+                                f"{document_modified_display}"
+                            )
+
+                        with item_col2:
+                            if (
+                                document_url is not None
+                                and pd.notna(document_url)
+                                and str(document_url).strip()
+                            ):
+                                st.link_button(
+                                    "Open",
+                                    str(document_url).strip(),
+                                    key=(
+                                        f"cv_link_"
+                                        f"{personnel_id}_"
+                                        f"{document.get('id')}"
+                                    ),
+                                    use_container_width=True,
+                                )
+                            else:
+                                st.caption(
+                                    "No web link"
+                                )
     # =========================================================================
     # SECTION 2: TARGET SELECTION & ENGINE (Code #1 Logic)
     # =========================================================================
@@ -2838,10 +3013,12 @@ elif page == "⚙️ Admin: Import Data":
 
             raw_df = load_master_data(tmp_path)
             ruler_map, tech_labels = load_ruler_and_tech_mapping(tmp_path)
+            cv_df = load_cv_list(tmp_path)
             st.session_state["competency_names"] = tech_labels
             st.session_state["ruler_map"] = ruler_map
             st.session_state["competency_names"] = tech_labels
             st.session_state["ruler_source_file"] = uploaded.name
+            
 
             st.success(f"✅ Loaded {len(raw_df)} personnel records from '{uploaded.name}'")
             st.info(f"Loaded {len(ruler_map)} ruler types from the workbook.")
@@ -2858,12 +3035,30 @@ elif page == "⚙️ Admin: Import Data":
                 session = get_session(engine)
                 with st.spinner("Importing... this may take a minute for 200+ records"):
                     result = db_ops.bulk_import_from_df(session, raw_df, ruler_map=ruler_map)
+                    CV_r= db_ops.bulk_import_cv_list(session, cv_df)
                 session.close()
                 st.success(f"Import complete — Added: {result['added']}, "
                           f"Updated: {result['updated']}, Errors: {result['errors']}")
+                st.success(f"CV List: Added: {CV_r['added']}, Updated: {CV_r['updated']}, Errors: {CV_r['errors']}, Unmatched: {CV_r['unmatched']}, Skipped: {CV_r['skipped']}")
+                if CV_r['unmatched'] > 0:
+                        st.warning(f"⚠️ {CV_r['unmatched']} CV records could not be matched to any personnel record. Check the Staff ID or Name in the CV list.")
                 bump_version()
                 st.cache_data.clear()
-                
+
+            st.success(
+                f"Loaded {len(raw_df)} personnel records "
+                f"from '{uploaded.name}'"
+            )
+
+            st.info(
+                f"Loaded {len(ruler_map)} ruler types."
+            )
+
+            st.info(
+                f"Loaded {len(cv_df)} CV document records "
+                f"from the '{CV_LIST_SHEET}' worksheet."
+            )
+                        
             # Clean up temp file
             if tmp_path is not None and os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -2881,10 +3076,16 @@ elif page == "⚙️ Admin: Import Data":
     session = get_session(engine)
     n_personnel = session.query(Personnel).filter_by(is_deleted=False).count()
     n_assessments = session.query(Assessment).count()
+    CVList = db_ops.get_cv_stats(session)
     session.close()
     c1, c2 = st.columns(2)
     c1.metric("Personnel Records", n_personnel)
     c2.metric("Assessment Records", n_assessments)
+
+    cv_col1, cv_col2, cv_col3 = st.columns(3)
+    cv_col1.metric("CV Records", CVList['total'])
+    cv_col2.metric("Personnel with CV", CVList['personnel_with_cv'])
+    cv_col3.metric("Personnel without CV", CVList['personnel_without_cv'])
 
     if st.button("🗑️ Reset Database (delete all data)"):
         if st.session_state.get("confirm_reset"):
