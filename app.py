@@ -7,11 +7,14 @@ from datetime import date, datetime
 import os
 import re
 import tempfile
+from pathlib import Path
+import time
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import config
 import data_loader
 from chart_builder import ChartBuilder, ChartCompatibility, DataElementInfo
@@ -30,6 +33,16 @@ import analytics as an
 # =============================================================================
 # CAREER PROGRESSION CONFIGURATION
 # =============================================================================
+
+def load_asset_text(relative_path: str) -> str:
+    """Load a text asset from the project directory."""
+    base_dir = Path(__file__).resolve().parent
+    asset_path = base_dir / relative_path
+    return asset_path.read_text(encoding="utf-8")
+
+
+PETRONAS_CSS = load_asset_text("assets/css/petronas_theme.css")
+PETRONAS_JS = load_asset_text("assets/js/petronas_theme.js")
 
 POSITION_GRADE_MAP = {
     "Executive": ["P1", "P2"],
@@ -267,28 +280,8 @@ def calculate_readiness_metrics(gap_df):
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide",
-                    initial_sidebar_state="expanded")
-st.markdown("""
-<style>
-/* Navigation buttons styling */
-div[data-testid="stHorizontalBlock"] > div:has([data-testid="stButton"]) button {
-    border-radius: 8px;
-    font-weight: 600;
-    transition: all 0.3s ease;
-}
-
-/* Active button styling */
-div[data-testid="stHorizontalBlock"] > div:has([data-testid="stButton"]) button:hover {
-    background-color: #00a19c;
-    color: white;
-}
-
-/* Navigation container background */
-[data-testid="stContainer"] {
-    padding: 1rem 0;
-}
-</style>
-""", unsafe_allow_html=True)
+                    initial_sidebar_state="collapsed", menu_items=None)
+st.markdown(f"<style>{PETRONAS_CSS}</style>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. DATABASE & FILE PATH SETUP
@@ -314,8 +307,9 @@ EXCEL_PATH = EXCEL_PATH
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. CACHED DATA LOADERS (USES YOUR DATA_LOADER.PY)
 # ─────────────────────────────────────────────────────────────────────────────
-def load_wide_df(_version: int) -> pd.DataFrame:
-    """Load the latest personnel data directly from the Excel workbook."""
+@st.cache_data(show_spinner=False)
+def _load_wide_df_cached(_version: int) -> pd.DataFrame:
+    """Cached internal loader for the wide dataframe."""
     if not USE_LIVE_EXCEL_SOURCE:
         session = get_session(engine)
         try:
@@ -330,13 +324,42 @@ def load_wide_df(_version: int) -> pd.DataFrame:
     df = data_loader.load_master_data(EXCEL_PATH)
     return an.add_category_averages(df)
 
-def load_ruler_and_mappings():
-    """Load ruler requirements and tech competency labels from Excel."""
+
+def load_wide_df(_version: int) -> pd.DataFrame:
+    """Wrapper that times the cached loader and records timings in session state."""
+    start = time.time()
+    try:
+        df = _load_wide_df_cached(_version)
+    except Exception:
+        duration = time.time() - start
+        st.session_state.setdefault("timings", {})["load_wide_df"] = duration
+        raise
+    duration = time.time() - start
+    st.session_state.setdefault("timings", {})["load_wide_df"] = duration
+    return df
+
+@st.cache_data(show_spinner=False)
+def _load_ruler_and_mappings_cached():
+    """Cached loader for ruler maps and tech labels."""
     if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
         raise FileNotFoundError(f"Excel workbook not found: {EXCEL_PATH}")
 
     r_map, t_labels = data_loader.load_ruler_and_tech_mapping(EXCEL_PATH)
     return r_map, config.COMPETENCY_FULLNAMES
+
+
+def load_ruler_and_mappings():
+    """Wrapper that times the ruler/tech mapping load and records timings."""
+    start = time.time()
+    try:
+        r_map, t_labels = _load_ruler_and_mappings_cached()
+    except Exception:
+        duration = time.time() - start
+        st.session_state.setdefault("timings", {})["ruler_map"] = duration
+        raise
+    duration = time.time() - start
+    st.session_state.setdefault("timings", {})["ruler_map"] = duration
+    return r_map, t_labels
 
 def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_assessment_report.pdf"):
     """Create a PDF report for the selected competency assessment."""
@@ -513,6 +536,29 @@ if "ruler_map" not in st.session_state or "tech_labels" not in st.session_state:
 df = st.session_state.df
 ruler_map = st.session_state.ruler_map
 tech_labels = st.session_state.tech_labels
+
+# Hide the PETRONAS loader now that initial data is loaded
+st.markdown(
+    """
+    <script>
+    (function(){
+      const l = document.getElementById('petronas-loader');
+      if(l) l.classList.add('is-hidden');
+      const s = document.getElementById('petronas-shell');
+      if(s) s.classList.add('is-hidden');
+      document.body.classList.add('petronas-ready');
+    })();
+    </script>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Display timing diagnostics in the sidebar for debugging/optimization
+timings = st.session_state.get('timings', {})
+if timings:
+    with st.sidebar.expander('Load timings (debug)'):
+        for key, val in timings.items():
+            st.write(f"- {key}: {val:.2f}s")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR NAVIGATION
