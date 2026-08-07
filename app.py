@@ -17,15 +17,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 import config
 import data_loader
+import pycountry
 from chart_builder import ChartBuilder, ChartCompatibility, DataElementInfo
 
-from config import (
-    APP_TITLE, CV_LIST_SHEET, DATABASE_URL, PRIMARY, SECONDARY,
-    SCORE_COLS, REQ_COLS, GAP_COLS, COMP_TYPES,
-    DEPARTMENTS, POSITIONS, CHAT_STATUS_OPTIONS, ASSESSMENT_LEVELS,
-    GRADE_LABELS, HEATMAP_COLORSCALE, COMPETENCY_FULLNAMES,
-    SUMMARY_GROUPS, EXCEL_PATH, USE_LIVE_EXCEL_SOURCE, CV_LIST_SHEET
-)
+from config import ( APP_TITLE, CV_LIST_SHEET, DATABASE_URL, PRIMARY, SECONDARY, SCORE_COLS, REQ_COLS, GAP_COLS, COMP_TYPES, DEPARTMENTS, POSITIONS, CHAT_STATUS_OPTIONS, ASSESSMENT_LEVELS, GRADE_LABELS, HEATMAP_COLORSCALE, COMPETENCY_FULLNAMES, SUMMARY_GROUPS, EXCEL_PATH, USE_LIVE_EXCEL_SOURCE, CV_LIST_SHEET,COUNTRY_COORDINATES,NATIONALITY_ALIASES )
 from models import Base, init_db, get_session, Personnel, Assessment
 from data_loader import load_master_data, load_ruler_and_tech_mapping, load_cv_list
 import db_ops
@@ -39,7 +34,6 @@ def load_asset_text(relative_path: str) -> str:
     base_dir = Path(__file__).resolve().parent
     asset_path = base_dir / relative_path
     return asset_path.read_text(encoding="utf-8")
-
 
 PETRONAS_CSS = load_asset_text("assets/css/petronas_theme.css")
 PETRONAS_JS = load_asset_text("assets/js/petronas_theme.js")
@@ -57,6 +51,312 @@ GRADE_POSITION_MAP = {
     for position, grades in POSITION_GRADE_MAP.items()
     for grade in grades
 }
+
+NATIONALITY_ALIASES = {
+    "UK": "United Kingdom",
+    "U.K.": "United Kingdom",
+    "England": "United Kingdom",
+    "Russia": "Russian Federation",
+    "Iran": "Iran, Islamic Republic of",
+    "Vietnam": "Viet Nam",
+    "Venezuela": "Venezuela, Bolivarian Republic of",
+    "South Korea": "Korea, Republic of",
+    "Korea": "Korea, Republic of",
+    "USA": "United States",
+    "US": "United States",
+    "U.S.": "United States",
+}
+
+def prepare_nationality_map_data(
+    personnel_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Prepare personnel nationality data for a Plotly bubble map.
+
+    Returns:
+        map_df:
+            One row per country, including personnel count and
+            representative country-centroid coordinates.
+
+        unmatched:
+            Nationality values that do not have configured coordinates.
+    """
+    required_column = "Nationality"
+
+    if (
+        personnel_df is None
+        or personnel_df.empty
+        or required_column not in personnel_df.columns
+    ):
+        return pd.DataFrame(), []
+
+    nationality_df = personnel_df[
+        [required_column]
+    ].copy()
+
+    nationality_df[required_column] = (
+        nationality_df[required_column]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    # Remove blank and invalid text values.
+    nationality_df = nationality_df[
+        ~nationality_df[required_column].str.lower().isin(
+            {
+                "",
+                "nan",
+                "none",
+                "n/a",
+                "na",
+                "not applicable",
+            }
+        )
+    ].copy()
+
+    # Handle combined nationalities such as UK/India.
+    nationality_df[required_column] = (
+        nationality_df[required_column]
+        .str.split("/")
+    )
+
+    nationality_df = nationality_df.explode(
+        required_column
+    )
+
+    nationality_df[required_column] = (
+        nationality_df[required_column]
+        .astype(str)
+        .str.strip()
+    )
+
+    # Apply aliases such as UK -> United Kingdom.
+    nationality_df[required_column] = (
+        nationality_df[required_column]
+        .replace(NATIONALITY_ALIASES)
+    )
+
+    nationality_summary = (
+        nationality_df
+        .groupby(
+            required_column,
+            as_index=False,
+        )
+        .size()
+        .rename(
+            columns={
+                "size": "Personnel Count",
+            }
+        )
+    )
+
+    nationality_summary["Latitude"] = (
+        nationality_summary[required_column]
+        .map(
+            lambda country: (
+                COUNTRY_COORDINATES.get(
+                    country,
+                    {},
+                ).get("latitude")
+            )
+        )
+    )
+
+    nationality_summary["Longitude"] = (
+        nationality_summary[required_column]
+        .map(
+            lambda country: (
+                COUNTRY_COORDINATES.get(
+                    country,
+                    {},
+                ).get("longitude")
+            )
+        )
+    )
+
+    unmatched = (
+        nationality_summary.loc[
+            nationality_summary[
+                ["Latitude", "Longitude"]
+            ].isna().any(axis=1),
+            required_column,
+        ]
+        .dropna()
+        .sort_values()
+        .unique()
+        .tolist()
+    )
+
+    map_df = (
+        nationality_summary
+        .dropna(
+            subset=[
+                "Latitude",
+                "Longitude",
+            ]
+        )
+        .sort_values(
+            "Personnel Count",
+            ascending=False,
+        )
+        .reset_index(drop=True)
+    )
+
+    total_records = map_df[
+        "Personnel Count"
+    ].sum()
+
+    if total_records > 0:
+        map_df["Representation"] = (
+            map_df["Personnel Count"]
+            / total_records
+            * 100
+        )
+    else:
+        map_df["Representation"] = 0.0
+
+    map_df["Representation Display"] = (
+        map_df["Representation"]
+        .map(lambda value: f"{value:.1f}%")
+    )
+
+    return map_df, unmatched
+
+def create_nationality_bubble_map(map_df: pd.DataFrame,):
+    """
+    Build a professional Plotly Express nationality bubble map.
+    """
+    fig = px.scatter_map(
+        map_df,
+        lat="Latitude",
+        lon="Longitude",
+        size="Personnel Count",
+        color="Personnel Count",
+        hover_name="Nationality",
+        hover_data={
+            "Latitude": False,
+            "Longitude": False,
+            "Personnel Count": True,
+            "Representation Display": True,
+        },
+        custom_data=[
+            "Nationality",
+            "Personnel Count",
+            "Representation Display",
+        ],
+        size_max=42,
+        zoom=0.7,
+        center={
+            "lat": 15,
+            "lon": 65,
+        },
+        color_continuous_scale=[
+            [0.00, "#BFD730"],
+            [0.35, "#00A19C"],
+            [0.70, "#20419A"],
+            [1.00, "#763F98"],
+        ],
+        map_style="carto-positron",
+        opacity=0.82,
+    )
+
+    fig.update_traces(
+        marker={
+            "sizemin": 7,
+        },
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "Personnel: %{customdata,.0f}<br>"
+            "Representation: %{customdata[2]}"
+            "<extra></extra>"
+        ),
+    )
+
+    fig.update_layout(
+        title={
+            "text": (""),
+            "x": 0.01,
+            "xanchor": "left",
+            "y": 0.97,
+            "yanchor": "top",
+            "font": {
+                "size": 20,
+                "color": "#20419A",
+            },
+        },
+        height=560,
+        margin={
+            "l": 0,
+            "r": 0,
+            "t": 80,
+            "b": 0,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        coloraxis_colorbar={
+            "title": {
+                "text": "Personnel",
+            },
+            "orientation": "h",
+            "x": 0.5,
+            "xanchor": "center",
+            "y": -0.03,
+            "yanchor": "top",
+            "len": 0.45,
+            "thickness": 12,
+            "tickfont": {
+                "size": 11,
+            },
+        },
+        font={
+            "family": "Arial, sans-serif",
+            "color": "#263238",
+        },
+        hoverlabel={
+            "bgcolor": "#FFFFFF",
+            "bordercolor": "#00A19C",
+            "font": {
+                "family": "Arial, sans-serif",
+                "size": 13,
+                "color": "#263238",
+            },
+        },
+    )
+
+    return fig
+
+def nationality_to_iso3(nationality):
+    """
+    Convert a nationality or country name into an ISO-3 code.
+
+    Examples:
+        Malaysia -> MYS
+        India -> IND
+        UK -> GBR
+    """
+    if nationality is None or pd.isna(nationality):
+        return None
+
+    nationality = str(nationality).strip()
+
+    if not nationality:
+        return None
+
+    nationality = NATIONALITY_ALIASES.get(
+        nationality,
+        nationality,
+    )
+
+    try:
+        country = pycountry.countries.lookup(
+            nationality
+        )
+
+        return country.alpha_3
+
+    except LookupError:
+        return None
 
 def grade_rank(sg_value):
     """
@@ -324,7 +624,6 @@ def _load_wide_df_cached(_version: int) -> pd.DataFrame:
     df = data_loader.load_master_data(EXCEL_PATH)
     return an.add_category_averages(df)
 
-
 def load_wide_df(_version: int) -> pd.DataFrame:
     """Wrapper that times the cached loader and records timings in session state."""
     start = time.time()
@@ -346,7 +645,6 @@ def _load_ruler_and_mappings_cached():
 
     r_map, t_labels = data_loader.load_ruler_and_tech_mapping(EXCEL_PATH)
     return r_map, config.COMPETENCY_FULLNAMES
-
 
 def load_ruler_and_mappings():
     """Wrapper that times the ruler/tech mapping load and records timings."""
@@ -619,68 +917,62 @@ if page == "🏠 Dashboard Home":
     with c5: st.metric( "Permanent Employees", int(permanent_count),)
 
     st.markdown("---")
-    st.subheader("📈 Age vs Salary Grade Analysis")
 
-    c1, c2, c3 = st.columns(3)
-    with c1: f_name = st.multiselect("Filter by Personnel", sorted(df["Name"].dropna().unique()), key="dash_name")
-    with c2: f_unit = st.multiselect("Filter by Unit Name", sorted(df["Unit Name"].dropna().unique()), key="dash_unit1")
-    with c3: f_pos = st.multiselect("Filter by Position", sorted(df["Staff Position"].dropna().unique()), key="dash_pos1")
+# =========================================================================
+# NATIONALITY DISTRIBUTION
+# =========================================================================
 
-    tab2d, tab3d = st.tabs([ "📊 Career Distribution (2D)", "🌐 Career Progression (3D)" ])
+    st.markdown("---")
+    st.subheader("🌏 RE Around The Globe")
+    nationality_map_df, unmatched_nationalities = (prepare_nationality_map_data(df))
 
-    fdf1 = df.copy()
-    if f_name: fdf1 = fdf1[fdf1["Name"].isin(f_name)]
-    if f_unit: fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
-    if f_pos: fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
-    
-    sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8","P9", "P10" ]
-            
-    scatter_df2 = an.scatter_age_vs_grade(fdf1)
-    
-    with tab2d:
-    # 2D Scatter code
+    if nationality_map_df.empty:
         st.info(
-            """
-            **Purpose**
-            This chart compares **Age** against **Salary Grade (SG)**.
-            It helps identify:
-            • Employees progressing faster than peers
-            • Senior employees remaining at lower grades
-            • Overall distribution of grades across age groups
-            """
+            "No valid nationality data is available "
+            "for the geographical visualization.")
+    else:
+        nationality_fig = (
+            create_nationality_bubble_map(
+                nationality_map_df))
+
+        st.plotly_chart( nationality_fig, use_container_width=True, config={
+                "displaylogo": False,
+                "scrollZoom": True,
+                "responsive": True,
+                "modeBarButtonsToRemove": [
+                    "lasso2d",
+                    "select2d",
+                ],
+                "toImageButtonOptions": {
+                    "format": "png",
+                    "filename": (
+                        "RE_personnel_nationality_map"
+                    ),
+                    "height": 800,
+                    "width": 1400,
+                    "scale": 2,
+                },
+            },
         )
 
-        fig = px.scatter(scatter_df2, x="Age", y="SG", color="Overall_avg",
-            hover_data=[ "Name", "Staff Position", "Department", "Years in PET",],
-            category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
-            color_continuous_scale="Tealgrn", title="Age vs Salary Grade")
+        st.caption(
+            "Bubble size and color represent the number of "
+            "personnel associated with each nationality. "
+            "Markers use approximate country-centroid coordinates."
+        )
 
-        fig.update_traces( marker=dict(size=10, opacity=0.75, line=dict(width=1,color="white") ))
-        fig.update_layout( height=700, xaxis_title="Age", yaxis_title="Salary Grade", plot_bgcolor="white")
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    with tab3d:
-    # 3D Scatter code   
-        fig = px.scatter_3d (scatter_df2, x="Age", y="SG", z="Years in PET", color="Overall_avg",
-        hover_data=[ "Name", "Staff Position", "Department", "Years in PET", "Overall_avg"],
-        category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
-        color_continuous_scale="Tealgrn", title="Career Progression Landscape")
+    if unmatched_nationalities:
+        with st.expander(
+            "⚠️ Nationality values requiring mapping"
+        ):
+            st.write(
+                unmatched_nationalities
+            )
     
-        fig.update_traces( marker=dict(size=5, opacity=0.75, line=dict(width=1,color="white") ))
-        fig.update_layout( height=800,scene=dict( xaxis=dict(title="Age"), 
-                                                 yaxis=dict(title="Salary Grade", tickmode="array", 
-                                                            tickvals=list(range(1, 11)), 
-                                                            ticktext=[f"P{i}" for i in range(1, 11)] ),
-                                                 zaxis=dict( title="Years in PET")))
-                
-        st.plotly_chart(fig, use_container_width=True)
-    st.markdown("---")
     # =========================================================================
     # ROW 1: POSITION & DEPARTMENT DISTRIBUTIONS
     # =========================================================================
     col1, col2 = st.columns(2)
- 
     with col1:
         st.subheader("📊 Position Distribution")
         pos = df["Staff Position"].value_counts().reset_index()
@@ -688,47 +980,121 @@ if page == "🏠 Dashboard Home":
         fig = px.bar(pos, x="Staff Position", y="Count", color="Staff Position",
                      color_discrete_sequence=px.colors.sequential.Teal,
                      labels={"Count": "Number of Personnel"})
-        fig.update_layout(showlegend=False, height=400)
+        fig.update_layout(showlegend=False, height=400, margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Staff Position", yaxis_title="Number of Personnel")
+        fig.update_traces(textposition="inside", texttemplate="%{y}",)
         st.plotly_chart(fig, use_container_width=True)
  
     with col2:
         st.subheader("🏢 Department Distribution")
+        
+        # 1. Count occurrences
         dept = df["Department"].value_counts().reset_index()
         dept.columns = ["Department", "Count"]
-        fig = px.pie(dept, names="Department", values="Count", hole=0.4,
-                     color_discrete_sequence=px.colors.sequential.RdBu)
-        fig.update_layout(height=400)
+        
+        # 2. Combine departments < 3% into "Others"
+        total_count = dept["Count"].sum()
+        threshold = 0.03  # 3% threshold
+        
+        dept["Department"] = dept.apply(
+            lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
+            axis=1
+        )
+        
+        # Regroup and sum the counts for "Others"
+        dept_grouped = dept.groupby("Department", as_index=False)["Count"].sum()
+        # use list for 'by' to satisfy type checkers that expect Sequence[str]
+        dept_grouped = dept_grouped.sort_values(by=["Count"], ascending=False)
+        
+        # 3. Create Donut Chart
+        fig = px.pie(
+            dept_grouped, 
+            names="Department", 
+            values="Count", 
+            hole=0.2,
+            color_discrete_sequence=px.colors.sequential.RdBu
+        )
+        
+        # 4. Format labels inside slices
+        fig.update_traces(
+            textposition="inside",
+            textinfo="percent+label",
+            hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Share: %{percent}"
+        )
+        
+        # 5. Clean layout & margins
+        fig.update_layout(
+            height=400,
+            margin=dict(t=20, b=20, l=10, r=10),
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.1,
+                xanchor="center",
+                x=0.5,
+                title_text=""
+            )
+        )
+        
         st.plotly_chart(fig, use_container_width=True)
-
-    col3, col4 = st.columns(2)
-
-    # =====================================================
+    #=====================================================
     # SECTION NAME DISTRIBUTION
     # =====================================================
+    col3, col4 = st.columns(2)
     with col3:
         st.subheader("🌏 Section Distribution")
-
-        section = (
-            df["Section Name"]
-            .value_counts()
-            .reset_index()
-        )
-
+        
+        section = df["Section Name"].value_counts().reset_index()
         section.columns = ["Section Name", "Count"]
-
-        # Sort descending
-        section = section.sort_values("Count", ascending=True)
-
-        fig = px.bar( section, x="Count", y="Section Name", orientation="h", 
-                     text="Count", color="Count", color_continuous_scale="Viridis",)
-
+        
+        # Consolidate < 4 into "Other"
+        threshold = 4
+        main_sections = section[section["Count"] >= threshold].copy()
+        other_sections = section[section["Count"] < threshold].copy()
+        
+        if len(other_sections) > 0:
+            other_row = pd.DataFrame({
+                "Section Name": ["Other"],
+                "Count": [other_sections["Count"].sum()]
+            })
+            section_final = pd.concat([main_sections, other_row], ignore_index=True)
+        else:
+            section_final = main_sections
+        
+        section_final = section_final.sort_values("Count", ascending=False).reset_index(drop=True)
+        section_final["y_position"] = range(len(section_final))
+        
+        fig = px.scatter(
+            section_final,
+            x="Count",
+            y="y_position",
+            size="Count",
+            color="Count",
+            hover_name="Section Name",
+            color_continuous_scale="Viridis",
+            size_max=80
+        )
+        
         fig.update_traces(
-            textposition="outside", hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>")
-
+            hovertemplate="<b>%{hovertext}</b><br>Personnel: %{x}<extra></extra>"
+        )
+        
         fig.update_layout(
-            height=500, showlegend=False, coloraxis_showscale=False, margin=dict(l=10, r=20, t=40, b=20), 
-            xaxis_title="Number of Personnel", yaxis_title="",)
-
+            height=500,
+            showlegend=False,
+            coloraxis_showscale=False,
+            margin=dict(l=10, r=20, t=40, b=20),
+            xaxis_title="Number of Personnel",
+            yaxis_title="",
+            yaxis=dict(
+                tickmode="array",
+                tickvals=list(range(len(section_final))),  # ✅ Fixed
+                ticktext=section_final["Section Name"].tolist(),  # ✅ Fixed
+                showgrid=False
+            ),
+            hovermode="closest",
+            
+        )
+        
         st.plotly_chart(fig, use_container_width=True)
 
     # =====================================================
@@ -758,14 +1124,12 @@ if page == "🏠 Dashboard Home":
         fig.update_layout( height=500, showlegend=False, coloraxis_showscale=False,
                           margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Number of Personnel", yaxis_title="",)
         st.plotly_chart(fig, use_container_width=True)
- 
-    st.markdown("---")
+   
  
     # =========================================================================
     # ROW 2: GENDER DISTRIBUTION & GRADE DISTRIBUTION
     # =========================================================================
     col3, col4 = st.columns(2)
- 
     # ─────────────────────────────────────────────────────────────────────────
     # Gender Distribution (Pie Chart)
     # ─────────────────────────────────────────────────────────────────────────
@@ -798,7 +1162,7 @@ if page == "🏠 Dashboard Home":
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Gender data not available")
- 
+    
     # ─────────────────────────────────────────────────────────────────────────
     # Grade (SG) Distribution by Gender (Stacked Bar)
     # ─────────────────────────────────────────────────────────────────────────
@@ -822,20 +1186,75 @@ if page == "🏠 Dashboard Home":
                 color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"})
             
             fig.update_layout(
+                
                 xaxis_title="Salary Grade", yaxis_title="Number of Personnel", height=400, hovermode="x unified",
                 legend=dict( title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99)) 
             # Remove the text labels showing count (as requested)
 
-            fig.update_traces(textposition=None, texttemplate=None)
+            fig.update_traces(textposition="inside", texttemplate="%{y}")
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Grade or Gender data not available")
  
-    st.markdown("---")
+        
     # =========================================================================
     # ROW 3: ADDITIONAL INSIGHTS (Optional)
     # =========================================================================
+
+    st.subheader("📈 Age vs Salary Grade Analysis")
+
+    c1, c2, c3 = st.columns(3)
+    with c1: f_name = st.multiselect("Filter by Personnel", sorted(df["Name"].dropna().unique()), key="dash_name")
+    with c2: f_unit = st.multiselect("Filter by Unit Name", sorted(df["Unit Name"].dropna().unique()), key="dash_unit1")
+    with c3: f_pos = st.multiselect("Filter by Position", sorted(df["Staff Position"].dropna().unique()), key="dash_pos1")
     
+    tab2d, tab3d = st.tabs([ "📊 Career Distribution (2D)", "🌐 Career Progression (3D)" ])
+    
+    fdf1 = df.copy()
+    if f_name: fdf1 = fdf1[fdf1["Name"].isin(f_name)]
+    if f_unit: fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
+    if f_pos: fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
+        
+    sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8","P9", "P10" ]
+                
+    scatter_df2 = an.scatter_age_vs_grade(fdf1)
+        
+    with tab2d:
+        # 2D Scatter code
+        st.info(
+                """
+                **Purpose**
+                This chart compares **Age** against **Salary Grade (SG)**.
+                It helps identify:
+                • Employees progressing faster than peers
+                • Senior employees remaining at lower grades
+                • Overall distribution of grades across age groups
+                """
+            )
+    
+        fig = px.scatter(scatter_df2, x="Age", y="SG", color="Overall_avg", 
+                         hover_data=[ "Name", "Staff Position", "Department", "Years in PET",],
+                         category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
+                         color_continuous_scale="Tealgrn", title="Age vs Salary Grade")
+        fig.update_traces( marker=dict(size=10, opacity=0.75, line=dict(width=1,color="white") ))
+        fig.update_layout( height=700, xaxis_title="Age", yaxis_title="Salary Grade", plot_bgcolor="white")
+    
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab3d:
+        # 3D Scatter code   
+        fig = px.scatter_3d (scatter_df2, x="Age", y="SG", z="Years in PET", color="Overall_avg",
+                             hover_data=[ "Name", "Staff Position", "Department", "Years in PET", "Overall_avg"],
+                             category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
+                             color_continuous_scale="Tealgrn", title="Career Progression Landscape")
+        fig.update_traces( marker=dict(size=5, opacity=0.75, line=dict(width=1,color="white") ))
+        fig.update_layout( height=800,scene=dict( xaxis=dict(title="Age"), 
+                                                 yaxis=dict(title="Salary Grade", tickmode="array", 
+                                                            tickvals=list(range(1, 11)), 
+                                                            ticktext=[f"P{i}" for i in range(1, 11)] ),
+                                                            zaxis=dict( title="Years in PET")))
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("---")
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: PERSONNEL DIRECTORY
 # ═════════════════════════════════════════════════════════════════════════════

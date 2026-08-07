@@ -148,6 +148,95 @@ COMPETENCY_FULLNAMES = {
 }
 
 # =============================================================================
+# NATIONALITY MAP CONFIGURATION
+# =============================================================================
+
+COUNTRY_COORDINATES = {
+    "Argentina": {
+        "latitude": -38.4161,
+        "longitude": -63.6167,
+    },
+    "Australia": {
+        "latitude": -25.2744,
+        "longitude": 133.7751,
+    },
+    "Canada": {
+        "latitude": 56.1304,
+        "longitude": -106.3468,
+    },
+    "Denmark": {
+        "latitude": 56.2639,
+        "longitude": 9.5018,
+    },
+    "Egypt": {
+        "latitude": 26.8206,
+        "longitude": 30.8025,
+    },
+    "France": {
+        "latitude": 46.2276,
+        "longitude": 2.2137,
+    },
+    "India": {
+        "latitude": 20.5937,
+        "longitude": 78.9629,
+    },
+    "Indonesia": {
+        "latitude": -0.7893,
+        "longitude": 113.9213,
+    },
+    "Iran": {
+        "latitude": 32.4279,
+        "longitude": 53.6880,
+    },
+    "Malaysia": {
+        "latitude": 4.2105,
+        "longitude": 101.9758,
+    },
+    "Nigeria": {
+        "latitude": 9.0820,
+        "longitude": 8.6753,
+    },
+    "Russia": {
+        "latitude": 61.5240,
+        "longitude": 105.3188,
+    },
+    "Sudan": {
+        "latitude": 12.8628,
+        "longitude": 30.2176,
+    },
+    "Turkmenistan": {
+        "latitude": 38.9697,
+        "longitude": 59.5563,
+    },
+    "United Kingdom": {
+        "latitude": 55.3781,
+        "longitude": -3.4360,
+    },
+    "Venezuela": {
+        "latitude": 6.4238,
+        "longitude": -66.5897,
+    },
+    "Vietnam": {
+        "latitude": 14.0583,
+        "longitude": 108.2772,
+    },
+}
+
+NATIONALITY_ALIASES = {
+    "UK": "United Kingdom",
+    "U.K.": "United Kingdom",
+    "England": "United Kingdom",
+    "United Kingdom/India": "United Kingdom/India",
+    "Viet Nam": "Vietnam",
+    "Russian Federation": "Russia",
+    "Iran, Islamic Republic of": "Iran",
+    "Venezuela, Bolivarian Republic of": "Venezuela",
+    "USA": "United States",
+    "US": "United States",
+    "U.S.": "United States",
+}
+
+# =============================================================================
 # CV DOCUMENT CONFIGURATION
 # =============================================================================
 
