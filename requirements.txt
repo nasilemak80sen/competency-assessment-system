@@ -5,3 +5,4 @@ plotly==6.0,<7
 openpyxl==3.1.5,<4
 SQLAlchemy==2.0.36,<3
 pycountry==24.6.1
+reportlab == 5.0.0
