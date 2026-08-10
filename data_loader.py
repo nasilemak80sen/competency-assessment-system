@@ -15,7 +15,8 @@ import pandas as pd
 import numpy as np
 import openpyxl
 from datetime import date
-from config import SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, SHAREPOINT_CV_ROOT_URL, CV_ALLOWED_FILE_TYPES
+from urllib.parse import urljoin
+from config import ( SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, CV_ALLOWED_FILE_TYPES, SHAREPOINT_CV_ROOT_URL,)
 
 
 def _normalize_summary_column_name(name: object) -> str:
@@ -38,7 +39,6 @@ def _normalize_summary_column_name(name: object) -> str:
         return f"{prefix} {suffix}"
     return normalized
 
-
 def _safe_rule_val(val):
     if val is None:
         return None
@@ -56,7 +56,6 @@ def _safe_rule_val(val):
         return float(str(val).strip())
     except (ValueError, TypeError):
         return None
-
 
 def load_master_data(path: str) -> pd.DataFrame:
     """
@@ -137,7 +136,6 @@ def load_master_data(path: str) -> pd.DataFrame:
 
     df = df.reset_index(drop=True)
     return df
-
 
 def load_ruler_and_tech_mapping(
     path: str,
@@ -530,20 +528,17 @@ def load_ruler_and_tech_mapping(
 
     return ruler_map, tech_labels
 
-
 def get_score_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """Return sub-DataFrame: Name + all B/K/P/E actual score columns."""
     cols = ["Name", "Staff Position", "SG", "Department"] + \
            [c for c in SCORE_COLS if c in df.columns]
     return df[cols].copy()
 
-
 def get_gap_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """Return sub-DataFrame: Name + all gap columns."""
     cols = ["Name", "Staff Position", "SG", "Department"] + \
            [c for c in GAP_COLS if c in df.columns]
     return df[cols].copy()
-
 
 def get_req_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
@@ -552,9 +547,11 @@ def get_req_matrix(df: pd.DataFrame) -> pd.DataFrame:
            [c for c in REQ_COLS if c in df.columns]
     return df[cols].copy()
 
-def _clean_cv_value(value):
+def _clean_value(value):
     """
-    Convert blank Excel values into None and trim text values.
+    Convert blank, missing, or placeholder values to None.
+
+    String values are stripped of surrounding whitespace.
     """
     if value is None:
         return None
@@ -566,28 +563,40 @@ def _clean_cv_value(value):
         pass
 
     if isinstance(value, str):
-        value = value.strip()
+        cleaned = value.strip()
 
-        if not value:
+        if not cleaned:
             return None
+
+        if cleaned.casefold() in {
+            "none",
+            "nan",
+            "nat",
+        }:
+            return None
+
+        return cleaned
 
     return value
 
+from urllib.parse import quote, urljoin
 
-def _normalise_staff_id(value):
-    """
-    Normalize Staff IDs read from Excel.
+import openpyxl
+import pandas as pd
 
-    Examples:
-        1019423.0 -> 1019423
-        " 1019423 " -> 1019423
+def _normalize_staff_id(value):
     """
-    value = _clean_cv_value(value)
+    Normalize Staff IDs as strings without a trailing .0.
+    """
+    value = _clean_value(value)
 
     if value is None:
         return None
 
-    if isinstance(value, float) and value.is_integer():
+    if (
+        isinstance(value, float)
+        and value.is_integer()
+    ):
         return str(int(value))
 
     cleaned = str(value).strip()
@@ -600,14 +609,13 @@ def _normalise_staff_id(value):
 
     return cleaned or None
 
-
-def _normalise_person_name(value):
+def _normalize_person_name(value):
     """
     Normalize names for matching only.
 
     The original name is still retained for display.
     """
-    value = _clean_cv_value(value)
+    value = _clean_value(value)
 
     if value is None:
         return None
@@ -640,17 +648,21 @@ def _normalise_person_name(value):
 
     return normalized.strip() or None
 
-
-def _build_sharepoint_cv_url(hyperlink_target):
+def _build_sharepoint_url(
+    hyperlink_target,
+) -> str | None:
     """
-    Convert the CV-list hyperlink target into a complete
+    Convert an Excel hyperlink target into a complete
     SharePoint HTTPS URL.
 
-    The current workbook contains relative targets such as:
+    Supports:
+        - Complete HTTP or HTTPS URLs
+        - Relative SharePoint file paths
 
-        Executive/Employee%20Name/CV.pdf
+    Rejects:
+        - Local file:/// links
     """
-    target = _clean_cv_value(
+    target = _clean_value(
         hyperlink_target
     )
 
@@ -659,209 +671,385 @@ def _build_sharepoint_cv_url(hyperlink_target):
 
     target = str(target).strip()
 
-    # Already a complete web URL.
-    if target.lower().startswith(
-        ("https://", "http://")
+    if not target:
+        return None
+
+    # Return complete web URLs unchanged.
+    if target.casefold().startswith(
+        (
+            "https://",
+            "http://",
+        )
     ):
         return target
 
-    # Do not expose file:/// links as SharePoint URLs.
-    if target.lower().startswith(
+    # Do not expose local Windows links.
+    if target.casefold().startswith(
         "file:///"
     ):
         return None
 
-    # Convert Windows separators in case the target uses them.
-    target = target.replace("\\", "/")
+    # Normalize Windows path separators.
+    target = target.replace(
+        "\\",
+        "/",
+    )
 
-    # Preserve existing %20 encoding while escaping literal spaces.
-    target = target.replace(" ", "%20")
+    # Encode literal spaces and unsafe characters while
+    # preserving URL separators and existing %20 values.
+    encoded_target = quote(
+        target,
+        safe="/:%?=&",
+    )
 
     return urljoin(
         SHAREPOINT_CV_ROOT_URL,
-        target.lstrip("/"),
+        encoded_target.lstrip("/"),
     )
 
-
-def load_cv_list(path: str) -> pd.DataFrame:
+def load_cv_list(
+    path: str,
+    verbose: bool = False,
+) -> pd.DataFrame:
     """
-    Load the CV list worksheet, including actual Excel hyperlink targets.
+    Load CV and supporting-document records from the CV list worksheet.
 
-    pandas.read_excel() reads only the visible hyperlink text,
-    such as 'Open in SharePoint'. openpyxl is required to read
-    cell.hyperlink.target.
+    The SharePoint column may visually display:
+        Open in SharePoint
+
+    The actual hyperlink is extracted from:
+        cell.hyperlink.target
     """
-    workbook = openpyxl.load_workbook(
-        path,
-        data_only=False,
-        read_only=False,
+    empty_columns = (
+        list(CV_LIST_COLUMNS)
+        + ["Normalized Name"]
     )
 
-    if CV_LIST_SHEET not in workbook.sheetnames:
-        return pd.DataFrame(
-            columns=CV_LIST_COLUMNS
+    try:
+        workbook = openpyxl.load_workbook(
+            filename=path,
+            data_only=False,
+            read_only=False,
         )
 
-    worksheet = workbook[CV_LIST_SHEET]
-
-    headers = {}
-
-    for column_number in range(
-        1,
-        worksheet.max_column + 1,
-    ):
-        raw_header = worksheet.cell(
-            row=1,
-            column=column_number,
-        ).value
-
-        if raw_header is None:
-            continue
-
-        cleaned_header = str(
-            raw_header
-        ).strip()
-
-        headers[cleaned_header] = (
-            column_number
+        actual_sheet_name = _find_sheet_name(
+            workbook,
+            CV_LIST_SHEET,
         )
 
-    records = []
+        if actual_sheet_name is None:
+            if verbose:
+                print(
+                    f"CV worksheet '{CV_LIST_SHEET}' was not found. "
+                    f"Available sheets: {workbook.sheetnames}"
+                )
 
-    for row_number in range(
-        2,
-        worksheet.max_row + 1,
-    ):
-        record = {}
-
-        for column_name in CV_LIST_COLUMNS:
-            column_number = headers.get(
-                column_name
+            return pd.DataFrame(
+                columns=empty_columns
             )
 
-            if column_number is None:
+        worksheet = workbook[
+            actual_sheet_name
+        ]
+
+        # ---------------------------------------------------------------------
+        # MAP HEADERS TO COLUMN NUMBERS
+        # ---------------------------------------------------------------------
+
+        header_map = {}
+
+        for column_number in range(
+            1,
+            worksheet.max_column + 1,
+        ):
+            header_value = worksheet.cell(
+                row=1,
+                column=column_number,
+            ).value
+
+            if header_value is None:
                 continue
 
-            record[column_name] = (
-                _clean_cv_value(
-                    worksheet.cell(
-                        row=row_number,
-                        column=column_number,
-                    ).value
-                )
+            cleaned_header = str(
+                header_value
+            ).strip()
+
+            if cleaned_header:
+                header_map[
+                    cleaned_header
+                ] = column_number
+
+        missing_required_headers = [
+            column_name
+            for column_name in [
+                "Name",
+                "CV File Name",
+                "File Type",
+                "SharePoint URL",
+            ]
+            if column_name not in header_map
+        ]
+
+        if missing_required_headers:
+            raise ValueError(
+                "The CV worksheet is missing required columns: "
+                f"{missing_required_headers}. "
+                f"Detected columns: {list(header_map.keys())}"
             )
 
-        # Skip completely blank rows.
-        if not any(
-            value is not None
-            for value in record.values()
-        ):
-            continue
+        sharepoint_column = header_map[
+            "SharePoint URL"
+        ]
 
-        # Extract actual hyperlink targets.
-        local_link_column = headers.get(
+        local_link_column = header_map.get(
             "Local File Link"
         )
 
-        sharepoint_link_column = headers.get(
-            "SharePoint URL"
-        )
+        records = []
 
-        local_target = None
-        sharepoint_target = None
+        # ---------------------------------------------------------------------
+        # LOAD DATA ROWS
+        # ---------------------------------------------------------------------
 
-        if local_link_column is not None:
-            local_cell = worksheet.cell(
-                row=row_number,
-                column=local_link_column,
-            )
+        for row_number in range(
+            2,
+            worksheet.max_row + 1,
+        ):
+            record = {
+                column_name: None
+                for column_name in CV_LIST_COLUMNS
+            }
 
-            if local_cell.hyperlink:
-                local_target = (
-                    local_cell.hyperlink.target
+            for column_name in CV_LIST_COLUMNS:
+                column_number = header_map.get(
+                    column_name
                 )
 
-        if sharepoint_link_column is not None:
-            sharepoint_cell = worksheet.cell(
-                row=row_number,
-                column=sharepoint_link_column,
+                if column_number is None:
+                    continue
+
+                cell_value = worksheet.cell(
+                    row=row_number,
+                    column=column_number,
+                ).value
+
+                record[column_name] = (
+                    _clean_value(
+                        cell_value
+                    )
+                )
+
+            # Ignore completely empty rows.
+            if not any(
+                value is not None
+                for value in record.values()
+            ):
+                continue
+
+            # A document must have a file name.
+            if not record.get("CV File Name"):
+                continue
+
+            # -----------------------------------------------------------------
+            # EXTRACT LOCAL HYPERLINK
+            # -----------------------------------------------------------------
+
+            local_target = None
+
+            if local_link_column is not None:
+                local_cell = worksheet.cell(
+                    row=row_number,
+                    column=local_link_column,
+                )
+
+                if local_cell.hyperlink is not None:
+                    local_target = (
+                        local_cell.hyperlink.target
+                    )
+
+            record["Local File Link"] = (
+                local_target
+                or record.get(
+                    "Local File Path"
+                )
             )
 
-            if sharepoint_cell.hyperlink:
+            # -----------------------------------------------------------------
+            # EXTRACT ACTUAL SHAREPOINT HYPERLINK
+            # -----------------------------------------------------------------
+
+            sharepoint_cell = worksheet.cell(
+                row=row_number,
+                column=sharepoint_column,
+            )
+
+            sharepoint_target = None
+
+            if sharepoint_cell.hyperlink is not None:
                 sharepoint_target = (
                     sharepoint_cell.hyperlink.target
                 )
 
-        record["Local File Link"] = (
-            local_target
-            or record.get("Local File Path")
-        )
-
-        record["SharePoint URL"] = (
-            _build_sharepoint_cv_url(
-                sharepoint_target
+            # Do not retain visible text such as
+            # "Open in SharePoint".
+            record["SharePoint URL"] = (
+                _build_sharepoint_url(
+                    sharepoint_target
+                )
             )
-        )
 
-        record["Staff ID"] = (
-            _normalise_staff_id(
-                record.get("Staff ID")
+            # -----------------------------------------------------------------
+            # NORMALIZE VALUES
+            # -----------------------------------------------------------------
+
+            record["Staff ID"] = (
+                _normalize_staff_id(
+                    record.get("Staff ID")
+                )
             )
-        )
 
-        record["Normalized Name"] = (
-            _normalise_person_name(
-                record.get("Name")
+            record["Normalized Name"] = (
+                _normalize_person_name(
+                    record.get("Name")
+                )
             )
-        )
 
-        file_type = _clean_cv_value(
-            record.get("File Type")
-        )
+            file_type = _clean_value(
+                record.get("File Type")
+            )
 
-        if file_type is not None:
             record["File Type"] = (
                 str(file_type)
                 .strip()
                 .upper()
+                if file_type is not None
+                else None
             )
 
-        modified_value = record.get("Modified Date")
-        modified_date = None
-        if modified_value is not None and not pd.isna(modified_value):
             modified_date = pd.to_datetime(
-                modified_value,
+                record.get("Modified Date"),
                 errors="coerce",
             )
 
-        record["Modified Date"] = (
-            None
-            if modified_date is None or pd.isna(modified_date)
-            else modified_date.to_pydatetime()
+            record["Modified Date"] = (
+                None
+                if pd.isna(modified_date)
+                else modified_date.to_pydatetime()
+            )
+
+            records.append(record)
+
+        if not records:
+            return pd.DataFrame(
+                columns=empty_columns
+            )
+
+        cv_df = pd.DataFrame(
+            records
         )
 
-        records.append(record)
+        # ---------------------------------------------------------------------
+        # FILTER AND DEDUPLICATE
+        # ---------------------------------------------------------------------
 
-    cv_dataframe = pd.DataFrame(
-        records
-    )
+        cv_df = cv_df[
+            cv_df["CV File Name"].notna()
+        ].copy()
 
-    if cv_dataframe.empty:
-        return cv_dataframe
+        cv_df = cv_df[
+            cv_df["File Type"].isin(
+                CV_ALLOWED_FILE_TYPES
+            )
+        ].copy()
 
-    # Keep only supported document types.
-    cv_dataframe = cv_dataframe[
-        cv_dataframe["File Type"].isin(
-            CV_ALLOWED_FILE_TYPES
+        # Retain multiple legitimate documents for the same employee.
+        # Remove only records representing the same exact document.
+        cv_df = cv_df.drop_duplicates(
+            subset=[
+                "Staff ID",
+                "Name",
+                "CV File Name",
+                "SharePoint URL",
+            ],
+            keep="first",
         )
-    ].copy()
 
-    # A document record must have a file name.
-    cv_dataframe = cv_dataframe[
-        cv_dataframe["CV File Name"]
-        .notna()
-    ].copy()
+        cv_df = cv_df.reset_index(
+            drop=True
+        )
 
-    return cv_dataframe.reset_index(
-        drop=True
+        # ---------------------------------------------------------------------
+        # OPTIONAL DIAGNOSTICS
+        # ---------------------------------------------------------------------
+
+        if verbose:
+            valid_url_mask = (
+                cv_df["SharePoint URL"]
+                .fillna("")
+                .astype(str)
+                .str.lower()
+                .str.startswith(
+                    (
+                        "https://",
+                        "http://",
+                    )
+                )
+            )
+
+            print(
+                f"CV worksheet: {actual_sheet_name}"
+            )
+
+            print(
+                f"CV records loaded: {len(cv_df)}"
+            )
+
+            print(
+                "Valid SharePoint URLs:",
+                int(valid_url_mask.sum()),
+            )
+
+            print(
+                "Invalid SharePoint URLs:",
+                int(
+                    (~valid_url_mask).sum()
+                ),
+            )
+
+        return cv_df
+
+    except Exception as exc:
+        print(
+            f"Error loading CV list: {exc}"
+        )
+
+        return pd.DataFrame(
+            columns=empty_columns
+        )
+    
+def _find_sheet_name(
+    workbook,
+    requested_name,
+):
+    """
+    Find an Excel worksheet using case-insensitive,
+    whitespace-normalized matching.
+    """
+    normalized_requested = (
+        str(requested_name)
+        .strip()
+        .casefold()
     )
+
+    for sheet_name in workbook.sheetnames:
+        normalized_sheet = (
+            str(sheet_name)
+            .strip()
+            .casefold()
+        )
+
+        if normalized_sheet == normalized_requested:
+            return sheet_name
+
+    return None
+

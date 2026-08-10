@@ -37,7 +37,6 @@ def _safe(val):
         return None if pd.isnull(ts) else ts.date()
     return val
 
-
 def _log(session: Session, entity_type: str, entity_id: Optional[int],
          action: str, old: dict, new: dict, by: str = "system"):
     try:
@@ -49,6 +48,7 @@ def _log(session: Session, entity_type: str, entity_id: Optional[int],
         session.commit()
     except Exception:
         pass
+
 def _normalise_matching_name(value):
     """
     Normalize personnel names for CV matching.
@@ -90,7 +90,6 @@ def _normalise_matching_name(value):
 
     return normalized.strip() or None
 
-
 def _normalise_import_staff_id(value):
     """
     Normalize Staff IDs for database matching.
@@ -116,7 +115,6 @@ def _normalise_import_staff_id(value):
     )
 
     return cleaned or None
-
 
 def _find_person_for_cv(
     session,
@@ -245,7 +243,6 @@ def _coerce_numeric(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
-
 def add_personnel(session: Session, data: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
     try:
         existing = session.query(Personnel).filter_by(staff_id=data.get("staff_id")).first()
@@ -305,7 +302,6 @@ def add_personnel(session: Session, data: Dict[str, Any]) -> Tuple[bool, str, Op
         session.rollback()
         return False, str(e), None
 
-
 def update_personnel(session: Session, pid: int, data: Dict[str, Any]) -> Tuple[bool, str]:
     try:
         p = session.query(Personnel).filter_by(id=pid).first()
@@ -323,7 +319,6 @@ def update_personnel(session: Session, pid: int, data: Dict[str, Any]) -> Tuple[
         session.rollback()
         return False, str(e)
 
-
 def delete_personnel(session: Session, pid: int) -> Tuple[bool, str]:
     try:
         p = session.query(Personnel).filter_by(id=pid).first()
@@ -338,7 +333,6 @@ def delete_personnel(session: Session, pid: int) -> Tuple[bool, str]:
         session.rollback()
         return False, str(e)
 
-
 def get_all_personnel(session: Session, include_deleted: bool = False) -> pd.DataFrame:
     """Return all personnel as DataFrame for easy display."""
     q = session.query(Personnel)
@@ -350,10 +344,8 @@ def get_all_personnel(session: Session, include_deleted: bool = False) -> pd.Dat
     df = pd.DataFrame(rows).drop(columns=["_sa_instance_state"], errors="ignore")
     return df
 
-
 def get_personnel_by_id(session: Session, pid: int) -> Optional[Personnel]:
     return session.query(Personnel).filter_by(id=pid, is_deleted=False).first()
-
 
 def search_personnel(session: Session, term: str) -> List[Personnel]:
     t = f"%{term}%"
@@ -362,6 +354,160 @@ def search_personnel(session: Session, term: str) -> List[Personnel]:
         (Personnel.name.ilike(t) | Personnel.staff_id.ilike(t))
     ).all()
 
+def _normalize_staff_id(value):
+    """
+    Normalize Staff ID values from Excel or pandas.
+    """
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    value = str(value).strip()
+
+    value = re.sub(
+        r"\.0$",
+        "",
+        value,
+    )
+
+    return value or None
+
+def _normalize_person_name(value):
+    """
+    Normalize personnel names for exact matching.
+    """
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    value = str(value).lower().strip()
+
+    replacements = {
+        ".": " ",
+        ",": " ",
+        "'": "",
+        "-": " ",
+        "_": " ",
+        "(": " ",
+        ")": " ",
+        "@": " ",
+    }
+
+    for old_value, new_value in replacements.items():
+        value = value.replace(
+            old_value,
+            new_value,
+        )
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value,
+    )
+
+    return value.strip() or None
+
+def resolve_personnel_id(
+    session,
+    database_id=None,
+    staff_id=None,
+    name=None,
+):
+    """
+    Resolve a personnel database ID.
+
+    Priority:
+        1. Existing database ID
+        2. Staff ID
+        3. Unique exact normalized-name match
+    """
+
+    # ---------------------------------------------------------------
+    # 1. DATABASE ID
+    # ---------------------------------------------------------------
+
+    if database_id is not None:
+        try:
+            if not pd.isna(database_id):
+                person = (
+                    session.query(Personnel)
+                    .filter(
+                        Personnel.id == int(database_id),
+                        Personnel.is_deleted.is_(False),
+                    )
+                    .first()
+                )
+
+                if person:
+                    return person.id
+
+        except (TypeError, ValueError):
+            pass
+
+    # ---------------------------------------------------------------
+    # 2. STAFF ID
+    # ---------------------------------------------------------------
+
+    normalized_staff_id = (
+        _normalize_staff_id(staff_id)
+    )
+
+    if normalized_staff_id:
+        person = (
+            session.query(Personnel)
+            .filter(
+                Personnel.staff_id
+                == normalized_staff_id,
+                Personnel.is_deleted.is_(False),
+            )
+            .first()
+        )
+
+        if person:
+            return person.id
+
+    # ---------------------------------------------------------------
+    # 3. EXACT NORMALIZED NAME
+    # ---------------------------------------------------------------
+
+    normalized_name = (
+        _normalize_person_name(name)
+    )
+
+    if normalized_name:
+        people = (
+            session.query(Personnel)
+            .filter(
+                Personnel.is_deleted.is_(False)
+            )
+            .all()
+        )
+
+        matches = [
+            person
+            for person in people
+            if (
+                _normalize_person_name(
+                    person.name
+                )
+                == normalized_name
+            )
+        ]
+
+        if len(matches) == 1:
+            return matches[0].id
+
+    return None
 
 # ── Assessment CRUD ───────────────────────────────────────────────────────────
 
@@ -383,7 +529,6 @@ def add_assessment(session: Session, personnel_id: int, data: Dict) -> Tuple[boo
     except Exception as e:
         session.rollback()
         return False, str(e), None
-
 
 def add_competency_scores(session: Session, assessment_id: Optional[int],
                           personnel_id: Optional[int], scores: Dict[str, Dict]) -> Tuple[bool, str]:
@@ -418,7 +563,6 @@ def add_competency_scores(session: Session, assessment_id: Optional[int],
         session.rollback()
         return False, str(e)
 
-
 def get_latest_scores(session: Session, personnel_id: int) -> pd.DataFrame:
     """Return latest assessment scores as DataFrame."""
     latest = (
@@ -433,7 +577,6 @@ def get_latest_scores(session: Session, personnel_id: int) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).drop(columns=["_sa_instance_state"], errors="ignore")
-
 
 def get_assessment_history(session: Session, personnel_id: int) -> pd.DataFrame:
     """Return all assessments for trend analysis."""
@@ -456,7 +599,6 @@ def get_assessment_history(session: Session, personnel_id: int) -> pd.DataFrame:
                 "achievement_pct": s.achievement_pct,
             })
     return pd.DataFrame(records)
-
 
 # ── Summary Score CRUD ────────────────────────────────────────────────────────
 
@@ -483,13 +625,11 @@ def upsert_summary_score(session: Session, personnel_id: Optional[int], data: Di
         session.rollback()
         return False, str(e)
 
-
 def get_all_summary_scores(session: Session) -> pd.DataFrame:
     rows = [s.__dict__ for s in session.query(SummaryScore).all()]
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).drop(columns=["_sa_instance_state"], errors="ignore")
-
 
 # ── Bulk Import from DataFrame ────────────────────────────────────────────────
 
@@ -501,7 +641,6 @@ def _normalize_key(value):
     except Exception:
         return None
     return re.sub(r"\s+", " ", s)
-
 
 def _find_ruler_requirements(ruler_map: Dict[str, Dict[str, Dict[str, Any]]], ruler_type: str, sg: str) -> Optional[Dict[str, Any]]:
     if not ruler_map or not ruler_type or not sg:
@@ -523,7 +662,6 @@ def _find_ruler_requirements(ruler_map: Dict[str, Dict[str, Dict[str, Any]]], ru
             return type_map[sg_norm.title()]
     return None
 
-
 def _build_ruler_requirements(row: pd.Series, ruler_map: Dict[str, Dict[str, Dict[str, Any]]]) -> Dict[str, Any]:
     reqs = {}
     if not ruler_map:
@@ -537,7 +675,6 @@ def _build_ruler_requirements(row: pd.Series, ruler_map: Dict[str, Dict[str, Dic
         sg = POSITION_TO_SG.get(position_key, None)
     reqs = _find_ruler_requirements(ruler_map, str(ruler_type or ""), str(sg or ""))
     return reqs or {}
-
 
 def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None) -> Dict[str, int]:
     """
@@ -701,167 +838,91 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
 
     return {"added": added, "updated": skipped, "errors": errors}
 
-def bulk_import_cv_list(
-    session,
-    cv_df: pd.DataFrame,
-) -> Dict[str, int]:
+def bulk_import_cv_list(session, cv_df):
     """
-    Import or update CV document records.
-
-    A CV document is considered the same document when the
-    personnel ID and SharePoint URL match. If no SharePoint URL
-    exists, file name is used as the fallback identity.
+    Import CV documents from DataFrame.
+    Matches to personnel by Staff ID or Name.
+    
+    Returns:
+        dict: {added, updated, errors, unmatched, skipped}
     """
-    result = {
-        "added": 0,
-        "updated": 0,
-        "skipped": 0,
-        "unmatched": 0,
-        "errors": 0,
-    }
-
-    if cv_df is None or cv_df.empty:
-        return result
-
+    from models import CVDocument, Personnel
+    from datetime import datetime
+    
+    results = {"added": 0, "updated": 0, "errors": 0, "unmatched": 0, "skipped": 0}
+    
     try:
-        for _, cv_row in cv_df.iterrows():
+        for _, row in cv_df.iterrows():
             try:
-                person, match_method = (
-                    _find_person_for_cv(
-                        session,
-                        cv_row,
-                    )
-                )
-
-                if person is None:
-                    result["unmatched"] += 1
+                name = row.get("Name", "").strip() if pd.notna(row.get("Name")) else None
+                staff_id = str(row.get("Staff ID", "")).strip() if pd.notna(row.get("Staff ID")) else None
+                cv_file_name = row.get("CV File Name", "").strip() if pd.notna(row.get("CV File Name")) else None
+                
+                if not cv_file_name:
+                    results["skipped"] += 1
                     continue
-
-                file_name = _safe(
-                    cv_row.get(
-                        "CV File Name"
-                    )
-                )
-
-                sharepoint_url = _safe(
-                    cv_row.get(
-                        "SharePoint URL"
-                    )
-                )
-
-                if not file_name:
-                    result["skipped"] += 1
+                
+                # Find personnel - try Staff ID first, then Name
+                personnel = None
+                
+                if staff_id and staff_id != "":
+                    personnel = session.query(Personnel).filter(
+                        Personnel.staff_id == staff_id,
+                        Personnel.is_deleted == False
+                    ).first()
+                
+                if not personnel and name:
+                    personnel = session.query(Personnel).filter(
+                        Personnel.name.ilike(f"%{name}%"),
+                        Personnel.is_deleted == False
+                    ).first()
+                
+                if not personnel:
+                    results["unmatched"] += 1
                     continue
-
-                existing_query = (
-                    session.query(CVDocument)
-                    .filter(
-                        CVDocument.personnel_id
-                        == person.id
-                    )
-                )
-
-                if sharepoint_url:
-                    existing = (
-                        existing_query
-                        .filter(
-                            CVDocument.sharepoint_url
-                            == sharepoint_url
-                        )
-                        .first()
-                    )
-                else:
-                    existing = (
-                        existing_query
-                        .filter(
-                            CVDocument.file_name
-                            == file_name
-                        )
-                        .first()
-                    )
-
-                document_values = {
-                    "file_name": file_name,
-                    "file_type": _safe(
-                        cv_row.get("File Type")
-                    ),
-                    "cv_status": _safe(
-                        cv_row.get("CV Status")
-                    ),
-                    "local_file_path": _safe(
-                        cv_row.get(
-                            "Local File Path"
-                        )
-                    ),
-                    "local_file_url": _safe(
-                        cv_row.get(
-                            "Local File Link"
-                        )
-                    ),
-                    "sharepoint_url":
-                        sharepoint_url,
-                    "modified_date": _safe(
-                        cv_row.get(
-                            "Modified Date"
-                        )
-                    ),
-                    "match_method": (
-                        f"{match_method}; "
-                        f"{_safe(cv_row.get('Match Method')) or ''}"
-                    ).strip("; "),
-                    "notes": _safe(
-                        cv_row.get("Notes")
-                    ),
-                    "source_name": _safe(
-                        cv_row.get("Name")
-                    ),
-                    "source_staff_id":
-                        _normalise_import_staff_id(
-                            cv_row.get("Staff ID")
-                        ),
-                    "source_position": _safe(
-                        cv_row.get(
-                            "Staff Position"
-                        )
-                    ),
-                }
-
+                
+                # Check if exists
+                existing = session.query(CVDocument).filter(
+                    CVDocument.personnel_id == personnel.id,
+                    CVDocument.cv_file_name == cv_file_name,
+                    CVDocument.is_deleted == False
+                ).first()
+                
                 if existing:
-                    for field_name, field_value in (
-                        document_values.items()
-                    ):
-                        setattr(
-                            existing,
-                            field_name,
-                            field_value,
-                        )
-
-                    existing.updated_at = (
-                        datetime.utcnow()
-                    )
-
-                    result["updated"] += 1
-
+                    # Update
+                    existing.sharepoint_url = row.get("SharePoint URL")
+                    existing.file_type = row.get("File Type")
+                    existing.modified_date = pd.to_datetime(row.get("Modified Date"), errors="coerce")
+                    existing.match_method = row.get("Match Method")
+                    existing.notes = row.get("Notes")
+                    results["updated"] += 1
                 else:
-                    document = CVDocument(
-                        personnel_id=person.id,
-                        **document_values,
+                    # Create new
+                    new_cv = CVDocument(
+                        personnel_id=personnel.id,
+                        cv_file_name=cv_file_name,
+                        file_type=row.get("File Type"),
+                        sharepoint_url=row.get("SharePoint URL"),
+                        cv_status=row.get("CV Status"),
+                        match_method=row.get("Match Method"),
+                        notes=row.get("Notes"),
+                        modified_date=pd.to_datetime(row.get("Modified Date"), errors="coerce"),
+                        is_deleted=False
                     )
-
-                    session.add(document)
-
-                    result["added"] += 1
-
-            except Exception:
-                result["errors"] += 1
-
+                    session.add(new_cv)
+                    results["added"] += 1
+            
+            except Exception as e:
+                print(f"Error: {e}")
+                results["errors"] += 1
+        
         session.commit()
-
-    except Exception:
+        return results
+    
+    except Exception as e:
         session.rollback()
-        raise
-
-    return result
+        print(f"Error in bulk import: {e}")
+        return results
 
 # ── Analytics helpers ─────────────────────────────────────────────────────────
 
@@ -885,12 +946,19 @@ def get_wide_dataframe(session: Session) -> pd.DataFrame:
             "SG": p.sg,
             "Department": p.department,
             "Section Name": p.section_name,
-            "Current Assignment / Loc:": p.current_assignment,
             "Unit Name": p.unit_name,
+            "Sub Unit": p.sub_unit,
             "Age": p.age,
             "Gender": p.gender,
-            "Chat Status": p.chat_status or "No Need",
+            "Nationality": p.nationality,
+            "Employment Category": p.employment_category,
+            "Current Assignment / Loc:": p.current_assignment,
             "Years in PET": p.years_in_pet,
+            "Years in Salary Grade": p.sg_years,
+            "Contract Expire Date": p.contract_expire_date,
+            "Strength": p.strength,
+            "Interest": p.interest,
+            "Background": p.sub_disciplines,
         }
         # latest assessment
         latest = (
@@ -944,7 +1012,6 @@ def get_wide_dataframe(session: Session) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
-
 def get_stats_overview(session: Session) -> Dict:
     total   = session.query(Personnel).filter_by(is_deleted=False).count()
     yes_cnt = session.query(Personnel).filter_by(chat_status="Yes",  is_deleted=False).count()
@@ -956,10 +1023,8 @@ def get_stats_overview(session: Session) -> Dict:
         "chat_no": no_cnt,
         "chat_no_need": nn_cnt,
     }
-def get_cv_documents(
-    session,
-    personnel_id: int,
-) -> pd.DataFrame:
+
+def get_cv_documents( session, personnel_id: int) -> pd.DataFrame:
     """
     Return all CV documents for the selected personnel.
     """
@@ -987,7 +1052,7 @@ def get_cv_documents(
                 "CV Status":
                     document.cv_status,
                 "CV File Name":
-                    document.file_name,
+                    document.cv_file_name,
                 "File Type":
                     document.file_type,
                 "SharePoint URL":
@@ -1003,9 +1068,7 @@ def get_cv_documents(
 
     return pd.DataFrame(records)
 
-def get_cv_stats(
-    session,
-) -> Dict[str, int]:
+def get_cv_stats( session,) -> Dict[str, int]:
     """
     Return CV coverage statistics.
     """

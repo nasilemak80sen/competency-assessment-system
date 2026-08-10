@@ -4,15 +4,10 @@ Tables: personnel, assessments, competency_scores, summary_scores, audit_log
 """
 
 from datetime import datetime
-from sqlalchemy import (
-    Column, Integer, String, Float, Date, DateTime,
-    Boolean, ForeignKey, Text, create_engine
-)
+from sqlalchemy import ( Column, Integer, String, Float, Date, DateTime, Boolean, ForeignKey, Text, create_engine)
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 Base = declarative_base()
-
-
 class Personnel(Base):
     __tablename__ = "personnel"
 
@@ -74,9 +69,6 @@ class Personnel(Base):
     def __repr__(self):
         return f"<Personnel {self.staff_id} – {self.name}>"
 
-    
-
-
 class Assessment(Base):
     __tablename__ = "assessments"
 
@@ -97,7 +89,6 @@ class Assessment(Base):
     def __repr__(self):
         return f"<Assessment id={self.id} personnel_id={self.personnel_id} date={self.assessment_date}>"
 
-
 class CompetencyScore(Base):
     """One row per competency per assessment (B1-E2 = 24 rows per assessment)."""
     __tablename__ = "competency_scores"
@@ -117,7 +108,6 @@ class CompetencyScore(Base):
 
     def __repr__(self):
         return f"<Score {self.competency_code} actual={self.actual_score}>"
-
 
 class SummaryScore(Base):
     """Pre-computed summary scores imported from Excel summary columns."""
@@ -147,104 +137,29 @@ class SummaryScore(Base):
 
     created_at  = Column(DateTime, default=datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
     personnel   = relationship("Personnel", back_populates="summary_scores")
-
 class CVDocument(Base):
-    """
-    One row per document discovered in the CV list worksheet.
-
-    A person can have multiple documents, such as:
-        CV
-        Resume
-        SMA Record
-        Assessment Result
-    """
-
+    """Store CV and supporting documents for personnel"""
     __tablename__ = "cv_documents"
-
-    id = Column(
-        Integer,
-        primary_key=True,
-    )
-
-    personnel_id = Column(
-        Integer,
-        ForeignKey("personnel.id"),
-        nullable=False,
-        index=True,
-    )
-
-    file_name = Column(
-        String(500),
-        nullable=False,
-    )
-
-    file_type = Column(
-        String(20),
-    )
-
-    cv_status = Column(
-        String(30),
-    )
-
-    local_file_path = Column(
-        Text,
-    )
-
-    local_file_url = Column(
-        Text,
-    )
-
-    sharepoint_url = Column(
-        Text,
-    )
-
-    modified_date = Column(
-        DateTime,
-    )
-
-    match_method = Column(
-        String(200),
-    )
-
-    notes = Column(
-        Text,
-    )
-
-    source_name = Column(
-        String(250),
-    )
-
-    source_staff_id = Column(
-        String(30),
-    )
-
-    source_position = Column(
-        String(100),
-    )
-
-    created_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-    updated_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
-
-    personnel = relationship(
-        "Personnel",
-        back_populates="cv_documents",
-    )
-
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    personnel_id = Column(Integer, ForeignKey("personnel.id"), nullable=True, index=True)
+    cv_file_name = Column(String(500), nullable=False)
+    file_type = Column(String(50), nullable=True)
+    local_file_path = Column(String(1000), nullable=True)
+    sharepoint_url = Column(String(1000), nullable=True)
+    cv_status = Column(String(100), nullable=True)
+    match_method = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    modified_date = Column(DateTime, nullable=True)
+    is_deleted = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    personnel = relationship("Personnel", back_populates="cv_documents")
+    
     def __repr__(self):
-        return (
-            f"<CVDocument personnel_id={self.personnel_id} "
-            f"file={self.file_name}>"
-        )
+        return f"<CVDocument(id={self.id}, name={self.cv_file_name})>"
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
