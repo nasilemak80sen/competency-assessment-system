@@ -235,6 +235,40 @@ NATIONALITY_ALIASES = {
     "US": "United States",
     "U.S.": "United States",
 }
+# ─────────────────────────────────────────────────────────────────────────
+# CV DOCUMENT SETTINGS
+# ─────────────────────────────────────────────────────────────────────────
+
+CV_LIST_SHEET = "CV list"  # Sheet name in Excel workbook
+
+CV_COLUMNS_MAP = {
+    "Name": "name",
+    "Staff ID": "staff_id",
+    "Staff Position": "staff_position",
+    "CV Status": "cv_status",
+    "CV File Name": "cv_file_name",
+    "File Type": "file_type",
+    "Local File Path": "local_file_path",
+    "SharePoint URL": "sharepoint_url",
+    "Modified Date": "modified_date",
+    "Match Method": "match_method",
+    "Notes": "notes",
+}
+
+VALID_URL_PREFIXES = ("https://", "http://", "file://")
+
+CV_ALLOWED_FILE_TYPES = {
+    "PDF",
+    "DOC",
+    "DOCX",
+}
+
+SHAREPOINT_CV_ROOT_URL = (
+    "https://petronas.sharepoint.com/"
+    "teams/ts_coe_dpereservoirengineer/"
+    "Shared%20Documents/General/"
+    "RE%20Leadership%20Teams/SKG10/"
+)
 
 # =============================================================================
 # CV DOCUMENT CONFIGURATION
@@ -257,22 +291,13 @@ CV_LIST_COLUMNS = [
     "Notes",
 ]
 
-# SharePoint folder corresponding to the local:
-# Reservoir Engineering - SKG10 folder.
-#
-# Keep the trailing slash.
-SHAREPOINT_CV_ROOT_URL = (
-    "https://petronas.sharepoint.com/"
-    "teams/ts_coe_dpereservoirengineer/"
-    "Shared%20Documents/General/"
-    "RE%20Leadership%20Teams/SKG10/"
-)
-
 CV_ALLOWED_FILE_TYPES = {
     "PDF",
     "DOC",
     "DOCX",
 }
+
+
 
 
 # ── PETRONAS Colors ──────────────────────────────────────────────────────────

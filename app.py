@@ -1,30 +1,96 @@
 """
-app.py – RE Fraternity Competency Assessment System v3.0
+app.py - RE Fraternity Competency Assessment System v3.0
 Run with: streamlit run app.py
 """
 
+# =============================================================================
+# STANDARD LIBRARY
+# =============================================================================
+
 from datetime import date, datetime
+from pathlib import Path
 import os
 import re
 import tempfile
-from pathlib import Path
 import time
+
+
+# =============================================================================
+# THIRD-PARTY PACKAGES
+# =============================================================================
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import pycountry
 import streamlit as st
 import streamlit.components.v1 as components
-import config
-import data_loader
-import pycountry
-from chart_builder import ChartBuilder, ChartCompatibility, DataElementInfo
 
-from config import ( APP_TITLE, CV_LIST_SHEET, DATABASE_URL, PRIMARY, SECONDARY, SCORE_COLS, REQ_COLS, GAP_COLS, COMP_TYPES, DEPARTMENTS, POSITIONS, CHAT_STATUS_OPTIONS, ASSESSMENT_LEVELS, GRADE_LABELS, HEATMAP_COLORSCALE, COMPETENCY_FULLNAMES, SUMMARY_GROUPS, EXCEL_PATH, USE_LIVE_EXCEL_SOURCE, CV_LIST_SHEET,COUNTRY_COORDINATES,NATIONALITY_ALIASES )
-from models import Base, init_db, get_session, Personnel, Assessment
-from data_loader import load_master_data, load_ruler_and_tech_mapping, load_cv_list
+
+# =============================================================================
+# APPLICATION CONFIGURATION
+# =============================================================================
+
+from config import (
+    APP_TITLE,
+    ASSESSMENT_LEVELS,
+    CHAT_STATUS_OPTIONS,
+    COMPETENCY_FULLNAMES,
+    COMP_TYPES,
+    COUNTRY_COORDINATES,
+    CV_ALLOWED_FILE_TYPES,
+    CV_COLUMNS_MAP,
+    CV_LIST_SHEET,
+    DATABASE_URL,
+    DEPARTMENTS,
+    EXCEL_PATH,
+    GAP_COLS,
+    GRADE_LABELS,
+    HEATMAP_COLORSCALE,
+    NATIONALITY_ALIASES,
+    POSITIONS,
+    PRIMARY,
+    REQ_COLS,
+    SCORE_COLS,
+    SECONDARY,
+    SUMMARY_GROUPS,
+    USE_LIVE_EXCEL_SOURCE,
+)
+
+
+# =============================================================================
+# DATABASE AND DATA ACCESS
+# =============================================================================
+
+from models import (
+    Assessment,
+    Base,
+    Personnel,
+    get_session,
+    init_db,
+)
+
+from data_loader import (
+    load_cv_list,
+    load_master_data,
+    load_ruler_and_tech_mapping,
+)
+
 import db_ops
+
+
+# =============================================================================
+# ANALYTICS AND VISUALIZATION MODULES
+# =============================================================================
+
 import analytics as an
+
+from chart_builder import (
+    ChartBuilder,
+    ChartCompatibility,
+    DataElementInfo,
+)
 # =============================================================================
 # CAREER PROGRESSION CONFIGURATION
 # =============================================================================
@@ -607,7 +673,7 @@ EXCEL_PATH = EXCEL_PATH
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. CACHED DATA LOADERS (USES YOUR DATA_LOADER.PY)
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner= True)
 def _load_wide_df_cached(_version: int) -> pd.DataFrame:
     """Cached internal loader for the wide dataframe."""
     if not USE_LIVE_EXCEL_SOURCE:
@@ -637,14 +703,14 @@ def load_wide_df(_version: int) -> pd.DataFrame:
     st.session_state.setdefault("timings", {})["load_wide_df"] = duration
     return df
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=True)
 def _load_ruler_and_mappings_cached():
     """Cached loader for ruler maps and tech labels."""
     if not EXCEL_PATH or not os.path.exists(EXCEL_PATH):
         raise FileNotFoundError(f"Excel workbook not found: {EXCEL_PATH}")
 
     r_map, t_labels = data_loader.load_ruler_and_tech_mapping(EXCEL_PATH)
-    return r_map, config.COMPETENCY_FULLNAMES
+    return r_map,COMPETENCY_FULLNAMES
 
 def load_ruler_and_mappings():
     """Wrapper that times the ruler/tech mapping load and records timings."""
@@ -2295,19 +2361,6 @@ elif page == "🌡️ Competency Heatmap":
 # ═════════════════════════════════════════════════════════════════════════════
 elif page == "👤 Individual Assessment & Talent Profile":
     
-    import streamlit as st
-    import pandas as pd
-    import numpy as np
-    import plotly.graph_objects as go
-    import plotly.express as px
-    import os
-    import re
-    import analytics as an
-    import db_ops as db_ops
-    import reportlab 
-    from models import get_session, init_db, Personnel, Assessment
-    from data_loader import load_master_data, load_ruler_and_tech_mapping
-    from datetime import datetime
     st.title("👤 Individual Assessment & Talent Profile")
     st.markdown("---")
 
@@ -2493,184 +2546,239 @@ elif page == "👤 Individual Assessment & Talent Profile":
         with col3:
             st.markdown("#### 🎓 Background")
             st.warning(person_row.get("Background"))
+    # =========================================================================
+    # CURRICULUM VITAE AND SUPPORTING DOCUMENTS
+    # =========================================================================
 
     st.markdown("---")
-    # =========================================================================
-    # CV DOCUMENTS
-    # =========================================================================
-    st.subheader("📄 Curriculum Vitae & Supporting Documents")
+    st.subheader(
+        "📄 Curriculum Vitae & Supporting Documents"
+    )
 
-    personnel_id = person_row.get("id")
+    session = None
+    cv_documents = pd.DataFrame()
+    personnel_id = None
 
-    if personnel_id is None or pd.isna(personnel_id):
-        st.info(
-            "No database personnel ID is available "
-            "for CV retrieval."
-        )
-    else:
+    try:
         session = get_session(engine)
 
-        try:
-            cv_documents = db_ops.get_cv_documents(
-                session,
-                int(personnel_id),
+        personnel_id = db_ops.resolve_personnel_id(
+            session=session,
+            database_id=person_row.get("id"),
+            staff_id=person_row.get("Staff ID"),
+            name=person_row.get("Name"),
+        )
+
+        if personnel_id is not None:
+            cv_documents = (
+                db_ops.get_cv_documents(
+                    session,
+                    personnel_id,
+                )
             )
-        finally:
+
+    except Exception as exc:
+        st.error(
+            f"Unable to retrieve document records: {exc}"
+        )
+
+    finally:
+        if session is not None:
             session.close()
 
+
+    if personnel_id is None:
+        st.warning(
+            "The selected personnel could not be matched to a "
+            "database record. Check the Staff ID and personnel name."
+        )
+
+        with st.expander(
+            "Personnel matching diagnostics"
+        ):
+            st.write(
+                {
+                    "Name": person_row.get("Name"),
+                    "Staff ID": person_row.get("Staff ID"),
+                    "DataFrame ID": person_row.get("id"),
+                    "DataFrame has ID column":
+                        "id" in df.columns,
+                }
+            )
+
+    elif cv_documents.empty:
+        st.info(
+            "No CV or supporting document is registered "
+            "for this personnel."
+        )
+
+        st.caption(
+            "The personnel record exists in the database, "
+            "but no CV document has been linked to its database ID."
+        )
+
+    else:
+        # Get CV documents from database
+        session = get_session(engine)
+        try:
+            cv_documents = db_ops.get_cv_documents(session, int(personnel_id))  # ✅ Fixed
+        finally:
+            session.close()
+        
+        # Check if any documents exist
         if cv_documents.empty:
-            st.info(
-                "No CV or supporting document is registered "
-                "for this personnel."
-            )
+            st.info("No CV or supporting document is registered for this personnel.")
+
         else:
-            # Use the most recently modified document as the primary CV.
-            primary_document = cv_documents.iloc[0]
-
-            primary_url = primary_document.get(
-                "SharePoint URL"
+            # ─────────────────────────────────────────────────────────────────
+            # VALIDATE URLS
+            # ─────────────────────────────────────────────────────────────────
+            
+            cv_documents["SharePoint URL"] = (
+                cv_documents["SharePoint URL"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
             )
-
-            primary_file = primary_document.get(
-                "CV File Name"
+            
+            cv_documents["Valid SharePoint URL"] = (
+                cv_documents["SharePoint URL"]
+                .str.startswith(("https://", "http://"))
             )
-
-            primary_type = primary_document.get(
-                "File Type"
-            )
-
-            primary_modified_value = primary_document.get(
-                "Modified Date"
-            )
-            primary_modified = None
-            if primary_modified_value is not None and not pd.isna(
-                primary_modified_value
-            ):
-                primary_modified = pd.to_datetime(
-                    primary_modified_value,
-                    errors="coerce",
+            
+            valid_documents = cv_documents[cv_documents["Valid SharePoint URL"]].copy()
+            invalid_documents = cv_documents[~cv_documents["Valid SharePoint URL"]].copy()
+            
+            # ─────────────────────────────────────────────────────────────────
+            # CHECK IF ANY VALID DOCUMENTS EXIST
+            # ─────────────────────────────────────────────────────────────────
+            
+            if valid_documents.empty:
+                st.warning(
+                    "Documents are registered, but none has a valid SharePoint HTTPS link. "
+                    "Please verify the Excel file contains valid URLs."
                 )
-
-            modified_display = (
-                primary_modified.strftime(
-                    "%d %b %Y"
+                with st.expander("Document import diagnostics"):
+                    st.dataframe(
+                        cv_documents[["CV File Name", "File Type", "SharePoint URL"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+            else:
+                # ─────────────────────────────────────────────────────────────
+                # SORT BY MODIFIED DATE
+                # ─────────────────────────────────────────────────────────────
+                
+                valid_documents["Modified Date"] = pd.to_datetime(
+                    valid_documents["Modified Date"], errors="coerce"
                 )
-                if primary_modified is not None and pd.notna(primary_modified)
-                else "Date unavailable"
-            )
-
-            cv_col1, cv_col2, cv_col3 = st.columns(
-                [2, 1, 1]
-            )
-
-            with cv_col1:
-                st.metric(
-                    "Latest Document",
-                    primary_file or "CV document",
+                valid_documents = valid_documents.sort_values(
+                    by=["Modified Date", "id"],
+                    ascending=[False, False],
+                    na_position="last",
                 )
-
-            with cv_col2:
-                st.metric(
-                    "File Type",
-                    primary_type or "N/A",
+                
+                # ─────────────────────────────────────────────────────────────
+                # GET PRIMARY DOCUMENT (Most Recent)
+                # ─────────────────────────────────────────────────────────────
+                
+                primary_document = valid_documents.iloc[0]
+                primary_file = primary_document.get("CV File Name") or "CV document"
+                primary_type = primary_document.get("File Type") or "N/A"
+                primary_url = str(primary_document.get("SharePoint URL")).strip()
+                primary_modified = primary_document.get("Modified Date")
+                
+                modified_display = (
+                    primary_modified.strftime("%d %b %Y")
+                    if pd.notna(primary_modified)
+                    else "Date unavailable"
                 )
-
-            with cv_col3:
-                st.metric(
-                    "Last Modified",
-                    modified_display,
-                )
-
-            if (
-                primary_url is not None
-                and pd.notna(primary_url)
-                and str(primary_url).strip()
-            ):
+                
+                # ─────────────────────────────────────────────────────────────
+                # DISPLAY PRIMARY DOCUMENT
+                # ─────────────────────────────────────────────────────────────
+                
+                col1, col2, col3 = st.columns([2, 1, 1])
+                
+                with col1:
+                    st.metric("Latest Document", primary_file)
+                with col2:
+                    st.metric("File Type", primary_type)
+                with col3:
+                    st.metric("Last Modified", modified_display)
+                
                 st.link_button(
                     "📄 Open Latest Document in SharePoint",
-                    str(primary_url).strip(),
+                    primary_url,
                     use_container_width=True,
                 )
-            else:
-                st.warning(
-                    "The latest document does not have "
-                    "a valid SharePoint URL."
-                )
-
-            if len(cv_documents) > 1:
+                
+                st.caption(f"{len(valid_documents)} document link(s) available for this personnel.")
+                
+                # ─────────────────────────────────────────────────────────────
+                # LOOP: DISPLAY ALL DOCUMENTS
+                # ─────────────────────────────────────────────────────────────
+                
                 with st.expander(
-                    f"View all documents "
-                    f"({len(cv_documents)})"
+                    f"View all documents ({len(valid_documents)})",
+                    expanded=(len(valid_documents) <= 3),
                 ):
-                    for document_number, document in (
-                        cv_documents.iterrows()
-                    ):
-                        document_url = document.get(
-                            "SharePoint URL"
-                        )
-
-                        document_name = document.get(
-                            "CV File Name"
-                        ) or "Document"
-
-                        document_type = document.get(
-                            "File Type"
-                        ) or "Unknown"
-
-                        document_modified_value = document.get(
-                            "Modified Date"
-                        )
-                        document_modified = None
-                        if document_modified_value is not None and not pd.isna(
-                            document_modified_value
-                        ):
-                            document_modified = pd.to_datetime(
-                                document_modified_value,
-                                errors="coerce",
-                            )
-
-                        document_modified_display = (
-                            document_modified.strftime(
-                                "%d %b %Y"
-                            )
-                            if document_modified is not None and pd.notna(
-                                document_modified
-                            )
+                    # 🔄 LOOP STARTS HERE
+                    for _, document in valid_documents.iterrows():
+                        
+                        # Extract document details
+                        document_id = document.get("id")
+                        document_name = document.get("CV File Name") or "Document"
+                        document_type = document.get("File Type") or "Unknown"
+                        document_url = str(document.get("SharePoint URL")).strip()
+                        document_modified = document.get("Modified Date")
+                        
+                        # Format the modified date
+                        modified_display = (
+                            document_modified.strftime("%d %b %Y")
+                            if pd.notna(document_modified)
                             else "Date unavailable"
                         )
-
-                        item_col1, item_col2 = (
-                            st.columns([4, 1])
-                        )
-
-                        with item_col1:
+                        
+                        # Create two-column layout
+                        doc_col, action_col = st.columns([4, 1])
+                        
+                        # Left column: Document info
+                        with doc_col:
                             st.markdown(
                                 f"**{document_name}**  \n"
-                                f"{document_type} | "
-                                f"Modified "
-                                f"{document_modified_display}"
+                                f"`{document_type}` • Modified {modified_display}"
                             )
-
-                        with item_col2:
-                            if (
-                                document_url is not None
-                                and pd.notna(document_url)
-                                and str(document_url).strip()
-                            ):
-                                st.link_button(
-                                    "Open",
-                                    str(document_url).strip(),
-                                    key=(
-                                        f"cv_link_"
-                                        f"{personnel_id}_"
-                                        f"{document.get('id')}"
-                                    ),
-                                    use_container_width=True,
-                                )
-                            else:
-                                st.caption(
-                                    "No web link"
-                                )
+                        
+                        # Right column: Open button
+                        with action_col:
+                            st.link_button(
+                                "Open",
+                                document_url,
+                                key=f"cv_link_{personnel_id}_{document_id}",
+                                use_container_width=True,
+                            )
+                        
+                        # Separator line
+                        st.divider()
+                    
+                    # 🔄 LOOP ENDS HERE
+                
+                # ─────────────────────────────────────────────────────────────
+                # SHOW INVALID DOCUMENTS (If any)
+                # ─────────────────────────────────────────────────────────────
+                
+                if not invalid_documents.empty:
+                    with st.expander(
+                        f"⚠️ Documents without valid web links ({len(invalid_documents)})"
+                    ):
+                        st.dataframe(
+                            invalid_documents[
+                                ["CV File Name", "File Type", "SharePoint URL", "Notes"]
+                            ],
+                            use_container_width=True,
+                            hide_index=True,
+                        )
     # =========================================================================
     # SECTION 2: TARGET SELECTION & ENGINE (Code #1 Logic)
     # =========================================================================
@@ -3479,119 +3587,249 @@ elif page == "📊 Chart Builder & Depth Analysis":
 elif page == "⚙️ Admin: Import Data":
     st.title("⚙️ Admin: Import Data from Excel")
 
-    st.info("""
-    Upload the RE Fraternity Master Excel file (the 'All' tab will be used).
-    The app now reads the workbook directly from the configured Excel source on each refresh, so this import page is optional.
-    The importer still reads:
-    - Header row 3, data from row 4 onward
-    - Personnel demographics & employment info
-    - Competency scores (B1-B12, K1-K5, P1-P5, E1-E2) + targets (R-...) + gaps (G--...)
-    - Summary scores (Staff/Principal/Custodian Base/Keys/Pacing/Emerging/CTI)
+    uploaded_file = st.file_uploader(
+        "Upload the RE Fraternity master workbook",
+        type=[
+            "xlsx",
+            "xlsm",
+        ],
+        key="master_workbook_upload",
+    )
 
-    **Re-importing updates existing records** (matched by Staff ID) and adds new assessments
-    if the assessment date differs from any existing record.
-    """)
+    if uploaded_file is None:
+        st.info(
+            "Upload the master workbook to preview and "
+            "import personnel, ruler, assessment, and CV data."
+        )
 
-    uploaded = st.file_uploader("Upload Excel file (.xlsx)", type=["xlsx"])
-
-    if uploaded:
+    else:
         tmp_path = None
+
         try:
-            # Use NamedTemporaryFile for cross-platform temp file handling
-            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-                tmp.write(uploaded.getbuffer())
-                tmp_path = tmp.name
+            file_suffix = (
+                Path(uploaded_file.name).suffix
+                or ".xlsx"
+            )
 
-            raw_df = load_master_data(tmp_path)
-            ruler_map, tech_labels = load_ruler_and_tech_mapping(tmp_path)
-            cv_df = load_cv_list(tmp_path)
-            st.session_state["competency_names"] = tech_labels
-            st.session_state["ruler_map"] = ruler_map
-            st.session_state["competency_names"] = tech_labels
-            st.session_state["ruler_source_file"] = uploaded.name
-            
+            with tempfile.NamedTemporaryFile(
+                suffix=file_suffix,
+                delete=False,
+            ) as temporary_file:
+                temporary_file.write(
+                    uploaded_file.getbuffer()
+                )
 
-            st.success(f"✅ Loaded {len(raw_df)} personnel records from '{uploaded.name}'")
-            st.info(f"Loaded {len(ruler_map)} ruler types from the workbook.")
-            if tech_labels:
-                st.info(f"Loaded {len(tech_labels)} competency full-name mappings from Tab Separator.")
+                tmp_path = temporary_file.name
 
-            st.subheader("Preview (first 10 rows)")
-            preview_cols = ["Name", "Staff ID", "Staff Position", "SG", "Department",
-                            "Chat Status", "B1", "K1", "P1", "E1"]
-            preview_cols = [c for c in preview_cols if c in raw_df.columns]
-            st.dataframe(raw_df[preview_cols].head(10), use_container_width=True)
+            # -------------------------------------------------------------
+            # LOAD ALL WORKBOOK DATA
+            # -------------------------------------------------------------
 
-            if st.button("✅ Confirm Import to Database", type="primary"):
-                session = get_session(engine)
-                with st.spinner("Importing... this may take a minute for 200+ records"):
-                    result = db_ops.bulk_import_from_df(session, raw_df, ruler_map=ruler_map)
-                    CV_r= db_ops.bulk_import_cv_list(session, cv_df)
-                session.close()
-                st.success(f"Import complete — Added: {result['added']}, "
-                          f"Updated: {result['updated']}, Errors: {result['errors']}")
-                st.success(f"CV List: Added: {CV_r['added']}, Updated: {CV_r['updated']}, Errors: {CV_r['errors']}, Unmatched: {CV_r['unmatched']}, Skipped: {CV_r['skipped']}")
-                if CV_r['unmatched'] > 0:
-                        st.warning(f"⚠️ {CV_r['unmatched']} CV records could not be matched to any personnel record. Check the Staff ID or Name in the CV list.")
-                bump_version()
-                st.cache_data.clear()
+            raw_df = load_master_data(
+                tmp_path
+            )
+
+            ruler_map_import, tech_labels_import = (
+                load_ruler_and_tech_mapping(
+                    tmp_path
+                )
+            )
+
+            cv_df = load_cv_list(
+                tmp_path,
+                verbose=True,
+            )
+
+            # -------------------------------------------------------------
+            # PREVIEW
+            # -------------------------------------------------------------
 
             st.success(
-                f"Loaded {len(raw_df)} personnel records "
-                f"from '{uploaded.name}'"
+                f"Loaded {len(raw_df):,} personnel records."
             )
+
+            st.success(
+                f"Loaded {len(cv_df):,} CV and "
+                "supporting-document records."
+            )
+
+            valid_cv_links = 0
+
+            if (
+                not cv_df.empty
+                and "SharePoint URL" in cv_df.columns
+            ):
+                valid_cv_links = int(
+                    cv_df["SharePoint URL"]
+                    .fillna("")
+                    .astype(str)
+                    .str.lower()
+                    .str.startswith(
+                        (
+                            "https://",
+                            "http://",
+                        )
+                    )
+                    .sum()
+                )
 
             st.info(
-                f"Loaded {len(ruler_map)} ruler types."
+                f"Valid SharePoint links detected: "
+                f"{valid_cv_links:,}"
             )
 
-            st.info(
-                f"Loaded {len(cv_df)} CV document records "
-                f"from the '{CV_LIST_SHEET}' worksheet."
+            personnel_tab, cv_tab = st.tabs(
+                [
+                    "Personnel Preview",
+                    "CV List Preview",
+                ]
             )
-                        
-            # Clean up temp file
-            if tmp_path is not None and os.path.exists(tmp_path):
-                os.remove(tmp_path)
-                st.rerun()
 
-        except Exception as e:
-            st.error(f"❌ Error reading file: {e}")
-            st.exception(e)
-            # Clean up temp file on error
-            if 'tmp_path' in locals() and tmp_path is not None and os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            with personnel_tab:
+                st.dataframe(
+                    raw_df.head(20),
+                    width="stretch",
+                    hide_index=True,
+                )
 
-    st.markdown("---")
-    st.subheader("Current Database Status")
-    session = get_session(engine)
-    n_personnel = session.query(Personnel).filter_by(is_deleted=False).count()
-    n_assessments = session.query(Assessment).count()
-    CVList = db_ops.get_cv_stats(session)
-    session.close()
-    c1, c2 = st.columns(2)
-    c1.metric("Personnel Records", n_personnel)
-    c2.metric("Assessment Records", n_assessments)
+            with cv_tab:
+                if cv_df.empty:
+                    st.warning(
+                        "No CV records were detected."
+                    )
 
-    cv_col1, cv_col2, cv_col3 = st.columns(3)
-    cv_col1.metric("CV Records", CVList['total'])
-    cv_col2.metric("Personnel with CV", CVList['personnel_with_cv'])
-    cv_col3.metric("Personnel without CV", CVList['personnel_without_cv'])
+                else:
+                    cv_preview_columns = [
+                        column
+                        for column in [
+                            "Name",
+                            "Staff ID",
+                            "Staff Position",
+                            "CV File Name",
+                            "File Type",
+                            "SharePoint URL",
+                            "Match Method",
+                        ]
+                        if column in cv_df.columns
+                    ]
 
-    if st.button("🗑️ Reset Database (delete all data)"):
-        if st.session_state.get("confirm_reset"):
-            from models import Base
-            Base.metadata.drop_all(engine)
-            Base.metadata.create_all(engine)
-            bump_version()
-            st.cache_data.clear()
-            st.success("Database reset.")
-            st.session_state.confirm_reset = False
-            st.rerun()
-        else:
-            st.session_state.confirm_reset = True
-            st.warning("Click again to confirm reset. This deletes ALL data permanently.")
+                    st.dataframe(
+                        cv_df[
+                            cv_preview_columns
+                        ].head(20),
+                        width="stretch",
+                        hide_index=True,
+                    )
 
+            # -------------------------------------------------------------
+            # DATABASE IMPORT
+            # -------------------------------------------------------------
+
+            if st.button(
+                "✅ Confirm Import to Database",
+                type="primary",
+                width="stretch",
+            ):
+                session = None
+
+                try:
+                    session = get_session(
+                        engine
+                    )
+
+                    with st.spinner(
+                        "Importing personnel, assessments, "
+                        "ruler requirements, and CV links..."
+                    ):
+                        personnel_result = (
+                            db_ops.bulk_import_from_df(
+                                session,
+                                raw_df,
+                                ruler_map=(
+                                    ruler_map_import
+                                ),
+                            )
+                        )
+
+                        # Personnel must be imported before CV records.
+                        cv_result = (
+                            db_ops.bulk_import_cv_list(
+                                session,
+                                cv_df,
+                            )
+                        )
+
+                    st.success(
+                        "Personnel import complete. "
+                        f"Added: "
+                        f"{personnel_result.get('added', 0)}, "
+                        f"Updated: "
+                        f"{personnel_result.get('updated', 0)}, "
+                        f"Errors: "
+                        f"{personnel_result.get('errors', 0)}"
+                    )
+
+                    st.success(
+                        "CV import complete. "
+                        f"Added: {cv_result.get('added', 0)}, "
+                        f"Updated: {cv_result.get('updated', 0)}, "
+                        f"Unmatched: "
+                        f"{cv_result.get('unmatched', 0)}, "
+                        f"Skipped: "
+                        f"{cv_result.get('skipped', 0)}, "
+                        f"Errors: "
+                        f"{cv_result.get('errors', 0)}"
+                    )
+
+                    if cv_result.get(
+                        "unmatched",
+                        0,
+                    ) > 0:
+                        st.warning(
+                            "Some CV records could not be matched "
+                            "uniquely to personnel. Populate Staff ID "
+                            "in the CV list worksheet for those rows."
+                        )
+
+                    st.session_state.ruler_map = (
+                        ruler_map_import
+                    )
+
+                    st.session_state.tech_labels = (
+                        tech_labels_import
+                    )
+
+                    bump_version()
+                    st.cache_data.clear()
+
+                except Exception as exc:
+                    if session is not None:
+                        session.rollback()
+
+                    st.error(
+                        f"Import failed: {exc}"
+                    )
+
+                finally:
+                    if session is not None:
+                        session.close()
+
+        except Exception as exc:
+            st.error(
+                f"Unable to read the uploaded workbook: {exc}"
+            )
+
+        finally:
+            if (
+                tmp_path is not None
+                and os.path.exists(tmp_path)
+            ):
+                try:
+                    os.remove(
+                        tmp_path
+                    )
+                except OSError:
+                    pass
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: ADMIN - PERSONNEL CRUD
 # ═════════════════════════════════════════════════════════════════════════════
