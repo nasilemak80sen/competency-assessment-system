@@ -2756,8 +2756,6 @@ elif page == "👤 Individual Assessment & Talent Profile":
                             st.link_button(
                                 "Open",
                                 document_url,
-                                key=f"cv_link_{personnel_id}_{document_id}",
-                                use_container_width=True,
                             )
                         
                         # Separator line
