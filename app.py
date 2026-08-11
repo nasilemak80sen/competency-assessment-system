@@ -2360,7 +2360,7 @@ elif page == "🌡️ Competency Heatmap":
 # PAGE: INDIVIDUAL ASSESSMENT
 # ═════════════════════════════════════════════════════════════════════════════
 elif page == "👤 Individual Assessment & Talent Profile":
-
+    
     st.title("👤 Individual Assessment & Talent Profile")
     st.markdown("---")
 
@@ -2551,7 +2551,9 @@ elif page == "👤 Individual Assessment & Talent Profile":
     # =========================================================================
 
     st.markdown("---")
-    st.subheader("📄 Personnel Curriculum Vitae & Supporting Documents")
+    st.subheader(
+        "📄 Curriculum Vitae & Supporting Documents"
+    )
 
     session = None
     cv_documents = pd.DataFrame()
@@ -2577,7 +2579,7 @@ elif page == "👤 Individual Assessment & Talent Profile":
 
     except Exception as exc:
         st.error(
-            f"Unable to retrieve document records: {exc}"
+            f" ❌Unable to retrieve document records: {exc}"
         )
 
     finally:
@@ -2587,7 +2589,7 @@ elif page == "👤 Individual Assessment & Talent Profile":
 
     if personnel_id is None:
         st.warning(
-            "The selected personnel could not be matched to a "
+            "⚠️ The selected personnel could not be matched to a "
             "database record. Check the Staff ID and personnel name."
         )
 
@@ -2606,12 +2608,12 @@ elif page == "👤 Individual Assessment & Talent Profile":
 
     elif cv_documents.empty:
         st.info(
-            "No CV or supporting document is registered "
+            " ❌ No CV or supporting document is registered "
             "for this personnel."
         )
 
         st.caption(
-            "The personnel record exists in the database, "
+            "⚠️ The personnel record exists in the database, "
             "but no CV document has been linked to its database ID."
         )
 
@@ -2653,7 +2655,7 @@ elif page == "👤 Individual Assessment & Talent Profile":
             
             if valid_documents.empty:
                 st.warning(
-                    "Documents are registered, but none has a valid SharePoint HTTPS link. "
+                    "⚠️ Documents are registered, but none has a valid SharePoint HTTPS link. "
                     "Please verify the Excel file contains valid URLs."
                 )
                 with st.expander("Document import diagnostics"):
@@ -2699,14 +2701,14 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 col1, col2, col3 = st.columns([2, 1, 1])
                 
                 with col1:
-                    st.metric("Latest Document", primary_file)
+                    st.metric("🗒️ Latest Document", primary_file)
                 with col2:
-                    st.metric("File Type", primary_type)
+                    st.metric("🗂️ File Type", primary_type)
                 with col3:
-                    st.metric("Last Modified", modified_display)
+                    st.metric("📂 Last Modified", modified_display)
                 
                 st.link_button(
-                    "📄 Open the documentation in your browser 🌏",
+                    "📄 Open Latest Document in SharePoint",
                     primary_url,
                     use_container_width=True,
                 )
@@ -2718,7 +2720,7 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 # ─────────────────────────────────────────────────────────────
                 
                 with st.expander(
-                    f"View all documents ({len(valid_documents)})",
+                    f" 🗂️ View all documents ({len(valid_documents)})",
                     expanded=(len(valid_documents) <= 3),
                 ):
                     # 🔄 LOOP STARTS HERE
