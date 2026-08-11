@@ -2360,7 +2360,7 @@ elif page == "🌡️ Competency Heatmap":
 # PAGE: INDIVIDUAL ASSESSMENT
 # ═════════════════════════════════════════════════════════════════════════════
 elif page == "👤 Individual Assessment & Talent Profile":
-
+    
     st.title("👤 Individual Assessment & Talent Profile")
     st.markdown("---")
 
@@ -2551,7 +2551,9 @@ elif page == "👤 Individual Assessment & Talent Profile":
     # =========================================================================
 
     st.markdown("---")
-    st.subheader("📄 Personnel Curriculum Vitae & Supporting Documents")
+    st.subheader(
+        "📄 Curriculum Vitae & Supporting Documents"
+    )
 
     session = None
     cv_documents = pd.DataFrame()
@@ -2706,7 +2708,7 @@ elif page == "👤 Individual Assessment & Talent Profile":
                     st.metric("Last Modified", modified_display)
                 
                 st.link_button(
-                    "📄 Open the documentation in your browser 🌏",
+                    "📄 Open Latest Document in SharePoint",
                     primary_url,
                     use_container_width=True,
                 )
