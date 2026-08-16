@@ -65,15 +65,26 @@ def load_master_data(path: str) -> pd.DataFrame:
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb["All"]
 
-    # Build and normalize header list from row 3
+    # Try to detect header row (some workbooks use row 3 or row 4)
+    def _detect_header_row(ws, start=2, end=6):
+        for r in range(start, min(end, ws.max_row) + 1):
+            values = [ws.cell(r, c).value for c in range(1, min(ws.max_column, 200) + 1)]
+            vals = [str(v).strip().lower() for v in values if v is not None]
+            if any(k in vals for k in ("name", "staff id", "staff_id")):
+                return r
+        return 3
+
+    header_row_num = _detect_header_row(ws)
+
+    # Build and normalize header list from detected header row
     headers = [
-        _normalize_summary_column_name(ws.cell(3, c).value)
+        _normalize_summary_column_name(ws.cell(header_row_num, c).value)
         for c in range(1, ws.max_column + 1)
     ]
 
-    # Read data rows (row 4 onwards), stop when Name is empty
+    # Read data rows (row after header onwards), stop when Name is empty
     rows = []
-    for r in range(4, ws.max_row + 1):
+    for r in range(header_row_num + 1, ws.max_row + 1):
         name_val = ws.cell(r, 5).value      # col 5 = Name
         if not name_val:
             continue

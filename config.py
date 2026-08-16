@@ -38,15 +38,16 @@ USE_LIVE_EXCEL_SOURCE = True
 # ── Salary Grades (SG column in Excel) ──────────────────────────────────────
 GRADE_LABELS = {
     "UPTREX": "UPTREX",
-    "P1": "Executive Level 1",
-    "P2": "Executive Level 2",
+    "P1": "Junior Executive",
+    "P2": "Executive",
     "P3": "Senior Executive",
     "P4": "Senior Reservoir Engineer",
     "P5": "Staff",
     "P6": "Specialist",
     "P7": "Principal",
     "P8": "Senior Principal",
-    "CDH": "Custodian / Head",
+    "P9": "Custodian",
+    "P10": "Senior Custiodian",
 }
 
 # Staff Position → SG mapping (from data)
