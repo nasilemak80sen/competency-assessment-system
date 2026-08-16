@@ -439,15 +439,20 @@ def grade_rank(sg_value):
     if sg_value is None or pd.isna(sg_value):
         return None
 
-    match = re.match(
-        r"^P(\d+)$",
-        str(sg_value).strip().upper(),
-    )
+    text = str(sg_value).strip().upper()
 
-    if not match:
-        return None
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
 
-    return int(match.group(1))
+    match = re.match(r"^P(\d+)$", text)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    return None
 
 def normalize_ruler_type(value):
     """
@@ -643,6 +648,49 @@ def calculate_readiness_metrics(gap_df):
         "weighted_readiness": weighted_readiness,
     }
 
+def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Data for Age vs SG scatter, including Overall_avg for color/size.
+    Returns only columns that exist in the input dataframe.
+    """
+    # Define ideal columns in order of preference
+    size_cols = ["Years in RE Experience", "Years in PET"]
+    
+    # Find which size column actually exists
+    size_col_available = None
+    for col in size_cols:
+        if col in df.columns:
+            size_col_available = col
+            break
+    
+    # Build column list with only columns that exist
+    cols = [
+        "Name", 
+        "Age", 
+        "SG", 
+        "Staff Position", 
+        "Department", 
+        "Overall_avg"
+    ]
+    
+    # Only include size column if it exists
+    if size_col_available:
+        cols.append(size_col_available)
+    
+    # Filter to only existing columns
+    cols = [c for c in cols if c in df.columns]
+    
+    # Create output
+    out = df[cols].copy()
+    
+    # Fill NaN values
+    if "Years in RE Experience" in out.columns:
+        out["Years in RE Experience"] = out["Years in RE Experience"].fillna(0)
+    if "Years in PET" in out.columns:
+        out["Years in PET"] = out["Years in PET"].fillna(0)
+    
+    # Remove rows missing Age or SG
+    return out.dropna(subset=["Age", "SG"])
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -985,6 +1033,8 @@ if page == "🏠 Dashboard Home":
 
     st.markdown("---")
 
+    
+
 # =========================================================================
 # NATIONALITY DISTRIBUTION
 # =========================================================================
@@ -1060,7 +1110,7 @@ if page == "🏠 Dashboard Home":
         
         # 2. Combine departments < 3% into "Others"
         total_count = dept["Count"].sum()
-        threshold = 0.03  # 3% threshold
+        threshold = 0.02  # 3% threshold
         
         dept["Department"] = dept.apply(
             lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
@@ -1243,22 +1293,50 @@ if page == "🏠 Dashboard Home":
             # Rename columns to readable labels
             sg_gender.columns = sg_gender.columns.map({"M": "Male", "F": "Female"})
             
-            # Sort by numeric grade (P1-P10)
-            sg_gender = sg_gender.reindex([f"P{i}" for i in range(1, 11) if f"P{i}" in sg_gender.index])
-            
+            # Sort by numeric grade including UPTREX then P1..P10
+            order = ["UPTREX"] + [f"P{i}" for i in range(1, 11)]
+            present = [g for g in order if g in sg_gender.index]
+            sg_gender = sg_gender.reindex(present)
+
+            # Compute average age per grade for overlay
+            age_by_grade = df.groupby("SG").agg(avg_age=("Age", "mean")).reset_index()
+            age_by_grade = age_by_grade[age_by_grade["SG"].isin(present)]
+            age_by_grade = age_by_grade.set_index("SG").reindex(present).reset_index()
+
             # Create stacked bar chart
             fig = px.bar(
-                sg_gender.reset_index(),x="SG", y=["Male", "Female"],
+                sg_gender.reset_index(), x="SG", y=["Male", "Female"],
                 barmode="stack", title="", labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
-                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"})
-            
-            fig.update_layout(
-                
-                xaxis_title="Salary Grade", yaxis_title="Number of Personnel", height=400, hovermode="x unified",
-                legend=dict( title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99)) 
-            # Remove the text labels showing count (as requested)
+                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
+            )
 
-            fig.update_traces(textposition="inside", texttemplate="%{y}")
+            # Add average age as a line on secondary y-axis
+            fig.add_trace(
+                go.Scatter(
+                    x=age_by_grade["SG"],
+                    y=age_by_grade["avg_age"],
+                    name="Average Age",
+                    mode="lines+markers",
+                    marker=dict(color="#2ca02c", size=8),
+                    yaxis="y2",
+                )
+            )
+
+            fig.update_layout(
+                xaxis_title="Salary Grade",
+                yaxis_title="Number of Personnel",
+                height=400,
+                hovermode="x unified",
+                legend=dict(title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99),
+                yaxis2=dict(
+                    title="Average Age",
+                    overlaying="y",
+                    side="right",
+                ),
+            )
+
+            # Show stacked counts inside bars
+            fig.update_traces(textposition="auto", texttemplate="%{y}", selector=dict(type="bar"))
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Grade or Gender data not available")
@@ -1287,40 +1365,91 @@ if page == "🏠 Dashboard Home":
     scatter_df2 = an.scatter_age_vs_grade(fdf1)
         
     with tab2d:
-        # 2D Scatter code
         st.info(
-                """
-                **Purpose**
-                This chart compares **Age** against **Salary Grade (SG)**.
-                It helps identify:
-                • Employees progressing faster than peers
-                • Senior employees remaining at lower grades
-                • Overall distribution of grades across age groups
-                """
-            )
-    
-        fig = px.scatter(scatter_df2, x="Age", y="SG", color="Overall_avg", 
-                         hover_data=[ "Name", "Staff Position", "Department", "Years in PET",],
-                         category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
-                         color_continuous_scale="Tealgrn", title="Age vs Salary Grade")
-        fig.update_traces( marker=dict(size=10, opacity=0.75, line=dict(width=1,color="white") ))
-        fig.update_layout( height=700, xaxis_title="Age", yaxis_title="Salary Grade", plot_bgcolor="white")
-    
-        st.plotly_chart(fig, use_container_width=True)
+            """
+            **Purpose**
+            This chart compares **Age** against **Salary Grade (SG)**.
+            """
+        )
+
+        scatter_df2 = scatter_age_vs_grade(df)
+        
+        # Determine size column
+        size_col = None
+        if "Years in RE Experience" in scatter_df2.columns:
+            size_col = "Years in RE Experience"
+        elif "Years in PET" in scatter_df2.columns:
+            size_col = "Years in PET"
+        
+        # Build hover data with existing columns only
+        hover_cols = ["Name", "Staff Position", "Department"]
+        if "Years in PET" in scatter_df2.columns:
+            hover_cols.append("Years in PET")
+        hover_cols = [c for c in hover_cols if c in scatter_df2.columns]
+
+        fig = px.scatter(
+            scatter_df2,
+            x="Age",
+            y="SG",
+            color="Overall_avg" if "Overall_avg" in scatter_df2.columns else None,
+            size=size_col,
+            hover_data=hover_cols,
+            category_orders={"SG": ["UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]},
+            color_continuous_scale="Viridis",
+            title="Age vs Salary Grade",
+        )
+
+        fig.update_traces(marker=dict(opacity=0.8, line=dict(width=1, color="white")))
+        fig.update_layout(height=700, xaxis_title="Age", yaxis_title="Salary Grade", plot_bgcolor="white")
+        st.plotly_chart(fig, use_container_width=True, key="scatter_2d_age_sg")
 
     with tab3d:
-        # 3D Scatter code   
-        fig = px.scatter_3d (scatter_df2, x="Age", y="SG", z="Years in PET", color="Overall_avg",
-                             hover_data=[ "Name", "Staff Position", "Department", "Years in PET", "Overall_avg"],
-                             category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
-                             color_continuous_scale="Tealgrn", title="Career Progression Landscape")
-        fig.update_traces( marker=dict(size=5, opacity=0.75, line=dict(width=1,color="white") ))
-        fig.update_layout( height=800,scene=dict( xaxis=dict(title="Age"), 
-                                                 yaxis=dict(title="Salary Grade", tickmode="array", 
-                                                            tickvals=list(range(1, 11)), 
-                                                            ticktext=[f"P{i}" for i in range(1, 11)] ),
-                                                            zaxis=dict( title="Years in PET")))
-        st.plotly_chart(fig, use_container_width=True)
+        scatter_df2 = scatter_age_vs_grade(df)
+        
+        # Determine size column
+        size_col_3d = None
+        if "Years in RE Experience" in scatter_df2.columns:
+            size_col_3d = "Years in RE Experience"
+        elif "Years in PET" in scatter_df2.columns:
+            size_col_3d = "Years in PET"
+        
+        # Build hover data with existing columns only
+        hover_cols = ["Name", "Staff Position", "Department"]
+        if "Years in PET" in scatter_df2.columns:
+            hover_cols.append("Years in PET")
+        if "Overall_avg" in scatter_df2.columns:
+            hover_cols.append("Overall_avg")
+        hover_cols = [c for c in hover_cols if c in scatter_df2.columns]
+
+        fig = px.scatter_3d(
+            scatter_df2,
+            x="Age",
+            y="SG",
+            z="Years in PET",
+            color="Overall_avg" if "Overall_avg" in scatter_df2.columns else None,
+            size=size_col_3d,
+            hover_data=hover_cols,
+            category_orders={"SG": ["UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]},
+            color_continuous_scale="Viridis",
+            title="Career Progression Landscape",
+        )
+        
+        fig.update_traces(marker=dict(opacity=0.8, line=dict(width=1, color="white")))
+        fig.update_layout(
+            height=800,
+            scene=dict(
+                xaxis=dict(title="Age"),
+                yaxis=dict(
+                    title="Salary Grade",
+                    tickmode="array",
+                    tickvals=list(range(1, 11)),
+                    ticktext=[f"P{i}" for i in range(1, 11)]
+                ),
+                zaxis=dict(title="Years in PET")
+            )
+        )
+
+        st.plotly_chart(fig, use_container_width=True, key="scatter_3d_career_landscape")
         st.markdown("---")
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: PERSONNEL DIRECTORY
@@ -1355,9 +1484,9 @@ elif page == "👥 Personnel Directory":
 
     st.caption(f"Showing {len(fdf)} of {len(df)} personnel")
     display_cols = ["Name", "Staff ID", "Staff Position", "SG", "Department",
-                    "Age", "Chat Status", "Overall_avg"]
+                    "Age", "Chat Status", "Years in RE Experience"]
     display_cols = [c for c in display_cols if c in fdf.columns]
-    show = fdf[display_cols].rename(columns={"Overall_avg": "Avg Score"})
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     if "Avg Score" in show.columns:
         show["Avg Score"] = show["Avg Score"].round(2)
     st.dataframe(show, use_container_width=True, hide_index=True)
@@ -2809,7 +2938,12 @@ elif page == "👤 Individual Assessment & Talent Profile":
 
     with col_target:
         if target_sg_options:
-            target_sg = st.selectbox("Target Salary Grade", target_sg_options)
+            # Default the selector to the person's current SG when available
+            try:
+                default_idx = target_sg_options.index(current_sg) if current_sg in target_sg_options else 0
+            except Exception:
+                default_idx = 0
+            target_sg = st.selectbox("Target Salary Grade", target_sg_options, index=default_idx)
         else:
             st.warning("No future grades found in ruler.")
             target_sg = None
@@ -2913,6 +3047,42 @@ elif page == "👤 Individual Assessment & Talent Profile":
         with metric_col4:
             status = "Ready ✅" if weighted_readiness >= 80 else "On Track 🟡" if weighted_readiness >= 60 else "Needs Work 🔴"
             st.metric("Overall Status", status)
+
+        # -----------------------------------------------------------------
+        # Show stored summary scores from the database (if available)
+        # -----------------------------------------------------------------
+        try:
+            session = get_session(engine)
+            personnel_id = db_ops.resolve_personnel_id(
+                session=session,
+                database_id=person_row.get("id"),
+                staff_id=person_row.get("Staff ID"),
+                name=person_row.get("Name"),
+            )
+            summary = None
+            if personnel_id:
+                from models import SummaryScore
+                summary = session.query(SummaryScore).filter_by(personnel_id=personnel_id).order_by(SummaryScore.updated_at.desc()).first()
+        except Exception:
+            summary = None
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+        if summary is not None:
+            s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
+            with s_col1:
+                st.metric("Staff Base", getattr(summary, "staff_base", "N/A"))
+            with s_col2:
+                st.metric("Staff Keys", getattr(summary, "staff_keys", "N/A"))
+            with s_col3:
+                st.metric("Principal Base", getattr(summary, "principal_base", "N/A"))
+            with s_col4:
+                st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
+            with s_col5:
+                st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
             
         # Category readiness breakdown (Code #1)
         if cat_readiness:
@@ -3626,6 +3796,22 @@ elif page == "⚙️ Admin: Import Data":
             raw_df = load_master_data(
                 tmp_path
             )
+
+            st.dataframe(
+                    (
+                        df[
+                            [
+                                "Staff Position",
+                                "SG",
+                                "Canonical Position",
+                                "Canonical SG",
+                            ]
+                        ]
+                        .value_counts()
+                        .reset_index(name="Count")
+                        .sort_values(["Canonical SG", "Canonical Position"])
+                    )
+                )
 
             ruler_map_import, tech_labels_import = (
                 load_ruler_and_tech_mapping(
