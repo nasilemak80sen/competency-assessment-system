@@ -130,12 +130,47 @@ def assessment_completion_by_dept(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
-    """Data for Age vs SG scatter, including Overall_avg for color/size."""
-    cols = ["Name", "Age", "SG", "Staff Position", "Department", "Years in PET", "Overall_avg"]
+    """
+    Data for Age vs SG scatter, including Overall_avg for color/size.
+    Returns only columns that exist in the input dataframe.
+    """
+    # Define ideal columns in order of preference
+    size_cols = ["Years in RE Experience", "Years in PET"]
+    
+    # Find which size column actually exists
+    size_col_available = None
+    for col in size_cols:
+        if col in df.columns:
+            size_col_available = col
+            break
+    
+    # Build column list with only columns that exist
+    cols = [
+        "Name", 
+        "Age", 
+        "SG", 
+        "Staff Position", 
+        "Department", 
+        "Overall_avg"
+    ]
+    
+    # Only include size column if it exists
+    if size_col_available:
+        cols.append(size_col_available)
+    
+    # Filter to only existing columns
     cols = [c for c in cols if c in df.columns]
+    
+    # Create output
     out = df[cols].copy()
-    if "Overall_avg" in df.columns:
-        out["Overall_avg"] = df["Overall_avg"]
+    
+    # Fill NaN values
+    if "Years in RE Experience" in out.columns:
+        out["Years in RE Experience"] = out["Years in RE Experience"].fillna(0)
+    if "Years in PET" in out.columns:
+        out["Years in PET"] = out["Years in PET"].fillna(0)
+    
+    # Remove rows missing Age or SG
     return out.dropna(subset=["Age", "SG"])
 
 

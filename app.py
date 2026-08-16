@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import time
+import config
 
 
 # =============================================================================
@@ -56,7 +57,7 @@ from config import (
     SCORE_COLS,
     SECONDARY,
     SUMMARY_GROUPS,
-    USE_LIVE_EXCEL_SOURCE,
+    USE_LIVE_EXCEL_SOURCE,POSITION_RANK, POSITION_TO_SG, SG_HIERARCHY, SG_RANK
 )
 
 
@@ -290,9 +291,9 @@ def prepare_nationality_map_data(
 
     return map_df, unmatched
 
-def create_nationality_bubble_map(map_df: pd.DataFrame,):
+def create_nationality_bubble_map(map_df: pd.DataFrame):
     """
-    Build a professional Plotly Express nationality bubble map.
+    Build a professional Plotly Express nationality bubble map using OpenStreetMap tiles.
     """
     fig = px.scatter_map(
         map_df,
@@ -313,19 +314,20 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
             "Representation Display",
         ],
         size_max=42,
-        zoom=0.7,
+        zoom=2.0,
         center={
             "lat": 15,
             "lon": 65,
         },
         color_continuous_scale=[
             [0.00, "#BFD730"],
-            [0.35, "#00A19C"],
-            [0.70, "#20419A"],
+            [0.01, "#00A19C"],
+            [0.04, "#20419A"],
             [1.00, "#763F98"],
         ],
-        map_style="carto-positron",
-        opacity=0.82,
+        # 🗺️ Change map_style to "open-street-map" or "carto-voyager"
+        map_style="carto-voyager", 
+        opacity=0.75,
     )
 
     fig.update_traces(
@@ -334,29 +336,18 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
         },
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
-            "Personnel: %{customdata,.0f}<br>"
+            "Personnel: %{customdata[1]:.0f}<br>"
             "Representation: %{customdata[2]}"
             "<extra></extra>"
         ),
     )
 
     fig.update_layout(
-        title={
-            "text": (""),
-            "x": 0.01,
-            "xanchor": "left",
-            "y": 0.97,
-            "yanchor": "top",
-            "font": {
-                "size": 20,
-                "color": "#20419A",
-            },
-        },
         height=560,
         margin={
             "l": 0,
             "r": 0,
-            "t": 80,
+            "t": 40,
             "b": 0,
         },
         paper_bgcolor="#FFFFFF",
@@ -368,7 +359,7 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
             "orientation": "h",
             "x": 0.5,
             "xanchor": "center",
-            "y": -0.03,
+            "y": -0.05,
             "yanchor": "top",
             "len": 0.45,
             "thickness": 12,
@@ -379,15 +370,6 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
         font={
             "family": "Arial, sans-serif",
             "color": "#263238",
-        },
-        hoverlabel={
-            "bgcolor": "#FFFFFF",
-            "bordercolor": "#00A19C",
-            "font": {
-                "family": "Arial, sans-serif",
-                "size": 13,
-                "color": "#263238",
-            },
         },
     )
 
@@ -439,15 +421,20 @@ def grade_rank(sg_value):
     if sg_value is None or pd.isna(sg_value):
         return None
 
-    match = re.match(
-        r"^P(\d+)$",
-        str(sg_value).strip().upper(),
-    )
+    text = str(sg_value).strip().upper()
 
-    if not match:
-        return None
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
 
-    return int(match.group(1))
+    match = re.match(r"^P(\d+)$", text)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    return None
 
 def normalize_ruler_type(value):
     """
@@ -643,6 +630,49 @@ def calculate_readiness_metrics(gap_df):
         "weighted_readiness": weighted_readiness,
     }
 
+def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Data for Age vs SG scatter, including Overall_avg for color/size.
+    Returns only columns that exist in the input dataframe.
+    """
+    # Define ideal columns in order of preference
+    size_cols = ["Years in RE Experience", "Years in PET"]
+    
+    # Find which size column actually exists
+    size_col_available = None
+    for col in size_cols:
+        if col in df.columns:
+            size_col_available = col
+            break
+    
+    # Build column list with only columns that exist
+    cols = [
+        "Name", 
+        "Age", 
+        "SG", 
+        "Staff Position", 
+        "Department", 
+        "Overall_avg"
+    ]
+    
+    # Only include size column if it exists
+    if size_col_available:
+        cols.append(size_col_available)
+    
+    # Filter to only existing columns
+    cols = [c for c in cols if c in df.columns]
+    
+    # Create output
+    out = df[cols].copy()
+    
+    # Fill NaN values
+    if "Years in RE Experience" in out.columns:
+        out["Years in RE Experience"] = out["Years in RE Experience"].fillna(0)
+    if "Years in PET" in out.columns:
+        out["Years in PET"] = out["Years in PET"].fillna(0)
+    
+    # Remove rows missing Age or SG
+    return out.dropna(subset=["Age", "SG"])
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -978,43 +1008,54 @@ if page == "🏠 Dashboard Home":
     permanent_count = ( df["Employment Category"] .astype(str) .str.strip() .str.upper() .eq("PERMANENT") .sum() if "Employment Category" in df.columns else 0 )
 
     with c1: st.metric( "Total Personnel", int(total_personnel),)
-    with c2: st.metric( "Male", int(male_count), )
-    with c3: st.metric( "Female", int(female_count), )
-    with c4: st.metric( "CDH Employees", int(cdh_count),)
-    with c5: st.metric( "Permanent Employees", int(permanent_count),)
-
-    st.markdown("---")
+    with c3: st.metric( "CDH Employees", int(cdh_count),)
+    with c2: st.metric( "Permanent Employees", int(permanent_count),)
+    with c4: st.metric( "Male", int(male_count), )
+    with c5: st.metric( "Female", int(female_count), )
 
 # =========================================================================
 # NATIONALITY DISTRIBUTION
 # =========================================================================
 
     st.markdown("---")
-    st.subheader("🌏 RE Around The Globe")
-    nationality_map_df, unmatched_nationalities = (prepare_nationality_map_data(df))
+    st.subheader("🌐 RE Around The Globe")
+    
+    nationality_map_df, unmatched_nationalities = prepare_nationality_map_data(df)
+
+    # --- TOP 5 NATIONALITIES METRIC CARDS ---
+    if not nationality_map_df.empty:
+        # Get the top 5 sorted by Personnel Count
+        top_nationalities = nationality_map_df.head(5)
+        
+        # Create dynamic columns based on how many top nationalities exist (up to 5)
+        num_cols = min(len(top_nationalities), 5)
+        if num_cols > 0:
+            cols = st.columns(num_cols)
+            for i, (_, row) in enumerate(top_nationalities.iterrows()):
+                with cols[i]:
+                    st.metric(
+                        label=row["Nationality"], 
+                        value=int(row["Personnel Count"]),
+                        delta=row["Representation Display"] # Shows percentage representation as a neat subtitle delta
+                    )
+    # ----------------------------------------
 
     if nationality_map_df.empty:
-        st.info(
-            "No valid nationality data is available "
-            "for the geographical visualization.")
+        st.info("No valid nationality data is available for the geographical visualization.")
     else:
-        nationality_fig = (
-            create_nationality_bubble_map(
-                nationality_map_df))
-
-        st.plotly_chart( nationality_fig, use_container_width=True, config={
-                "displaylogo": False,
+        nationality_fig = create_nationality_bubble_map(nationality_map_df)
+        
+        st.plotly_chart(
+            nationality_fig, 
+            use_container_width=True, 
+            config={
+                "displaylogo": True,
                 "scrollZoom": True,
                 "responsive": True,
-                "modeBarButtonsToRemove": [
-                    "lasso2d",
-                    "select2d",
-                ],
+                "modeBarButtonsToRemove": ["lasso2d", "select2d"],
                 "toImageButtonOptions": {
                     "format": "png",
-                    "filename": (
-                        "RE_personnel_nationality_map"
-                    ),
+                    "filename": "RE_personnel_nationality_map",
                     "height": 800,
                     "width": 1400,
                     "scale": 2,
@@ -1023,32 +1064,49 @@ if page == "🏠 Dashboard Home":
         )
 
         st.caption(
-            "Bubble size and color represent the number of "
-            "personnel associated with each nationality. "
+            "Bubble size and color represent the number of personnel associated with each nationality. "
             "Markers use approximate country-centroid coordinates."
         )
 
     if unmatched_nationalities:
-        with st.expander(
-            "⚠️ Nationality values requiring mapping"
-        ):
-            st.write(
-                unmatched_nationalities
-            )
+        with st.expander("⚠️ Nationality values requiring mapping"):
+            st.write(unmatched_nationalities)
     
     # =========================================================================
     # ROW 1: POSITION & DEPARTMENT DISTRIBUTIONS
     # =========================================================================
     col1, col2 = st.columns(2)
+
     with col1:
         st.subheader("📊 Position Distribution")
+        
+        # 1. Count values and drop empty ones immediately
         pos = df["Staff Position"].value_counts().reset_index()
         pos.columns = ["Staff Position", "Count"]
-        fig = px.bar(pos, x="Staff Position", y="Count", color="Staff Position",
-                     color_discrete_sequence=px.colors.sequential.Teal,
-                     labels={"Count": "Number of Personnel"})
-        fig.update_layout(showlegend=False, height=400, margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Staff Position", yaxis_title="Number of Personnel")
-        fig.update_traces(textposition="inside", texttemplate="%{y}",)
+        
+        # 👇 THIS LINE FILTERS OUT POSITIONS WITH 0 OR NO DATA
+        pos = pos[pos["Count"] > 0].dropna(subset=["Staff Position"])
+        
+        # 2. Pull official order from config (using POSITION_TO_SG keys)
+        custom_position_order = list(config.POSITION_TO_SG.keys())
+        
+        # 3. Convert to Categorical so Plotly respects your hierarchy order
+        pos["Staff Position"] = pd.Categorical( pos["Staff Position"], categories=custom_position_order, ordered=True )
+        
+        # 4. Sort and filter out any positions that aren't present in the filtered dataframe
+        pos = pos.sort_values("Staff Position").dropna(subset=["Staff Position"])
+
+        # 5. Build the chart
+        fig = px.bar( pos, 
+            x="Staff Position",  y="Count",  color="Staff Position",
+            category_orders={"Staff Position": custom_position_order}, color_discrete_sequence=px.colors.sequential.Teal, labels={"Count": "Number of Personnel"})
+        
+        fig.update_layout(
+            showlegend=False,  height=400, 
+            margin=dict(l=10, r=20, t=40, b=20),  xaxis_title="Staff Position",  yaxis_title="Number of Personnel")
+        
+        fig.update_traces(textposition="outside", texttemplate="%{y}")
+        
         st.plotly_chart(fig, use_container_width=True)
  
     with col2:
@@ -1060,7 +1118,7 @@ if page == "🏠 Dashboard Home":
         
         # 2. Combine departments < 3% into "Others"
         total_count = dept["Count"].sum()
-        threshold = 0.03  # 3% threshold
+        threshold = 0.02  # 3% threshold
         
         dept["Department"] = dept.apply(
             lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
@@ -1132,14 +1190,8 @@ if page == "🏠 Dashboard Home":
         
         fig = px.scatter(
             section_final,
-            x="Count",
-            y="y_position",
-            size="Count",
-            color="Count",
-            hover_name="Section Name",
-            color_continuous_scale="Viridis",
-            size_max=80
-        )
+            x="Count", y="y_position", size="Count", color="Count",
+            hover_name="Section Name", color_continuous_scale="Viridis", size_max=80)
         
         fig.update_traces(
             hovertemplate="<b>%{hovertext}</b><br>Personnel: %{x}<extra></extra>"
@@ -1147,20 +1199,8 @@ if page == "🏠 Dashboard Home":
         
         fig.update_layout(
             height=500,
-            showlegend=False,
-            coloraxis_showscale=False,
-            margin=dict(l=10, r=20, t=40, b=20),
-            xaxis_title="Number of Personnel",
-            yaxis_title="",
-            yaxis=dict(
-                tickmode="array",
-                tickvals=list(range(len(section_final))),  # ✅ Fixed
-                ticktext=section_final["Section Name"].tolist(),  # ✅ Fixed
-                showgrid=False
-            ),
-            hovermode="closest",
-            
-        )
+            showlegend=False, coloraxis_showscale=False, margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Number of Personnel", yaxis_title="",
+            yaxis=dict( tickmode="array", tickvals=list(range(len(section_final))), ticktext=section_final["Section Name"].tolist(), showgrid=False),hovermode="closest",)
         
         st.plotly_chart(fig, use_container_width=True)
 
@@ -1168,30 +1208,34 @@ if page == "🏠 Dashboard Home":
     # CURRENT ASSIGNMENT DISTRIBUTION
     # =====================================================
     with col4:
-        st.subheader("🌏 Current Assignment Distribution")
+        st.subheader("🏢 Office Location Distribution")
 
-        assignment = df["Current Assignment / Loc:"].value_counts()
+        # 1. Count all values and reset index directly
+        assignment_df = df["Current Location:"].value_counts().reset_index()
 
-        top10 = assignment.head(10)
-        others = assignment.iloc[10:].sum()
+        # 2. Rename columns and sort (ascending puts the largest bar at the top)
+        assignment_df.columns = ["Current Assignment", "Count"]
+        assignment_df = assignment_df.sort_values("Count", ascending=True)
 
-        assignment = pd.concat([ top10,  pd.Series({"Others": others}) ]).reset_index()
-        assignment.columns = ["Current Assignment", "Count"]
+        # 3. Dynamic height to prevent squishing (Minimum 500px, adds 25px per row)
+        chart_height = max(500, len(assignment_df) * 25)
 
-        assignment = assignment.sort_values("Count", ascending=True)
-
-        fig = px.bar( assignment, x="Count", y="Current Assignment", orientation="h",
-            text="Count", color="Count", color_continuous_scale="Viridis",)
+        # 4. Build the chart
+        fig = px.bar(
+            assignment_df, 
+            x="Count", 
+            y="Current Assignment", orientation="h", text="Count",  color="Count", color_continuous_scale="Viridis")
 
         fig.update_traces(
             textposition="outside",
             hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>"
         )
 
-        fig.update_layout( height=500, showlegend=False, coloraxis_showscale=False,
-                          margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Number of Personnel", yaxis_title="",)
+        fig.update_layout(
+            height=chart_height,  # Applied dynamic height here
+            showlegend=False, coloraxis_showscale=False, margin=dict(l=10, r=30, t=40, b=20), xaxis_title="Number of Personnel",  yaxis_title="")
+        
         st.plotly_chart(fig, use_container_width=True)
-   
  
     # =========================================================================
     # ROW 2: GENDER DISTRIBUTION & GRADE DISTRIBUTION
@@ -1243,22 +1287,50 @@ if page == "🏠 Dashboard Home":
             # Rename columns to readable labels
             sg_gender.columns = sg_gender.columns.map({"M": "Male", "F": "Female"})
             
-            # Sort by numeric grade (P1-P10)
-            sg_gender = sg_gender.reindex([f"P{i}" for i in range(1, 11) if f"P{i}" in sg_gender.index])
-            
+            # Sort by numeric grade including UPTREX then P1..P10
+            order = ["UPTREX"] + [f"P{i}" for i in range(1, 11)]
+            present = [g for g in order if g in sg_gender.index]
+            sg_gender = sg_gender.reindex(present)
+
+            # Compute average age per grade for overlay
+            age_by_grade = df.groupby("SG").agg(avg_age=("Age", "mean")).reset_index()
+            age_by_grade = age_by_grade[age_by_grade["SG"].isin(present)]
+            age_by_grade = age_by_grade.set_index("SG").reindex(present).reset_index()
+
             # Create stacked bar chart
             fig = px.bar(
-                sg_gender.reset_index(),x="SG", y=["Male", "Female"],
+                sg_gender.reset_index(), x="SG", y=["Male", "Female"],
                 barmode="stack", title="", labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
-                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"})
-            
-            fig.update_layout(
-                
-                xaxis_title="Salary Grade", yaxis_title="Number of Personnel", height=400, hovermode="x unified",
-                legend=dict( title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99)) 
-            # Remove the text labels showing count (as requested)
+                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
+            )
 
-            fig.update_traces(textposition="inside", texttemplate="%{y}")
+            # Add average age as a line on secondary y-axis
+            fig.add_trace(
+                go.Scatter(
+                    x=age_by_grade["SG"],
+                    y=age_by_grade["avg_age"],
+                    name="Average Age",
+                    mode="lines+markers",
+                    marker=dict(color="#2ca02c", size=8),
+                    yaxis="y2",
+                )
+            )
+
+            fig.update_layout(
+                xaxis_title="Salary Grade",
+                yaxis_title="Number of Personnel",
+                height=400,
+                hovermode="x unified",
+                legend=dict(title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99),
+                yaxis2=dict(
+                    title="Average Age",
+                    overlaying="y",
+                    side="right",
+                ),
+            )
+
+            # Show stacked counts inside bars
+            fig.update_traces(textposition="auto", texttemplate="%{y}", selector=dict(type="bar"))
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Grade or Gender data not available")
@@ -1270,58 +1342,192 @@ if page == "🏠 Dashboard Home":
 
     st.subheader("📈 Age vs Salary Grade Analysis")
 
-    c1, c2, c3 = st.columns(3)
-    with c1: f_name = st.multiselect("Filter by Personnel", sorted(df["Name"].dropna().unique()), key="dash_name")
-    with c2: f_unit = st.multiselect("Filter by Unit Name", sorted(df["Unit Name"].dropna().unique()), key="dash_unit1")
-    with c3: f_pos = st.multiselect("Filter by Position", sorted(df["Staff Position"].dropna().unique()), key="dash_pos1")
-    
-    tab2d, tab3d = st.tabs([ "📊 Career Distribution (2D)", "🌐 Career Progression (3D)" ])
-    
-    fdf1 = df.copy()
-    if f_name: fdf1 = fdf1[fdf1["Name"].isin(f_name)]
-    if f_unit: fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
-    if f_pos: fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
-        
-    sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8","P9", "P10" ]
-                
-    scatter_df2 = an.scatter_age_vs_grade(fdf1)
-        
-    with tab2d:
-        # 2D Scatter code
-        st.info(
-                """
-                **Purpose**
-                This chart compares **Age** against **Salary Grade (SG)**.
-                It helps identify:
-                • Employees progressing faster than peers
-                • Senior employees remaining at lower grades
-                • Overall distribution of grades across age groups
-                """
-            )
-    
-        fig = px.scatter(scatter_df2, x="Age", y="SG", color="Overall_avg", 
-                         hover_data=[ "Name", "Staff Position", "Department", "Years in PET",],
-                         category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
-                         color_continuous_scale="Tealgrn", title="Age vs Salary Grade")
-        fig.update_traces( marker=dict(size=10, opacity=0.75, line=dict(width=1,color="white") ))
-        fig.update_layout( height=700, xaxis_title="Age", yaxis_title="Salary Grade", plot_bgcolor="white")
-    
-        st.plotly_chart(fig, use_container_width=True)
+    # 1. Custom Hover Card Generator (No Overall_avg)
+    def create_hover_text(row):
+        html = f"<b>{row.get('Name', 'Unknown')}</b><br>"
+        html += f"<i>{row.get('Staff Position', 'N/A')}</i><br>"
+        html += (
+            f"<span style='color: gray;'>{row.get('Department', 'N/A')}</span><br>"
+        )
 
+        # Age formatting (whole number)
+        age = row.get("Age", "N/A")
+        try:
+            age_display = f"{float(age):.0f}" if pd.notna(age) else "N/A"
+        except (ValueError, TypeError):
+            age_display = age
+
+        html += f"<b>Age:</b> {age_display} | <b>Salary Grade:</b> {row.get('SG', 'N/A')}<br>"
+
+        # Experience formatting (2 decimal places)
+        if pd.notna(row.get("Years in RE Experience")):
+            html += f"<b>RE Experience:</b> {float(row['Years in RE Experience']):.2f} Years<br>"
+        if pd.notna(row.get("Years in PET")):
+            html += f"<b>PET Experience:</b> {float(row['Years in PET']):.2f} Years<br>"
+
+        return html
+
+    # --- STREAMLIT UI ---
+
+    # Filter Section
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        f_name = st.multiselect(
+            "Filter by Personnel",
+            sorted(df["Name"].dropna().unique()),
+            key="dash_name",
+        )
+    with c2:
+        f_unit = st.multiselect(
+            "Filter by Unit Name",
+            sorted(df["Unit Name"].dropna().unique()),
+            key="dash_unit1",
+        )
+    with c3:
+        f_pos = st.multiselect(
+            "Filter by Position",
+            sorted(df["Staff Position"].dropna().unique()),
+            key="dash_pos1",
+        )
+
+    tab2d, tab3d = st.tabs(
+        ["📊 Career Distribution (2D)", "🌐 Career Progression (3D)"]
+    )
+
+    # Apply Filters
+    fdf1 = df.copy()
+    if f_name:
+        fdf1 = fdf1[fdf1["Name"].isin(f_name)]
+    if f_unit:
+        fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
+    if f_pos:
+        fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
+
+    sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
+    scatter_df2 = an.scatter_age_vs_grade(fdf1)
+
+    # Create Colorful Legend for 'Years in RE Experience'
+    color_col = None
+    
+    if "Years in RE Experience" in scatter_df2.columns:
+            # Ensure numeric type
+            scatter_df2["Years in RE Experience"] = pd.to_numeric(scatter_df2["Years in RE Experience"], errors='coerce')
+            
+            # 1. Define Bin Ranges & Labels
+            bins = [-1, 2, 5, 10, 15, 100]
+            labels = ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs"]
+            
+            # 2. Categorize data into distinct groups
+            scatter_df2["RE Experience Tier"] = pd.cut(
+                scatter_df2["Years in RE Experience"], 
+                bins=bins, 
+                labels=labels
+            ).astype(str)
+            
+            # Clean up any NaNs/Missing data
+            scatter_df2["RE Experience Tier"] = scatter_df2["RE Experience Tier"].replace({"nan": "Unknown / Unspecified"})
+            
+            color_col = "RE Experience Tier"
+    
+        # Define explicit color mapping so each tier ALWAYS gets a distinct solid color
+    color_map = {
+            "< 2 Yrs": "#fdb924",               # Soft Blue
+            "2 - 5 Yrs": "#20419a",             # Bright Blue
+            "5 - 10 Yrs": "#763f98",            # Purple
+            "10 - 15 Yrs": "#00a19c",           # Bright Pink/Red
+            "15+ Yrs": "#bfd739",              # Orange/Gold
+            "Unknown / Unspecified": "#651c32"  # Grey
+        }
+
+    # Determine size column
+    size_col = None
+    if "Years in RE Experience" in scatter_df2.columns:
+        size_col = "Years in RE Experience"
+    elif "Years in PET" in scatter_df2.columns:
+        size_col = "Years in PET"
+
+    # Attach HTML Hover String
+    scatter_df2["Beautiful_Hover"] = scatter_df2.apply(create_hover_text, axis=1)
+
+
+    # --- 2D TAB ---
+    with tab2d:
+        st.info(
+            """
+            **Purpose**
+            This chart compares **Age** against **Salary Grade (SG)**. 
+            Each color in the legend represents **Years in RE Experience**.
+            """
+        )
+
+        fig = px.scatter(
+            scatter_df2,
+            x="Age",
+            y="SG",
+            color=color_col,
+            size=size_col,
+            custom_data=["Beautiful_Hover"],  # Custom HTML injection
+            category_orders={
+            "SG": sg_order,
+            "RE Experience Tier": ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs", "Unknown / Unspecified"]},
+            color_discrete_map=color_map,  # High-contrast colorful legend palette
+            title="Age vs Salary Grade",
+        )
+
+        fig.update_traces(
+            hovertemplate="%{customdata[0]}<extra></extra>",  # Replaces messy hover with formatted HTML card
+            marker=dict(opacity=0.85, line=dict(width=1, color="white")),
+        )
+        fig.update_layout(
+            height=700,
+            xaxis_title="Age",
+            yaxis_title="Salary Grade",
+            plot_bgcolor="#FFFFFF",
+            legend_title_text="RE Experience",
+        )
+        st.plotly_chart(fig, use_container_width=True, key="scatter_2d_age_sg")
+
+
+    # --- 3D TAB ---
     with tab3d:
-        # 3D Scatter code   
-        fig = px.scatter_3d (scatter_df2, x="Age", y="SG", z="Years in PET", color="Overall_avg",
-                             hover_data=[ "Name", "Staff Position", "Department", "Years in PET", "Overall_avg"],
-                             category_orders={ "SG": [ "UPTREX", "P1","P2","P3","P4","P5", "P6","P7","P8","P9","P10" ]},
-                             color_continuous_scale="Tealgrn", title="Career Progression Landscape")
-        fig.update_traces( marker=dict(size=5, opacity=0.75, line=dict(width=1,color="white") ))
-        fig.update_layout( height=800,scene=dict( xaxis=dict(title="Age"), 
-                                                 yaxis=dict(title="Salary Grade", tickmode="array", 
-                                                            tickvals=list(range(1, 11)), 
-                                                            ticktext=[f"P{i}" for i in range(1, 11)] ),
-                                                            zaxis=dict( title="Years in PET")))
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("---")
+        fig_3d = px.scatter_3d(
+            scatter_df2,
+            x="Age",
+            y="SG",
+            z="Years in PET",
+            color=color_col,
+            size=size_col,
+            custom_data=["Beautiful_Hover"],  # Custom HTML injection
+            category_orders={
+                        "SG": sg_order,
+                        "RE Experience Tier": ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs", "Unknown / Unspecified"]},
+            color_discrete_map=color_map,
+            title="Career Progression Landscape",
+        )
+
+        fig_3d.update_traces(
+            hovertemplate="%{customdata[0]}<extra></extra>",
+            marker=dict(opacity=0.85, line=dict(width=1, color="white")),
+        )
+        fig_3d.update_layout(
+            height=800,
+            legend_title_text="RE Experience",
+            scene=dict(
+                xaxis=dict(title="Age"),
+                yaxis=dict(
+                    title="Salary Grade",
+                    tickmode="array",
+                    tickvals=list(range(len(sg_order))),
+                    ticktext=sg_order,
+                ),
+                zaxis=dict(title="Years in PET"),
+            ),
+        )
+
+        st.plotly_chart(
+            fig_3d, use_container_width=True, key="scatter_3d_career_landscape"
+        )
+    st.markdown("---")
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: PERSONNEL DIRECTORY
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1355,9 +1561,9 @@ elif page == "👥 Personnel Directory":
 
     st.caption(f"Showing {len(fdf)} of {len(df)} personnel")
     display_cols = ["Name", "Staff ID", "Staff Position", "SG", "Department",
-                    "Age", "Chat Status", "Overall_avg"]
+                    "Age", "Chat Status", "Years in RE Experience"]
     display_cols = [c for c in display_cols if c in fdf.columns]
-    show = fdf[display_cols].rename(columns={"Overall_avg": "Avg Score"})
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     if "Avg Score" in show.columns:
         show["Avg Score"] = show["Avg Score"].round(2)
     st.dataframe(show, use_container_width=True, hide_index=True)
@@ -2809,7 +3015,12 @@ elif page == "👤 Individual Assessment & Talent Profile":
 
     with col_target:
         if target_sg_options:
-            target_sg = st.selectbox("Target Salary Grade", target_sg_options)
+            # Default the selector to the person's current SG when available
+            try:
+                default_idx = target_sg_options.index(current_sg) if current_sg in target_sg_options else 0
+            except Exception:
+                default_idx = 0
+            target_sg = st.selectbox("Target Salary Grade", target_sg_options, index=default_idx)
         else:
             st.warning("No future grades found in ruler.")
             target_sg = None
@@ -2913,6 +3124,42 @@ elif page == "👤 Individual Assessment & Talent Profile":
         with metric_col4:
             status = "Ready ✅" if weighted_readiness >= 80 else "On Track 🟡" if weighted_readiness >= 60 else "Needs Work 🔴"
             st.metric("Overall Status", status)
+
+        # -----------------------------------------------------------------
+        # Show stored summary scores from the database (if available)
+        # -----------------------------------------------------------------
+        try:
+            session = get_session(engine)
+            personnel_id = db_ops.resolve_personnel_id(
+                session=session,
+                database_id=person_row.get("id"),
+                staff_id=person_row.get("Staff ID"),
+                name=person_row.get("Name"),
+            )
+            summary = None
+            if personnel_id:
+                from models import SummaryScore
+                summary = session.query(SummaryScore).filter_by(personnel_id=personnel_id).order_by(SummaryScore.updated_at.desc()).first()
+        except Exception:
+            summary = None
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+        if summary is not None:
+            s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
+            with s_col1:
+                st.metric("Staff Base", getattr(summary, "staff_base", "N/A"))
+            with s_col2:
+                st.metric("Staff Keys", getattr(summary, "staff_keys", "N/A"))
+            with s_col3:
+                st.metric("Principal Base", getattr(summary, "principal_base", "N/A"))
+            with s_col4:
+                st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
+            with s_col5:
+                st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
             
         # Category readiness breakdown (Code #1)
         if cat_readiness:
@@ -3626,6 +3873,22 @@ elif page == "⚙️ Admin: Import Data":
             raw_df = load_master_data(
                 tmp_path
             )
+
+            st.dataframe(
+                    (
+                        df[
+                            [
+                                "Staff Position",
+                                "SG",
+                                "Canonical Position",
+                                "Canonical SG",
+                            ]
+                        ]
+                        .value_counts()
+                        .reset_index(name="Count")
+                        .sort_values(["Canonical SG", "Canonical Position"])
+                    )
+                )
 
             ruler_map_import, tech_labels_import = (
                 load_ruler_and_tech_mapping(

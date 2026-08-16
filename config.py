@@ -20,9 +20,9 @@ def resolve_excel_path() -> str:
             return str(path.resolve())
 
     candidates = [
-        BASE_DIR / "RE Fraternity Jul2026_Master.xlsx",
-        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsx",
-        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsx"),
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
     ]
 
     for candidate in candidates:
@@ -35,30 +35,141 @@ def resolve_excel_path() -> str:
 EXCEL_PATH = resolve_excel_path()
 USE_LIVE_EXCEL_SOURCE = True
 
-# ── Salary Grades (SG column in Excel) ──────────────────────────────────────
+# ── Salary Grade Hierarchy ───────────────────────────────────────────────────
+# Single source of truth for the RE competency hierarchy.
+#
+# IMPORTANT:
+# The order of this dictionary defines the official hierarchy:
+#
+# UPTREX
+# P1  Junior Executive
+# P2  Executive
+# P3  Senior Executive
+# P4  Senior Reservoir Engineer
+# P5  Staff
+# P6  Specialist
+# P7  Principal
+# P8  Senior Principal
+# P9  Custodian
+# P10 Senior Custodian
+#
 GRADE_LABELS = {
     "UPTREX": "UPTREX",
-    "P1": "Executive Level 1",
-    "P2": "Executive Level 2",
+    "P1": "Junior Executive",
+    "P2": "Executive",
+    "P1": "Junior Executive",
+    "P2": "Executive",
     "P3": "Senior Executive",
     "P4": "Senior Reservoir Engineer",
     "P5": "Staff",
     "P6": "Specialist",
     "P7": "Principal",
     "P8": "Senior Principal",
-    "CDH": "Custodian / Head",
+    "P9": "Custodian",
+    "P10": "Senior Custodian",
 }
 
-# Staff Position → SG mapping (from data)
+
+# ── Position → Salary Grade mapping ──────────────────────────────────────────
+# All recognised position names are normalised to the official SG hierarchy.
+#
+# Multiple position aliases can point to the same SG.
+# This prevents differences such as "Snr RE" vs "Senior Reservoir Engineer"
+# from breaking filtering, grouping, or chart generation.
+
 POSITION_TO_SG = {
-    "Senior Executive": "P3",
-    "Senior Reservoir Engineer": "P4",
-    "Staff": "P5",
-    "Principal": "P7",
-    "Specialist": "P6",
+    # UPTREX
     "UPTREX": "UPTREX",
-    "Manager": "CDH",
-    "Custodian": "CDH",
+
+    # P1
+    "Junior Executive": "P1",
+
+    # P2
+    "Executive": "P2",
+    # P3
+    "Senior Executive" : "P3",
+    
+    # P4
+    "Senior RE" : "P4",
+
+    # P5
+    "Staff": "P5",
+
+    # P6
+    "Specialist": "P6",
+
+    # P7
+    "Principal": "P7",
+
+    # P8
+    "Senior Principal": "P8",
+
+    # P9
+    "Custodian": "P9",
+
+    # P10
+    "Senior Custodian": "P10",
+
+}
+
+
+# ── Official Position Hierarchy ──────────────────────────────────────────────
+# Used for dropdowns, filters, charts and ordered displays.
+#
+# Do NOT derive this from the order of rows in Excel.
+# The order here is intentional and follows GRADE_LABELS.
+
+POSITIONS = [
+    GRADE_LABELS["UPTREX"],
+    GRADE_LABELS["P1"],
+    GRADE_LABELS["P2"],
+    GRADE_LABELS["P3"],
+    GRADE_LABELS["P4"],
+    GRADE_LABELS["P5"],
+    GRADE_LABELS["P6"],
+    GRADE_LABELS["P7"],
+    GRADE_LABELS["P8"],
+    GRADE_LABELS["P9"],
+    GRADE_LABELS["P10"],
+    "All",
+]
+
+
+# ── Salary Grade Hierarchy ───────────────────────────────────────────────────
+# Useful when a chart/table needs to sort by SG rather than alphabetically.
+
+SG_HIERARCHY = [
+    "UPTREX",
+    "P1",
+    "P2",
+    "P3",
+    "P4",
+    "P5",
+    "P6",
+    "P7",
+    "P8",
+    "P9",
+    "P10",
+]
+
+
+# ── Salary Grade Rank ────────────────────────────────────────────────────────
+# Numeric ranking makes sorting reliable.
+#
+# Lower number = lower position in the hierarchy.
+
+SG_RANK = {
+    sg: rank
+    for rank, sg in enumerate(SG_HIERARCHY, start=0)
+}
+
+
+# ── Position Rank ────────────────────────────────────────────────────────────
+# Allows the application to sort using the official hierarchy.
+
+POSITION_RANK = {
+    GRADE_LABELS[sg]: SG_RANK[sg]
+    for sg in SG_HIERARCHY
 }
 
 # ── Competency Columns ───────────────────────────────────────────────────────
@@ -96,7 +207,7 @@ EMPLOYMENT_COLS = [
     "Joining Date","Years in PET","Years of RE Experience",
     "Age Promoted to Staff or Principal","Years in Salary Grade",
     "Date of Appointment to Current Grade",
-    "Current Assignment / Loc:","Date in Position","Length in Current Assignment",
+    "Current Location:","Date in Position","Length in Current Assignment",
 ]
 ASSESSMENT_COLS = [
     "Chat Status","Chat Date","Assessment Level","Last Assesment Date",
