@@ -23,6 +23,9 @@ def resolve_excel_path() -> str:
         BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
         BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
         Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
     ]
 
     for candidate in candidates:
@@ -35,24 +38,30 @@ def resolve_excel_path() -> str:
 EXCEL_PATH = resolve_excel_path()
 USE_LIVE_EXCEL_SOURCE = True
 
+# ── Overarching Position & Salary Grade Brackets ─────────────────────────────
+POSITION_GRADE_RANGES = {
+    "UPTREX" : ["P1"],
+    "Executive": ["P1", "P2", "P3", "P4"],
+    "Staff / Manager": ["P5", "P6"],
+    "Principal / SM": ["P7", "P8"],
+    "Custodian / GM": ["P9", "P10"],
+}
+
+# Helper mapping to lookup a bracket given a specific Salary Grade (SG)
+SG_TO_POSITION_BRACKET = {}
+for bracket, grades in POSITION_GRADE_RANGES.items():
+    for grade in grades:
+        SG_TO_POSITION_BRACKET[grade] = bracket
+
+# Ordered list for rendering charts properly from lowest to highest hierarchy
+POSITION_HIERARCHY_ORDER = list(POSITION_GRADE_RANGES.keys())
+
 # ── Salary Grade Hierarchy ───────────────────────────────────────────────────
 # Single source of truth for the RE competency hierarchy.
 #
 # IMPORTANT:
 # The order of this dictionary defines the official hierarchy:
-#
-# UPTREX
-# P1  Junior Executive
-# P2  Executive
-# P3  Senior Executive
-# P4  Senior Reservoir Engineer
-# P5  Staff
-# P6  Specialist
-# P7  Principal
-# P8  Senior Principal
-# P9  Custodian
-# P10 Senior Custodian
-#
+
 GRADE_LABELS = {
     "UPTREX": "UPTREX",
     "P1": "Junior Executive",
@@ -67,8 +76,9 @@ GRADE_LABELS = {
     "P8": "Senior Principal",
     "P9": "Custodian",
     "P10": "Senior Custodian",
+    "P9": "Custodian",
+    "P10": "Senior Custodian",
 }
-
 
 # ── Position → Salary Grade mapping ──────────────────────────────────────────
 # All recognised position names are normalised to the official SG hierarchy.
@@ -86,6 +96,7 @@ POSITION_TO_SG = {
 
     # P2
     "Executive": "P2",
+
     # P3
     "Senior Executive" : "P3",
     
@@ -207,6 +218,7 @@ EMPLOYMENT_COLS = [
     "Joining Date","Years in PET","Years of RE Experience",
     "Age Promoted to Staff or Principal","Years in Salary Grade",
     "Date of Appointment to Current Grade",
+    "Current Location:","Date in Position","Length in Current Assignment",
     "Current Location:","Date in Position","Length in Current Assignment",
 ]
 ASSESSMENT_COLS = [

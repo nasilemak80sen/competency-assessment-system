@@ -422,7 +422,11 @@ def grade_rank(sg_value):
         return None
 
     text = str(sg_value).strip().upper()
+    text = str(sg_value).strip().upper()
 
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
     # Put UPTREX first (rank 0), then P1..P10
     if text == "UPTREX":
         return 0
@@ -630,6 +634,49 @@ def calculate_readiness_metrics(gap_df):
         "weighted_readiness": weighted_readiness,
     }
 
+def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Data for Age vs SG scatter, including Overall_avg for color/size.
+    Returns only columns that exist in the input dataframe.
+    """
+    # Define ideal columns in order of preference
+    size_cols = ["Years in RE Experience", "Years in PET"]
+    
+    # Find which size column actually exists
+    size_col_available = None
+    for col in size_cols:
+        if col in df.columns:
+            size_col_available = col
+            break
+    
+    # Build column list with only columns that exist
+    cols = [
+        "Name", 
+        "Age", 
+        "SG", 
+        "Staff Position", 
+        "Department", 
+        "Overall_avg"
+    ]
+    
+    # Only include size column if it exists
+    if size_col_available:
+        cols.append(size_col_available)
+    
+    # Filter to only existing columns
+    cols = [c for c in cols if c in df.columns]
+    
+    # Create output
+    out = df[cols].copy()
+    
+    # Fill NaN values
+    if "Years in RE Experience" in out.columns:
+        out["Years in RE Experience"] = out["Years in RE Experience"].fillna(0)
+    if "Years in PET" in out.columns:
+        out["Years in PET"] = out["Years in PET"].fillna(0)
+    
+    # Remove rows missing Age or SG
+    return out.dropna(subset=["Age", "SG"])
 def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
     """
     Data for Age vs SG scatter, including Overall_avg for color/size.
@@ -1075,96 +1122,222 @@ if page == "🏠 Dashboard Home":
     # =========================================================================
     # ROW 1: POSITION & DEPARTMENT DISTRIBUTIONS
     # =========================================================================
-    col1, col2 = st.columns(2)
+    col1, col2,= st.columns(2)
 
     with col1:
-        st.subheader("📊 Position Distribution")
+        st.subheader("📊 Position Breakdown")
         
-        # 1. Count values and drop empty ones immediately
-        pos = df["Staff Position"].value_counts().reset_index()
-        pos.columns = ["Staff Position", "Count"]
-        
-        # 👇 THIS LINE FILTERS OUT POSITIONS WITH 0 OR NO DATA
-        pos = pos[pos["Count"] > 0].dropna(subset=["Staff Position"])
-        
-        # 2. Pull official order from config (using POSITION_TO_SG keys)
-        custom_position_order = list(config.POSITION_TO_SG.keys())
-        
-        # 3. Convert to Categorical so Plotly respects your hierarchy order
-        pos["Staff Position"] = pd.Categorical( pos["Staff Position"], categories=custom_position_order, ordered=True )
-        
-        # 4. Sort and filter out any positions that aren't present in the filtered dataframe
-        pos = pos.sort_values("Staff Position").dropna(subset=["Staff Position"])
-
-        # 5. Build the chart
-        fig = px.bar( pos, 
-            x="Staff Position",  y="Count",  color="Staff Position",
-            category_orders={"Staff Position": custom_position_order}, color_discrete_sequence=px.colors.sequential.Teal, labels={"Count": "Number of Personnel"})
-        
-        fig.update_layout(
-            showlegend=False,  height=400, 
-            margin=dict(l=10, r=20, t=40, b=20),  xaxis_title="Staff Position",  yaxis_title="Number of Personnel")
-        
-        fig.update_traces(textposition="outside", texttemplate="%{y}")
-        
-        st.plotly_chart(fig, use_container_width=True)
- 
-    with col2:
-        st.subheader("🏢 Department Distribution")
-        
-        # 1. Count occurrences
-        dept = df["Department"].value_counts().reset_index()
-        dept.columns = ["Department", "Count"]
-        
-        # 2. Combine departments < 3% into "Others"
-        total_count = dept["Count"].sum()
-        threshold = 0.02  # 3% threshold
-        
-        dept["Department"] = dept.apply(
-            lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
-            axis=1
-        )
-        
-        # Regroup and sum the counts for "Others"
-        dept_grouped = dept.groupby("Department", as_index=False)["Count"].sum()
-        # use list for 'by' to satisfy type checkers that expect Sequence[str]
-        dept_grouped = dept_grouped.sort_values(by=["Count"], ascending=False)
-        
-        # 3. Create Donut Chart
-        fig = px.pie(
-            dept_grouped, 
-            names="Department", 
-            values="Count", 
-            hole=0.2,
-            color_discrete_sequence=px.colors.sequential.RdBu
-        )
-        
-        # 4. Format labels inside slices
-        fig.update_traces(
-            textposition="inside",
-            textinfo="percent+label",
-            hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Share: %{percent}"
-        )
-        
-        # 5. Clean layout & margins
-        fig.update_layout(
-            height=400,
-            margin=dict(t=20, b=20, l=10, r=10),
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.1,
-                xanchor="center",
-                x=0.5,
-                title_text=""
+        if "SG" in df.columns and "Employment Category" in df.columns:
+            df_chart = df.copy()
+            
+            # Map SG to Position Bracket using your config dictionary
+            df_chart["Position_Bracket"] = df_chart["SG"].map(config.SG_TO_POSITION_BRACKET).fillna("Other")
+            
+            # Clean employment category
+            df_chart["Clean_Emp_Category"] = (
+                df_chart["Employment Category"]
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .map({"PERMANENT": "Permanent", "CDH": "CDH"})
+                .fillna("Other")
             )
-        )
+            
+            # Group by Position Bracket and Employment Category
+            pos_emp = (
+                df_chart.groupby(["Position_Bracket", "Clean_Emp_Category"])
+                .size()
+                .unstack(fill_value=0)
+            )
+            
+            # Reindex using the official hierarchy order from config
+            present_pos = [p for p in config.POSITION_HIERARCHY_ORDER if p in pos_emp.index]
+            pos_emp = pos_emp.reindex(present_pos)
+
+            for col_name in ["Permanent", "CDH"]:
+                if col_name not in pos_emp.columns:
+                    pos_emp[col_name] = 0
+
+            # Calculate total sum per position bracket for the top label
+            pos_emp["Total"] = pos_emp["Permanent"] + pos_emp["CDH"]
+
+            plot_df = pos_emp.reset_index()
+
+            fig = px.bar(
+                plot_df, 
+                x="Position_Bracket", 
+                y=["Permanent", "CDH"],
+                barmode="stack", 
+                title="", 
+                labels={"Position_Bracket": "Position", "value": "Personnel Count", "variable": "Type"},
+                category_orders={"Position_Bracket": present_pos},
+                color_discrete_map={"Permanent": "#20419A", "CDH": "#00A19C"}
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df["Position_Bracket"],
+                    y=plot_df["Total"],
+                    text=plot_df["Total"],
+                    mode="text",
+                    textposition="top center",
+                    textfont=dict(size=12, color="black", family="sans-serif"),
+                    showlegend=False,
+                    hoverinfo="skip"
+                )
+            )
+            
+            fig.update_layout(
+                height=380, 
+                margin=dict(l=10, r=10, t=30, b=20), 
+                xaxis_title="", 
+                yaxis_title="Count",
+                legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center", title_text="")
+            )
+            # Show individual segment counts inside the bars
+            fig.update_traces(textposition="inside", texttemplate="%{y}", selector=dict(type="bar"))
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Required data columns missing.")
+
+    with col2:
+        st.subheader("📊 Salary Grade Distribution by Employment Type")
         
-        st.plotly_chart(fig, use_container_width=True)
+        if "SG" in df.columns and "Employment Category" in df.columns:
+            # 1. Clean and normalize the employment category column
+            df_chart = df.copy()
+            df_chart["Clean_Emp_Category"] = (
+                df_chart["Employment Category"]
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .map({"PERMANENT": "Permanent", "CDH": "CDH"})
+                .fillna("Other")
+            )
+            
+            # 2. Use groupby and unstack to guarantee "SG" is kept explicitly as a column name
+            sg_emp = (
+                df_chart.groupby(["SG", "Clean_Emp_Category"])
+                .size()
+                .unstack(fill_value=0)
+            )
+            
+            # 3. Sort using your official SG hierarchy from config
+            official_sg_order = config.SG_HIERARCHY
+            present_sgs = [g for g in official_sg_order if g in sg_emp.index]
+            
+            sg_emp = sg_emp.reindex(present_sgs)
+
+            # Ensure both Permanent and CDH columns exist FIRST to prevent crashes
+            for col_name in ["Permanent", "CDH"]:
+                if col_name not in sg_emp.columns:
+                    sg_emp[col_name] = 0
+
+            # Calculate total sum per salary grade AFTER columns are guaranteed to exist
+            sg_emp["Total"] = sg_emp["Permanent"] + sg_emp["CDH"]
+
+            # Reset index safely so "SG" is guaranteed to be a column name
+            plot_df = sg_emp.reset_index()
+
+            # 4. Build stacked bar chart
+            fig = px.bar(
+                plot_df, 
+                x="SG", 
+                y=["Permanent", "CDH"],
+                barmode="stack", 
+                title="", 
+                labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Employment Type"},
+                category_orders={"SG": present_sgs},
+                color_discrete_map={"Permanent": "#20419A", "CDH": "#00A19C"}
+            )
+
+            # Fixed: Changed "Position_Bracket" to "SG" to match the x-axis column
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df["SG"],
+                    y=plot_df["Total"],
+                    text=plot_df["Total"],
+                    mode="text",
+                    textposition="top center",
+                    textfont=dict(size=12, color="black", family="sans-serif"),
+                    showlegend=False,
+                    hoverinfo="skip"
+                )
+            )
+            
+            fig.update_layout(
+                height=400, 
+                margin=dict(l=10, r=20, t=40, b=20), 
+                xaxis_title="Salary Grade", 
+                yaxis_title="Number of Personnel",
+                legend=dict(title="Employment Type", yanchor="top", y=0.99, xanchor="right", x=0.99),
+                yaxis=dict(range=[0, plot_df["Total"].max() * 1.15] if not plot_df.empty else [0, 10]) # Adds headroom for top totals
+            )
+            
+            # Show stacked counts inside the bars
+            fig.update_traces(textposition="inside", texttemplate="%{y}", selector=dict(type="bar")) 
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Salary Grade or Employment Category data not available for this visualization.")
     #=====================================================
     # SECTION NAME DISTRIBUTION
     # =====================================================
-    col3, col4 = st.columns(2)
+    col3, col4, col5 = st.columns(3)
+
+    with col5:
+            st.subheader("🏢 Department Distribution")
+            
+            # 1. Count occurrences
+            dept = df["Department"].value_counts().reset_index()
+            dept.columns = ["Department", "Count"]
+            
+            # 2. Combine departments < threshold into "Others"
+            total_count = dept["Count"].sum()
+            threshold = 0.02  # 2% threshold
+            
+            dept["Department"] = dept.apply(
+                lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
+                axis=1
+            )
+            
+            # Regroup and sum the counts for "Others"
+            dept_grouped = dept.groupby("Department", as_index=False)["Count"].sum()
+            dept_grouped = dept_grouped.sort_values(by=["Count"], ascending=False)
+            
+            # 3. Create Donut Chart
+            fig = px.pie(
+                dept_grouped, 
+                names="Department", 
+                values="Count", 
+                hole=0.2,
+                color_discrete_sequence=px.colors.sequential.Plasma
+            )
+            
+            # 4. Format labels inside slices
+            fig.update_traces(
+                textposition="inside",
+                textinfo="percent+label",
+                hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Share: %{percent}"
+            )
+            
+            # 5. Clean layout & margins
+            fig.update_layout(
+                height=400,
+                margin=dict(t=20, b=20, l=10, r=10),
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.1,
+                    xanchor="center",
+                    x=0.5,
+                    title_text=""
+                )
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+
     with col3:
         st.subheader("🌏 Section Distribution")
         
@@ -1191,7 +1364,7 @@ if page == "🏠 Dashboard Home":
         fig = px.scatter(
             section_final,
             x="Count", y="y_position", size="Count", color="Count",
-            hover_name="Section Name", color_continuous_scale="Viridis", size_max=80)
+            hover_name="Section Name", color_discrete_sequence=px.colors.qualitative.G10, size_max=75)
         
         fig.update_traces(
             hovertemplate="<b>%{hovertext}</b><br>Personnel: %{x}<extra></extra>"
@@ -1224,7 +1397,7 @@ if page == "🏠 Dashboard Home":
         fig = px.bar(
             assignment_df, 
             x="Count", 
-            y="Current Assignment", orientation="h", text="Count",  color="Count", color_continuous_scale="Viridis")
+            y="Current Assignment", orientation="h", text="Count",  color="Count", color_continuous_scale="Emrld")
 
         fig.update_traces(
             textposition="outside",
@@ -1262,7 +1435,7 @@ if page == "🏠 Dashboard Home":
                 names="Gender",
                 values="Count",
                 hole=0.35,
-                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"},  # Blue for Male, Orange for Female
+                color_discrete_map={"Male": "#20419a", "Female": "#763f98"},  # Blue for Male, Orange for Female
                 labels={"Count": "Number"}
             )
             fig.update_traces(
@@ -1284,8 +1457,13 @@ if page == "🏠 Dashboard Home":
             # Create pivot table: grades × gender
             sg_gender = pd.crosstab(df["SG"], df["Gender"])
             
-            # Rename columns to readable labels
-            sg_gender.columns = sg_gender.columns.map({"M": "Male", "F": "Female"})
+            # Rename columns to readable labels if they exist
+            rename_dict = {}
+            if "M" in sg_gender.columns:
+                rename_dict["M"] = "Male"
+            if "F" in sg_gender.columns:
+                rename_dict["F"] = "Female"
+            sg_gender = sg_gender.rename(columns=rename_dict)
             
             # Sort by numeric grade including UPTREX then P1..P10
             order = ["UPTREX"] + [f"P{i}" for i in range(1, 11)]
@@ -1297,11 +1475,18 @@ if page == "🏠 Dashboard Home":
             age_by_grade = age_by_grade[age_by_grade["SG"].isin(present)]
             age_by_grade = age_by_grade.set_index("SG").reindex(present).reset_index()
 
+            # Identify which gender columns actually exist to prevent errors in px.bar
+            available_gender_cols = [col for col in ["Male", "Female"] if col in sg_gender.columns]
+
             # Create stacked bar chart
             fig = px.bar(
-                sg_gender.reset_index(), x="SG", y=["Male", "Female"],
-                barmode="stack", title="", labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
-                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
+                sg_gender.reset_index(), 
+                x="SG", 
+                y=available_gender_cols,
+                barmode="stack", 
+                title="", 
+                labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
+                color_discrete_map={"Male": "#20419a", "Female": "#763f98"}
             )
 
             # Add average age as a line on secondary y-axis
@@ -1326,15 +1511,16 @@ if page == "🏠 Dashboard Home":
                     title="Average Age",
                     overlaying="y",
                     side="right",
+                    showgrid=False, # Keeps secondary gridlines from cluttering the chart
                 ),
             )
 
             # Show stacked counts inside bars
             fig.update_traces(textposition="auto", texttemplate="%{y}", selector=dict(type="bar"))
+            
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Grade or Gender data not available")
- 
         
     # =========================================================================
     # ROW 3: ADDITIONAL INSIGHTS (Optional)
@@ -1562,7 +1748,9 @@ elif page == "👥 Personnel Directory":
     st.caption(f"Showing {len(fdf)} of {len(df)} personnel")
     display_cols = ["Name", "Staff ID", "Staff Position", "SG", "Department",
                     "Age", "Chat Status", "Years in RE Experience"]
+
     display_cols = [c for c in display_cols if c in fdf.columns]
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     if "Avg Score" in show.columns:
         show["Avg Score"] = show["Avg Score"].round(2)
@@ -2987,6 +3175,75 @@ elif page == "👤 Individual Assessment & Talent Profile":
     # =========================================================================
     # SECTION 2: TARGET SELECTION & ENGINE (Code #1 Logic)
     # =========================================================================
+
+    def render_ruler_target_filters(person_row, ruler_map, suffix="main"):
+        """
+        Renders Career Ruler and Target SG filters safely with unique keys 
+        preventing StreamlitDuplicateElementId errors when duplicated.
+        """
+        col_ruler, col_target = st.columns(2)
+        
+        # ── 1. Career Ruler Logic with Scoped Session State ─────────────────────
+        ruler_options = list(ruler_map.keys())
+        default_ruler = person_row.get("ruler_type", "BASE")
+        
+        # Scoped unique key using the suffix parameter
+        person_id = person_row.get('id', 'default')
+        ruler_session_key = f"ruler_{person_id}_{suffix}"
+        
+        if ruler_session_key not in st.session_state:
+            st.session_state[ruler_session_key] = default_ruler if default_ruler in ruler_options else ruler_options[0]
+
+        with col_ruler:
+            selected_ruler = st.selectbox(
+                "Career Ruler", 
+                ruler_options, 
+                key=ruler_session_key
+            )
+
+        # ── 2. Target SG Logic based on Selected Ruler ──────────────────────────
+        selected_ruler_reqs = ruler_map.get(selected_ruler, {})
+        available_sgs = list(selected_ruler_reqs.keys())
+
+        current_sg = str(person_row.get("sg", "")).strip()
+        current_rank = _grade_rank(current_sg)
+
+        target_sg_options = []
+        if current_rank is not None:
+            for sg in available_sgs:
+                rank = _grade_rank(sg)
+                if rank and rank >= current_rank:
+                    target_sg_options.append(sg)
+        else:
+            target_sg_options = available_sgs
+
+        # Scoped unique key for target SG using the suffix parameter
+        target_session_key = f"target_sg_{person_id}_{suffix}"
+        
+        if target_session_key not in st.session_state:
+            if current_sg in target_sg_options:
+                st.session_state[target_session_key] = current_sg
+            elif target_sg_options:
+                st.session_state[target_session_key] = target_sg_options[0]
+            else:
+                st.session_state[target_session_key] = None
+
+        if st.session_state[target_session_key] not in target_sg_options and target_sg_options:
+            st.session_state[target_session_key] = target_sg_options[0]
+
+        with col_target:
+            if target_sg_options:
+                target_sg = st.selectbox(
+                    "Target Salary Grade:", 
+                    target_sg_options, 
+                    key=target_session_key
+                )
+            else:
+                st.warning("No future grades found in ruler.")
+                target_sg = None
+                
+        return selected_ruler, target_sg, selected_ruler_reqs
+
     st.markdown("### 🎯 Target Definition & Career Progression")
 
     col_ruler, col_target = st.columns(2)
@@ -3020,7 +3277,8 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 default_idx = target_sg_options.index(current_sg) if current_sg in target_sg_options else 0
             except Exception:
                 default_idx = 0
-            target_sg = st.selectbox("Target Salary Grade", target_sg_options, index=default_idx)
+                
+            target_sg = st.selectbox("Target Salary Grade:", target_sg_options, index=default_idx, key="target_sg_box")
         else:
             st.warning("No future grades found in ruler.")
             target_sg = None
@@ -3160,6 +3418,42 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
             with s_col5:
                 st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
+
+        # -----------------------------------------------------------------
+        # Show stored summary scores from the database (if available)
+        # -----------------------------------------------------------------
+        try:
+            session = get_session(engine)
+            personnel_id = db_ops.resolve_personnel_id(
+                session=session,
+                database_id=person_row.get("id"),
+                staff_id=person_row.get("Staff ID"),
+                name=person_row.get("Name"),
+            )
+            summary = None
+            if personnel_id:
+                from models import SummaryScore
+                summary = session.query(SummaryScore).filter_by(personnel_id=personnel_id).order_by(SummaryScore.updated_at.desc()).first()
+        except Exception:
+            summary = None
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+        if summary is not None:
+            s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
+            with s_col1:
+                st.metric("Staff Base", getattr(summary, "staff_base", "N/A"))
+            with s_col2:
+                st.metric("Staff Keys", getattr(summary, "staff_keys", "N/A"))
+            with s_col3:
+                st.metric("Principal Base", getattr(summary, "principal_base", "N/A"))
+            with s_col4:
+                st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
+            with s_col5:
+                st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
             
         # Category readiness breakdown (Code #1)
         if cat_readiness:
@@ -3173,6 +3467,15 @@ elif page == "👤 Individual Assessment & Talent Profile":
         # SECTION 5: VISUALIZATIONS (Code #2 Side-by-Side + Code #1 Dynamic Data)
         # =========================================================================
         st.markdown("### 📈 Gap Analysis Visualizations")
+
+        # Call it safely anywhere without duplication crashes:
+        selected_ruler, target_sg, selected_ruler_reqs = render_ruler_target_filters(person_row, ruler_map, suffix="gap_tab")
+
+        # Then proceed with your code using `target_sg`, `selected_ruler`, etc.
+        if target_sg:
+            df_gap = _build_target_gap_dataframe(person_row, target_sg, selected_ruler_reqs, tech_labels)
+            strict_readiness, weighted_readiness, cat_readiness = _calculate_readiness_metrics(df_gap)
+
         chart_col1, chart_col2 = st.columns([0.6, 0.4])
         
         with chart_col1:
@@ -3410,20 +3713,45 @@ elif page == "🎯 Readiness & Gaps":
         st.dataframe(ready_df, use_container_width=True, hide_index=True)
 
     with tab2:
-        gap_df = an.gap_summary(df)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("No Gap", int((gap_df["Gap Status"] == "No Gap").sum()))
-        c2.metric("1 Gap", int((gap_df["Gap Status"] == "1 Gap").sum()))
-        c3.metric(">1 Gap", int((gap_df["Gap Status"] == ">1 Gap").sum()))
-        c4.metric("Not Assessed", int((gap_df["Gap Status"] == "Not Assessed").sum()))
-
-        fig = px.pie(gap_df, names="Gap Status", hole=0.4,
-                     color="Gap Status",
-                     color_discrete_map={"No Gap": "#2E7D32", "1 Gap": "#FDD835",
-                                        ">1 Gap": "#C62828", "Not Assessed": "#9E9E9E"})
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.dataframe(gap_df, use_container_width=True, hide_index=True)
+        st.subheader("🔍 Deep-Dive: Gap Severity by Competency Category")
+    
+        # Assuming df_gap contains individual competency row items per personnel
+        # Columns typically include: ["Staff Name", "Category", "Competency", "Gap", "Target Score", "Actual Score"]
+        gap_df = an.gap_summary(df) if hasattr(an, "gap_summary") else pd.DataFrame() # fallback or your existing function
+        
+        if not gap_df.empty and "Category" in gap_df.columns:
+            # Create a cross-tabulation of Categories vs Gap Status or Severity
+            if "Gap Status" in gap_df.columns:
+                cat_gap_pivot = pd.crosstab(gap_df["Category"], gap_df["Gap Status"], normalize="index") * 100
+                
+                fig = px.bar(
+                    cat_gap_pivot.reset_index(),
+                    x="Category",
+                    y=cat_gap_pivot.columns,
+                    barmode="stack",
+                    title="Competency Category Deficit Distribution (%)",
+                    labels={"value": "Percentage (%)", "Category": "Competency Category", "variable": "Gap Status"},
+                    color_discrete_map={
+                        "No Gap": "#00A19C",      # Petronas Green
+                        "1 Gap": "#FDB924",       # Petronas Yellow
+                        ">1 Gap": "#C62828",      # Alert Red
+                        "Not Assessed": "#9E9E9E"
+                    }
+                )
+                
+                fig.update_layout(
+                    height=400,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#0F172A"),
+                    xaxis_title="Competency Tier Category (Base, Key, Pacing, Emerging)",
+                    yaxis_title="Proportion (%)",
+                    legend=dict(title="Status", orientation="h", y=1.1, x=0.5, xanchor="center")
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Granular competency data required for deep-dive category breakdowns.")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: CHART BUILDER - DYNAMIC CHART CREATION WITH DATA ELEMENT SELECTION
@@ -3874,6 +4202,22 @@ elif page == "⚙️ Admin: Import Data":
                 tmp_path
             )
 
+            st.dataframe(
+                    (
+                        df[
+                            [
+                                "Staff Position",
+                                "SG",
+                                "Canonical Position",
+                                "Canonical SG",
+                            ]
+                        ]
+                        .value_counts()
+                        .reset_index(name="Count")
+                        .sort_values(["Canonical SG", "Canonical Position"])
+                    )
+                )
+            
             st.dataframe(
                     (
                         df[
