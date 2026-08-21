@@ -422,11 +422,23 @@ def grade_rank(sg_value):
         return None
 
     text = str(sg_value).strip().upper()
+    text = str(sg_value).strip().upper()
 
     # Put UPTREX first (rank 0), then P1..P10
     if text == "UPTREX":
         return 0
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
 
+    match = re.match(r"^P(\d+)$", text)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    return None
     match = re.match(r"^P(\d+)$", text)
     if match:
         try:
@@ -630,6 +642,49 @@ def calculate_readiness_metrics(gap_df):
         "weighted_readiness": weighted_readiness,
     }
 
+def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Data for Age vs SG scatter, including Overall_avg for color/size.
+    Returns only columns that exist in the input dataframe.
+    """
+    # Define ideal columns in order of preference
+    size_cols = ["Years in RE Experience", "Years in PET"]
+    
+    # Find which size column actually exists
+    size_col_available = None
+    for col in size_cols:
+        if col in df.columns:
+            size_col_available = col
+            break
+    
+    # Build column list with only columns that exist
+    cols = [
+        "Name", 
+        "Age", 
+        "SG", 
+        "Staff Position", 
+        "Department", 
+        "Overall_avg"
+    ]
+    
+    # Only include size column if it exists
+    if size_col_available:
+        cols.append(size_col_available)
+    
+    # Filter to only existing columns
+    cols = [c for c in cols if c in df.columns]
+    
+    # Create output
+    out = df[cols].copy()
+    
+    # Fill NaN values
+    if "Years in RE Experience" in out.columns:
+        out["Years in RE Experience"] = out["Years in RE Experience"].fillna(0)
+    if "Years in PET" in out.columns:
+        out["Years in PET"] = out["Years in PET"].fillna(0)
+    
+    # Remove rows missing Age or SG
+    return out.dropna(subset=["Age", "SG"])
 def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
     """
     Data for Age vs SG scatter, including Overall_avg for color/size.
@@ -1119,6 +1174,7 @@ if page == "🏠 Dashboard Home":
         # 2. Combine departments < 3% into "Others"
         total_count = dept["Count"].sum()
         threshold = 0.02  # 3% threshold
+        threshold = 0.02  # 3% threshold
         
         dept["Department"] = dept.apply(
             lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
@@ -1297,8 +1353,19 @@ if page == "🏠 Dashboard Home":
             age_by_grade = age_by_grade[age_by_grade["SG"].isin(present)]
             age_by_grade = age_by_grade.set_index("SG").reindex(present).reset_index()
 
+            # Sort by numeric grade including UPTREX then P1..P10
+            order = ["UPTREX"] + [f"P{i}" for i in range(1, 11)]
+            present = [g for g in order if g in sg_gender.index]
+            sg_gender = sg_gender.reindex(present)
+
+            # Compute average age per grade for overlay
+            age_by_grade = df.groupby("SG").agg(avg_age=("Age", "mean")).reset_index()
+            age_by_grade = age_by_grade[age_by_grade["SG"].isin(present)]
+            age_by_grade = age_by_grade.set_index("SG").reindex(present).reset_index()
+
             # Create stacked bar chart
             fig = px.bar(
+                sg_gender.reset_index(), x="SG", y=["Male", "Female"],
                 sg_gender.reset_index(), x="SG", y=["Male", "Female"],
                 barmode="stack", title="", labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
                 color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
@@ -1316,7 +1383,36 @@ if page == "🏠 Dashboard Home":
                 )
             )
 
+                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
+            )
+
+            # Add average age as a line on secondary y-axis
+            fig.add_trace(
+                go.Scatter(
+                    x=age_by_grade["SG"],
+                    y=age_by_grade["avg_age"],
+                    name="Average Age",
+                    mode="lines+markers",
+                    marker=dict(color="#2ca02c", size=8),
+                    yaxis="y2",
+                )
+            )
+
             fig.update_layout(
+                xaxis_title="Salary Grade",
+                yaxis_title="Number of Personnel",
+                height=400,
+                hovermode="x unified",
+                legend=dict(title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99),
+                yaxis2=dict(
+                    title="Average Age",
+                    overlaying="y",
+                    side="right",
+                ),
+            )
+
+            # Show stacked counts inside bars
+            fig.update_traces(textposition="auto", texttemplate="%{y}", selector=dict(type="bar"))
                 xaxis_title="Salary Grade",
                 yaxis_title="Number of Personnel",
                 height=400,
@@ -1562,7 +1658,9 @@ elif page == "👥 Personnel Directory":
     st.caption(f"Showing {len(fdf)} of {len(df)} personnel")
     display_cols = ["Name", "Staff ID", "Staff Position", "SG", "Department",
                     "Age", "Chat Status", "Years in RE Experience"]
+                    "Age", "Chat Status", "Years in RE Experience"]
     display_cols = [c for c in display_cols if c in fdf.columns]
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     if "Avg Score" in show.columns:
         show["Avg Score"] = show["Avg Score"].round(2)
@@ -3021,6 +3119,12 @@ elif page == "👤 Individual Assessment & Talent Profile":
             except Exception:
                 default_idx = 0
             target_sg = st.selectbox("Target Salary Grade", target_sg_options, index=default_idx)
+            # Default the selector to the person's current SG when available
+            try:
+                default_idx = target_sg_options.index(current_sg) if current_sg in target_sg_options else 0
+            except Exception:
+                default_idx = 0
+            target_sg = st.selectbox("Target Salary Grade", target_sg_options, index=default_idx)
         else:
             st.warning("No future grades found in ruler.")
             target_sg = None
@@ -3124,6 +3228,42 @@ elif page == "👤 Individual Assessment & Talent Profile":
         with metric_col4:
             status = "Ready ✅" if weighted_readiness >= 80 else "On Track 🟡" if weighted_readiness >= 60 else "Needs Work 🔴"
             st.metric("Overall Status", status)
+
+        # -----------------------------------------------------------------
+        # Show stored summary scores from the database (if available)
+        # -----------------------------------------------------------------
+        try:
+            session = get_session(engine)
+            personnel_id = db_ops.resolve_personnel_id(
+                session=session,
+                database_id=person_row.get("id"),
+                staff_id=person_row.get("Staff ID"),
+                name=person_row.get("Name"),
+            )
+            summary = None
+            if personnel_id:
+                from models import SummaryScore
+                summary = session.query(SummaryScore).filter_by(personnel_id=personnel_id).order_by(SummaryScore.updated_at.desc()).first()
+        except Exception:
+            summary = None
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+        if summary is not None:
+            s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
+            with s_col1:
+                st.metric("Staff Base", getattr(summary, "staff_base", "N/A"))
+            with s_col2:
+                st.metric("Staff Keys", getattr(summary, "staff_keys", "N/A"))
+            with s_col3:
+                st.metric("Principal Base", getattr(summary, "principal_base", "N/A"))
+            with s_col4:
+                st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
+            with s_col5:
+                st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
 
         # -----------------------------------------------------------------
         # Show stored summary scores from the database (if available)
@@ -3872,6 +4012,23 @@ elif page == "⚙️ Admin: Import Data":
 
             raw_df = load_master_data(
                 tmp_path
+            )
+
+            st.dataframe(
+                    (
+                        df[
+                            [
+                                "Staff Position",
+                                "SG",
+                                "Canonical Position",
+                                "Canonical SG",
+                            ]
+                        ]
+                        .value_counts()
+                        .reset_index(name="Count")
+                        .sort_values(["Canonical SG", "Canonical Position"])
+                    )
+                )
             )
 
             st.dataframe(

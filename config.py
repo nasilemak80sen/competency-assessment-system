@@ -23,6 +23,9 @@ def resolve_excel_path() -> str:
         BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
         BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
         Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
     ]
 
     for candidate in candidates:
@@ -35,6 +38,24 @@ def resolve_excel_path() -> str:
 EXCEL_PATH = resolve_excel_path()
 USE_LIVE_EXCEL_SOURCE = True
 
+# ── Salary Grade Hierarchy ───────────────────────────────────────────────────
+# Single source of truth for the RE competency hierarchy.
+#
+# IMPORTANT:
+# The order of this dictionary defines the official hierarchy:
+#
+# UPTREX
+# P1  Junior Executive
+# P2  Executive
+# P3  Senior Executive
+# P4  Senior Reservoir Engineer
+# P5  Staff
+# P6  Specialist
+# P7  Principal
+# P8  Senior Principal
+# P9  Custodian
+# P10 Senior Custodian
+#
 # ── Salary Grade Hierarchy ───────────────────────────────────────────────────
 # Single source of truth for the RE competency hierarchy.
 #
@@ -67,8 +88,18 @@ GRADE_LABELS = {
     "P8": "Senior Principal",
     "P9": "Custodian",
     "P10": "Senior Custodian",
+    "P9": "Custodian",
+    "P10": "Senior Custodian",
 }
 
+
+
+# ── Position → Salary Grade mapping ──────────────────────────────────────────
+# All recognised position names are normalised to the official SG hierarchy.
+#
+# Multiple position aliases can point to the same SG.
+# This prevents differences such as "Snr RE" vs "Senior Reservoir Engineer"
+# from breaking filtering, grouping, or chart generation.
 
 # ── Position → Salary Grade mapping ──────────────────────────────────────────
 # All recognised position names are normalised to the official SG hierarchy.
@@ -94,6 +125,8 @@ POSITION_TO_SG = {
 
     # P5
     "Staff": "P5",
+
+    # P6
 
     # P6
     "Specialist": "P6",
@@ -207,6 +240,7 @@ EMPLOYMENT_COLS = [
     "Joining Date","Years in PET","Years of RE Experience",
     "Age Promoted to Staff or Principal","Years in Salary Grade",
     "Date of Appointment to Current Grade",
+    "Current Location:","Date in Position","Length in Current Assignment",
     "Current Location:","Date in Position","Length in Current Assignment",
 ]
 ASSESSMENT_COLS = [
