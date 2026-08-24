@@ -423,6 +423,7 @@ def grade_rank(sg_value):
 
     text = str(sg_value).strip().upper()
     text = str(sg_value).strip().upper()
+    text = str(sg_value).strip().upper()
 
     # Put UPTREX first (rank 0), then P1..P10
     if text == "UPTREX":
@@ -430,7 +431,18 @@ def grade_rank(sg_value):
     # Put UPTREX first (rank 0), then P1..P10
     if text == "UPTREX":
         return 0
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
 
+    match = re.match(r"^P(\d+)$", text)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    return None
     match = re.match(r"^P(\d+)$", text)
     if match:
         try:
@@ -634,6 +646,49 @@ def calculate_readiness_metrics(gap_df):
         "weighted_readiness": weighted_readiness,
     }
 
+def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Data for Age vs SG scatter, including Overall_avg for color/size.
+    Returns only columns that exist in the input dataframe.
+    """
+    # Define ideal columns in order of preference
+    size_cols = ["Years in RE Experience", "Years in PET"]
+    
+    # Find which size column actually exists
+    size_col_available = None
+    for col in size_cols:
+        if col in df.columns:
+            size_col_available = col
+            break
+    
+    # Build column list with only columns that exist
+    cols = [
+        "Name", 
+        "Age", 
+        "SG", 
+        "Staff Position", 
+        "Department", 
+        "Overall_avg"
+    ]
+    
+    # Only include size column if it exists
+    if size_col_available:
+        cols.append(size_col_available)
+    
+    # Filter to only existing columns
+    cols = [c for c in cols if c in df.columns]
+    
+    # Create output
+    out = df[cols].copy()
+    
+    # Fill NaN values
+    if "Years in RE Experience" in out.columns:
+        out["Years in RE Experience"] = out["Years in RE Experience"].fillna(0)
+    if "Years in PET" in out.columns:
+        out["Years in PET"] = out["Years in PET"].fillna(0)
+    
+    # Remove rows missing Age or SG
+    return out.dropna(subset=["Age", "SG"])
 def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
     """
     Data for Age vs SG scatter, including Overall_avg for color/size.
@@ -1501,6 +1556,21 @@ if page == "🏠 Dashboard Home":
                 )
             )
 
+                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
+            )
+
+            # Add average age as a line on secondary y-axis
+            fig.add_trace(
+                go.Scatter(
+                    x=age_by_grade["SG"],
+                    y=age_by_grade["avg_age"],
+                    name="Average Age",
+                    mode="lines+markers",
+                    marker=dict(color="#2ca02c", size=8),
+                    yaxis="y2",
+                )
+            )
+
             fig.update_layout(
                 xaxis_title="Salary Grade",
                 yaxis_title="Number of Personnel",
@@ -1750,6 +1820,7 @@ elif page == "👥 Personnel Directory":
                     "Age", "Chat Status", "Years in RE Experience"]
 
     display_cols = [c for c in display_cols if c in fdf.columns]
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     if "Avg Score" in show.columns:
@@ -3382,6 +3453,42 @@ elif page == "👤 Individual Assessment & Talent Profile":
         with metric_col4:
             status = "Ready ✅" if weighted_readiness >= 80 else "On Track 🟡" if weighted_readiness >= 60 else "Needs Work 🔴"
             st.metric("Overall Status", status)
+
+        # -----------------------------------------------------------------
+        # Show stored summary scores from the database (if available)
+        # -----------------------------------------------------------------
+        try:
+            session = get_session(engine)
+            personnel_id = db_ops.resolve_personnel_id(
+                session=session,
+                database_id=person_row.get("id"),
+                staff_id=person_row.get("Staff ID"),
+                name=person_row.get("Name"),
+            )
+            summary = None
+            if personnel_id:
+                from models import SummaryScore
+                summary = session.query(SummaryScore).filter_by(personnel_id=personnel_id).order_by(SummaryScore.updated_at.desc()).first()
+        except Exception:
+            summary = None
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+        if summary is not None:
+            s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
+            with s_col1:
+                st.metric("Staff Base", getattr(summary, "staff_base", "N/A"))
+            with s_col2:
+                st.metric("Staff Keys", getattr(summary, "staff_keys", "N/A"))
+            with s_col3:
+                st.metric("Principal Base", getattr(summary, "principal_base", "N/A"))
+            with s_col4:
+                st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
+            with s_col5:
+                st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
 
         # -----------------------------------------------------------------
         # Show stored summary scores from the database (if available)
