@@ -423,6 +423,7 @@ def grade_rank(sg_value):
 
     text = str(sg_value).strip().upper()
     text = str(sg_value).strip().upper()
+    text = str(sg_value).strip().upper()
 
     # Put UPTREX first (rank 0), then P1..P10
     if text == "UPTREX":
@@ -430,7 +431,18 @@ def grade_rank(sg_value):
     # Put UPTREX first (rank 0), then P1..P10
     if text == "UPTREX":
         return 0
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
 
+    match = re.match(r"^P(\d+)$", text)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    return None
     match = re.match(r"^P(\d+)$", text)
     if match:
         try:
@@ -634,6 +646,49 @@ def calculate_readiness_metrics(gap_df):
         "weighted_readiness": weighted_readiness,
     }
 
+def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Data for Age vs SG scatter, including Overall_avg for color/size.
+    Returns only columns that exist in the input dataframe.
+    """
+    # Define ideal columns in order of preference
+    size_cols = ["Years in RE Experience", "Years in PET"]
+    
+    # Find which size column actually exists
+    size_col_available = None
+    for col in size_cols:
+        if col in df.columns:
+            size_col_available = col
+            break
+    
+    # Build column list with only columns that exist
+    cols = [
+        "Name", 
+        "Age", 
+        "SG", 
+        "Staff Position", 
+        "Department", 
+        "Overall_avg"
+    ]
+    
+    # Only include size column if it exists
+    if size_col_available:
+        cols.append(size_col_available)
+    
+    # Filter to only existing columns
+    cols = [c for c in cols if c in df.columns]
+    
+    # Create output
+    out = df[cols].copy()
+    
+    # Fill NaN values
+    if "Years in RE Experience" in out.columns:
+        out["Years in RE Experience"] = out["Years in RE Experience"].fillna(0)
+    if "Years in PET" in out.columns:
+        out["Years in PET"] = out["Years in PET"].fillna(0)
+    
+    # Remove rows missing Age or SG
+    return out.dropna(subset=["Age", "SG"])
 def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
     """
     Data for Age vs SG scatter, including Overall_avg for color/size.
@@ -1496,7 +1551,7 @@ if page == "🏠 Dashboard Home":
                     y=age_by_grade["avg_age"],
                     name="Average Age",
                     mode="lines+markers",
-                    marker=dict(color="#2ca02c", size=8),
+                    marker=dict(color="#bfd730", size=8),
                     yaxis="y2",
                 )
             )
@@ -1528,6 +1583,8 @@ if page == "🏠 Dashboard Home":
 
     st.subheader("📈 Age vs Salary Grade Analysis")
 
+
+
     # 1. Custom Hover Card Generator (No Overall_avg)
     def create_hover_text(row):
         html = f"<b>{row.get('Name', 'Unknown')}</b><br>"
@@ -1555,6 +1612,13 @@ if page == "🏠 Dashboard Home":
 
     # --- STREAMLIT UI ---
 
+    #draggble ui 
+
+    min_pet = float(df["Years in PET"].fillna(0).min())
+    max_pet = float(df["Years in PET"].fillna(0).max())
+    min_re = float(df["Years of RE Experience"].fillna(0).min())
+    max_re = float(df["Years of RE Experience"].fillna(0).max())
+
     # Filter Section
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -1576,6 +1640,22 @@ if page == "🏠 Dashboard Home":
             key="dash_pos1",
         )
 
+    c4, c5 = st.columns(2)
+
+    with c4 : 
+            f_pet_range = st.slider("Filter by Years in PETRONAS: ", 
+                                    min_value=min_pet,max_value=max_pet, 
+                                    value =(min_pet, max_pet), 
+                                    step=1.0, 
+                                    key="dash_pet_range")
+    with c5: 
+            f_re_range = st.slider("Filter by Years in RE Experience", 
+                                   min_value=min_re, 
+                                   max_value=max_re, 
+                                   value=(min_re, max_re), 
+                                   step = 1.0, 
+                                   key="dash_re_range")
+
     tab2d, tab3d = st.tabs(
         ["📊 Career Distribution (2D)", "🌐 Career Progression (3D)"]
     )
@@ -1588,6 +1668,14 @@ if page == "🏠 Dashboard Home":
         fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
     if f_pos:
         fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
+
+    fdf1 = fdf1[
+        (fdf1["Years in PET"].fillna(0) >= f_pet_range[0]) & 
+        (fdf1["Years in PET"].fillna(0) <= f_pet_range[1])]
+
+    fdf1 = fdf1[
+        (fdf1["Years of RE Experience"].fillna(0) >= f_re_range[0]) & 
+        (fdf1["Years of RE Experience"].fillna(0) <= f_re_range[1])]
 
     sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
     scatter_df2 = an.scatter_age_vs_grade(fdf1)
@@ -1616,15 +1704,6 @@ if page == "🏠 Dashboard Home":
             color_col = "RE Experience Tier"
     
         # Define explicit color mapping so each tier ALWAYS gets a distinct solid color
-    color_map = {
-            "< 2 Yrs": "#fdb924",               # Soft Blue
-            "2 - 5 Yrs": "#20419a",             # Bright Blue
-            "5 - 10 Yrs": "#763f98",            # Purple
-            "10 - 15 Yrs": "#00a19c",           # Bright Pink/Red
-            "15+ Yrs": "#bfd739",              # Orange/Gold
-            "Unknown / Unspecified": "#651c32"  # Grey
-        }
-
     # Determine size column
     size_col = None
     if "Years in RE Experience" in scatter_df2.columns:
@@ -1656,7 +1735,7 @@ if page == "🏠 Dashboard Home":
             category_orders={
             "SG": sg_order,
             "RE Experience Tier": ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs", "Unknown / Unspecified"]},
-            color_discrete_map=color_map,  # High-contrast colorful legend palette
+            color_discrete_sequence=px.colors.qualitative.Bold,  # High-contrast colorful legend palette
             title="Age vs Salary Grade",
         )
 
@@ -1687,7 +1766,7 @@ if page == "🏠 Dashboard Home":
             category_orders={
                         "SG": sg_order,
                         "RE Experience Tier": ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs", "Unknown / Unspecified"]},
-            color_discrete_map=color_map,
+            color_discrete_sequence=px.colors.qualitative.Bold,
             title="Career Progression Landscape",
         )
 
@@ -1750,6 +1829,7 @@ elif page == "👥 Personnel Directory":
                     "Age", "Chat Status", "Years in RE Experience"]
 
     display_cols = [c for c in display_cols if c in fdf.columns]
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     if "Avg Score" in show.columns:
@@ -3382,6 +3462,42 @@ elif page == "👤 Individual Assessment & Talent Profile":
         with metric_col4:
             status = "Ready ✅" if weighted_readiness >= 80 else "On Track 🟡" if weighted_readiness >= 60 else "Needs Work 🔴"
             st.metric("Overall Status", status)
+
+        # -----------------------------------------------------------------
+        # Show stored summary scores from the database (if available)
+        # -----------------------------------------------------------------
+        try:
+            session = get_session(engine)
+            personnel_id = db_ops.resolve_personnel_id(
+                session=session,
+                database_id=person_row.get("id"),
+                staff_id=person_row.get("Staff ID"),
+                name=person_row.get("Name"),
+            )
+            summary = None
+            if personnel_id:
+                from models import SummaryScore
+                summary = session.query(SummaryScore).filter_by(personnel_id=personnel_id).order_by(SummaryScore.updated_at.desc()).first()
+        except Exception:
+            summary = None
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+        if summary is not None:
+            s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
+            with s_col1:
+                st.metric("Staff Base", getattr(summary, "staff_base", "N/A"))
+            with s_col2:
+                st.metric("Staff Keys", getattr(summary, "staff_keys", "N/A"))
+            with s_col3:
+                st.metric("Principal Base", getattr(summary, "principal_base", "N/A"))
+            with s_col4:
+                st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
+            with s_col5:
+                st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
 
         # -----------------------------------------------------------------
         # Show stored summary scores from the database (if available)

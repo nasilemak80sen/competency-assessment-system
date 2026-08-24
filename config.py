@@ -26,6 +26,9 @@ def resolve_excel_path() -> str:
         BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
         BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
         Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
     ]
 
     for candidate in candidates:
@@ -105,6 +108,8 @@ POSITION_TO_SG = {
 
     # P5
     "Staff": "P5",
+
+    # P6
 
     # P6
     "Specialist": "P6",
@@ -218,6 +223,7 @@ EMPLOYMENT_COLS = [
     "Joining Date","Years in PET","Years of RE Experience",
     "Age Promoted to Staff or Principal","Years in Salary Grade",
     "Date of Appointment to Current Grade",
+    "Current Location:","Date in Position","Length in Current Assignment",
     "Current Location:","Date in Position","Length in Current Assignment",
     "Current Location:","Date in Position","Length in Current Assignment",
 ]
