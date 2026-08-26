@@ -55,7 +55,7 @@ def render_navigation():
         col_title, col_right = st.columns([0.85, 0.15])
         
         with col_title:
-            st.markdown("### 📊 RE Fraternity Competency Assessment v3.0")
+            st.markdown("### 📊 DPE | Reservoir Engineering Talent Profile Dashboard (Beta Release)")
         
         # Divider
         st.markdown("---")

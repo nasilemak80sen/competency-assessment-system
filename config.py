@@ -447,4 +447,4 @@ HEATMAP_COLORSCALE = [
     [1.0, "#2E7D32"],   # dark green – 5
 ]
 
-APP_TITLE = "RE Fraternity Competency Assessment System"
+APP_TITLE = "DPE | Reservoir Engineering Talent Profile Dashboard (Beta Release)"

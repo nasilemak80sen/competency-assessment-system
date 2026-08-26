@@ -1,5 +1,5 @@
 """
-app.py - RE Fraternity Competency Assessment System v3.0
+app.py - DPE | Reservoir Engineering Talent Profile
 Run with: streamlit run app.py
 """
 
@@ -2327,8 +2327,6 @@ def _build_readiness_detail_dataframe(
     return pd.DataFrame(
         detail_records
     )
-
-
 # =============================================================================
 # PERSONNEL READINESS SUMMARY
 # =============================================================================
