@@ -1,4 +1,4 @@
-# RE Fraternity Competency Assessment System
+# DPE | Reservoir Engineering Talent Profile Dashboard
 
 ### PCSB / DPE Reservoir Engineering Fraternity
 
