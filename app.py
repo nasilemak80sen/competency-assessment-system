@@ -94,6 +94,440 @@ from chart_builder import (
     ChartCompatibility,
     DataElementInfo,
 )
+
+# ============================================================================
+# ASSESSMENT-BASED TALENT STRENGTH
+# ============================================================================
+#
+# Purpose:
+#   Automatically identify the strongest competencies for the selected
+#   personnel based on their assessed competency scores.
+#
+# Competency classes are sourced directly from COMP_TYPES:
+#   B = Base Competency
+#   K = Knowledge
+#   P = Pacing
+#   E = Emerging
+#
+# This prevents the Talent Profile from maintaining a separate competency
+# mapping from the Competency Heatmap.
+# ============================================================================
+
+def _safe_numeric(value):
+    """
+    Safely convert a value to a numeric float.
+
+    Returns None when the value is missing or invalid.
+    """
+    try:
+        value = pd.to_numeric(value, errors="coerce")
+
+        if pd.isna(value):
+            return None
+
+        return int(round(value))
+
+    except Exception:
+        return None
+
+def _get_competency_display_name(code):
+
+    return COMPETENCY_FULLNAMES.get(
+        code, code
+    )
+  
+def _get_top_competency_strengths(
+    person_row,
+    competency_codes,
+    competency_labels=None,
+    top_n=3,
+):
+    """
+    Get the highest-scoring competencies for a personnel.
+
+    Parameters
+    ----------
+    person_row:
+        Selected personnel pandas Series.
+
+    competency_codes:
+        List of competency score columns, e.g. B1-B12.
+
+    competency_labels:
+        Optional mapping of competency codes to display names.
+
+    top_n:
+        Number of top strengths to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+    """
+
+    results = []
+
+    if person_row is None:
+        return pd.DataFrame()
+
+    for code in competency_codes:
+
+        # Make sure the competency exists in the personnel record
+        if code not in person_row.index:
+            continue
+
+        score = _safe_numeric(
+            person_row.get(code)
+        )
+
+        # Ignore unassessed / invalid scores
+        if score is None:
+            continue
+
+        results.append(
+            {
+                "Code": code,
+                "Competency": _get_competency_display_name(
+                    code,
+                    competency_labels,
+                ),
+                "Score": score,
+            }
+        )
+
+    if not results:
+        return pd.DataFrame(
+            columns=[
+                "Rank",
+                "Code",
+                "Competency",
+                "Score",
+            ]
+        )
+
+    result_df = pd.DataFrame(results)
+
+    # Highest score first.
+    # Competency name is used as a deterministic secondary sort.
+    result_df = result_df.sort_values(
+        by=[
+            "Score",
+            "Competency",
+        ],
+        ascending=[
+            False,
+            True,
+        ],
+    ).reset_index(drop=True)
+
+    # Add rank
+    result_df.insert(
+        0,
+        "Rank",
+        range(
+            1,
+            len(result_df) + 1,
+        ),
+    )
+
+    return result_df.head(top_n)
+
+def _get_all_competency_strengths(
+    person_row,
+    competency_codes,
+):
+    """
+    Return all assessed competencies with:
+
+        - Rank
+        - Competency Code
+        - Competency Name
+        - Actual Score
+        - Target Score
+        - Gap
+        - Gap Status
+
+    Gap is calculated as:
+
+        Gap = Actual Score - Target Score
+
+    Interpretation:
+
+        Gap > 0  → Above Target
+        Gap = 0  → Gap Closed
+        Gap < 0  → Gap Remaining
+    """
+
+    results = []
+
+    if person_row is None:
+        return pd.DataFrame()
+
+    for code in competency_codes:
+
+        # =========================================================
+        # ACTUAL SCORE
+        # =========================================================
+
+        if code not in person_row.index:
+            continue
+
+        actual = _safe_numeric(
+            person_row.get(code)
+        )
+
+        # No assessment → skip
+        if actual is None:
+            continue
+
+        # =========================================================
+        # TARGET / REQUIRED SCORE
+        # =========================================================
+
+        req_col = f"R-{code}"
+
+        required = None
+
+        if req_col in person_row.index:
+
+            required = _safe_numeric(
+                person_row.get(req_col)
+            )
+
+        # =========================================================
+        # GAP
+        # =========================================================
+
+        gap = None
+        gap_status = "Target unavailable"
+
+        if required is not None:
+
+            gap = actual - required
+
+            if gap > 0:
+                gap_status = "Above Target"
+
+            elif gap == 0:
+                gap_status = "Gap Closed"
+
+            else:
+                gap_status = "Gap Remaining"
+
+        # =========================================================
+        # STORE RESULT
+        # =========================================================
+
+        results.append(
+            {
+                "Code": code,
+
+                "Competency": (
+                    _get_competency_display_name(code)
+                ),
+
+                "Score": actual,
+
+                "Target": required,
+
+                "Gap": gap,
+
+                "Gap Status": gap_status,
+            }
+        )
+
+    # =============================================================
+    # NO RESULTS
+    # =============================================================
+
+    if not results:
+
+        return pd.DataFrame(
+            columns=[
+                "Rank",
+                "Code",
+                "Competency",
+                "Score",
+                "Target",
+                "Gap",
+                "Gap Status",
+            ]
+        )
+
+    result_df = pd.DataFrame(
+        results
+    )
+
+    # =============================================================
+    # SORT
+    # =============================================================
+
+    result_df = result_df.sort_values(
+        by=[
+            "Score",
+            "Competency",
+        ],
+        ascending=[
+            False,
+            True,
+        ],
+    ).reset_index(drop=True)
+
+    # =============================================================
+    # RANK
+    # =============================================================
+
+    result_df.insert(
+        0,
+        "Rank",
+        range(
+            1,
+            len(result_df) + 1,
+        ),
+    )
+
+    return result_df
+
+def _render_competency_strength_class(
+    person_row,
+    class_code,
+    class_config,
+):
+    """
+    Render one competency-class section.
+
+    Displays:
+        - Top 3 strengths
+        - Expandable complete ranking
+    """
+
+    class_label = class_config.get(
+        "label",
+        class_code,
+    )
+
+    competency_codes = class_config.get(
+        "cols",
+        [],
+    )
+
+    st.markdown(
+        f"#### {class_label}"
+    )
+
+    if not competency_codes:
+
+        st.info(
+            "No competencies are configured for this class."
+        )
+
+        return
+
+    # -------------------------------------------------------------
+    # GET SCORES
+    # -------------------------------------------------------------
+
+    strength_df = _get_all_competency_strengths(
+        person_row=person_row,
+        competency_codes=competency_codes,
+    )
+
+    if strength_df.empty:
+
+        st.info(
+            f"No assessed {class_label.lower()} scores "
+            "are available for this personnel."
+        )
+
+        return
+
+    # -------------------------------------------------------------
+    # TOP 3
+    # -------------------------------------------------------------
+
+    top3 = strength_df.head(3)
+
+    medals = [
+        "🥇",
+        "🥈",
+        "🥉",
+    ]
+
+    strength_columns = st.columns(
+        len(top3)
+    )
+
+    for index, (_, row) in enumerate(
+        top3.iterrows()
+    ):
+
+        with strength_columns[index]:
+
+            st.markdown(
+                f"### {medals[index]}"
+            )
+
+            st.markdown(
+                f"**{row['Competency']}**"
+            )
+
+            # -----------------------------------------------------
+            # SCORE
+            # -----------------------------------------------------
+
+            score = row["Score"]
+
+            st.metric(
+                "Score",
+                f"{score:.0f}",
+            )
+
+            # -----------------------------------------------------
+            # TARGET
+            # -----------------------------------------------------
+
+            target = row["Target"]
+
+            if pd.notna(target):
+
+                st.caption(
+                    f"Target: **{target:.0f}**"
+                )
+
+            else:
+
+                st.caption(
+                    "Target: **Not Available**"
+                )
+
+            # -----------------------------------------------------
+            # GAP
+            # -----------------------------------------------------
+
+            gap = row["Gap"]
+
+            if pd.isna(gap):
+
+                st.info(
+                    "Target unavailable"
+                )
+
+            elif gap > 0:
+
+                st.success(
+                    f"Gap: +{gap:.0f} · Above Target"
+                )
+
+            elif gap == 0:
+
+                st.success(
+                    "Gap: 0 · Gap Closed"
+                )
+
+            else:
+
+                st.warning(
+                    f"Gap: {gap:.0f} · Gap Remaining"
+                )
 # =============================================================================
 # CAREER PROGRESSION CONFIGURATION
 # =============================================================================
@@ -559,21 +993,29 @@ def _get_personnel_ruler(
         ruler_value
     )
 
-def _get_personnel_sg(
-    person_row,
-):
+def _get_personnel_sg(person_row):
     """
-    Get the selected personnel's current salary grade.
-    """
-    salary_grade = (
-        person_row.get("SG")
-        or person_row.get("sg")
-        or ""
-    )
+    Safely retrieve personnel Salary Grade (SG).
 
-    return str(
-        salary_grade
-    ).strip().upper()
+    Handles pandas NaN / pd.NA without triggering:
+    TypeError: boolean value of NA is ambiguous
+    """
+
+    if person_row is None:
+        return ""
+
+    # Try Excel-style column name first
+    sg_value = person_row.get("SG", None)
+
+    # If SG is missing/null, try lowercase database-style column
+    if sg_value is None or pd.isna(sg_value):
+        sg_value = person_row.get("sg", None)
+
+    # Final null protection
+    if sg_value is None or pd.isna(sg_value):
+        return ""
+
+    return str(sg_value).strip()
 
 def _render_ruler_target_filters(
     person_row,
@@ -985,7 +1427,7 @@ def _render_tech_class_reference():
             "Base Competency":
                 "Core technical competencies required "
                 "for reservoir engineering work.",
-            "Knowledge":
+            "Key":
                 "Specialized reservoir engineering "
                 "and management knowledge.",
             "Pacing":
@@ -1003,6 +1445,136 @@ def _render_tech_class_reference():
                 f"**{category}:** "
                 f"{description}"
             )
+
+def render_readiness_methodology():
+    st.markdown( "### 📐 Metric Methodology")
+
+    st.markdown(
+        """
+        Readiness metrics compare the personnel's assessed
+        competency performance against the required competency
+        level defined by the applicable Career Ruler and target grade.
+        """
+    )
+
+    methodology_df = pd.DataFrame(
+        [
+            {
+                "Metric": "Weighted Readiness",
+                "Definition": (
+                    "Measures how close assessed competency "
+                    "performance is to the required target."
+                ),
+            },
+            {
+                "Metric": "Strict Readiness",
+                "Definition": (
+                    "Proportion of assessed competencies "
+                    "that have met or exceeded the required level."
+                ),
+            },
+            {
+                "Metric": "Assessment Coverage",
+                "Definition": (
+                    "Proportion of required competencies "
+                    "that have an available assessment score."
+                ),
+            },
+            {
+                "Metric": "Competency Gap",
+                "Definition": (
+                    "Difference between Actual Score "
+                    "and Required Score."
+                ),
+            },
+            {
+                "Metric": "Major Gap",
+                "Definition": (
+                    "Significant competency deficiency "
+                    "according to the configured gap rule."
+                ),
+            },
+            {
+                "Metric": "Minor Gap",
+                "Definition": (
+                    "Smaller competency deficiency "
+                    "according to the configured gap rule."
+                ),
+            },
+            {
+                "Metric": "Gap Burden",
+                "Definition": (
+                    "Accumulated outstanding competency "
+                    "shortfall."
+                ),
+            },
+            {
+                "Metric": "Readiness Status",
+                "Definition": (
+                    "Readiness classification based on "
+                    "the configured readiness threshold."
+                ),
+            },
+        ]
+    )
+
+    st.dataframe(
+        methodology_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown(
+        "#### 🧮 Core Calculations"
+    )
+
+    calc_col1, calc_col2, calc_col3 = st.columns(3)
+
+    with calc_col1:
+
+        st.markdown(
+            "**Competency Gap**"
+        )
+
+        st.code(
+            "Gap = Actual Score − Required Score",
+            language="text",
+        )
+
+    with calc_col2:
+
+        st.markdown(
+            "**Strict Readiness**"
+        )
+
+        st.code(
+            "Meeting Target ÷ Assessed Competencies",
+            language="text",
+        )
+
+    with calc_col3:
+
+        st.markdown(
+            "**Assessment Coverage**"
+        )
+
+        st.code(
+            "Assessed Competencies ÷ Required Competencies",
+            language="text",
+        )
+
+    st.warning(
+        """
+        **Readiness ≠ Assessment Coverage ≠ Gap Closure**
+
+        Readiness should be interpreted together with assessment
+        coverage, competency gaps, career grade and managerial
+        judgement.
+
+        **Readiness is not a standalone promotion or appointment decision.**
+        """
+    )
+    st.info("© Disclaimer: Yet to check with GHRM / Upstream Focal to validate on this methodology")
 
 def _build_gap_charts(
     gap_dataframe,
@@ -1409,7 +1981,7 @@ def prepare_nationality_map_data(
 
     map_df["Representation Display"] = (
         map_df["Representation"]
-        .map(lambda value: f"{value:.1f}%")
+        .map(lambda value: f"{value:.0f}%")
     )
 
     return map_df, unmatched
@@ -2976,12 +3548,12 @@ def _create_department_readiness_chart(
     figure.update_traces(
         hovertemplate=(
             "<b>%{y}</b><br>"
-            "Median readiness: %{x:.1f}%<br>"
+            "Median readiness: %{x:.0f}%<br>"
             "Personnel: %{customdata,.0f}<br>"
             "Median coverage: "
-            "%{customdata.1f}%<br>"
+            "%{customdata.0f}%<br>"
             "Major-gap rate: "
-            "%{customdata.1f}%"
+            "%{customdata.0f}%"
             "<extra></extra>"
         ),
     )
@@ -3049,7 +3621,7 @@ def _create_readiness_box_plot(
             "Current SG": False,
             "Department": True,
             "Staff Position": True,
-            "Assessment Coverage %": ":.1f",
+            "Assessment Coverage %": ":.0f",
             "Major Gaps": True,
             "Target SG": True,
         },
@@ -3129,7 +3701,7 @@ def _create_readiness_coverage_scatter(
             "Staff Position": True,
             "Current SG": True,
             "Target SG": True,
-            "Strict Readiness %": ":.1f",
+            "Strict Readiness %": ":.0f",
             "Major Gaps": True,
         },
         color_discrete_map=(
@@ -3249,7 +3821,7 @@ def _create_category_readiness_heatmap(
                 heatmap_dataframe.values,
                 1,
             ),
-            texttemplate="%{text:.1f}%",
+            texttemplate="%{text:.0f}%",
             customdata=np.round(
                 heatmap_dataframe.values,
                 1,
@@ -3258,7 +3830,7 @@ def _create_category_readiness_heatmap(
                 "<b>%{y}</b><br>"
                 "Category: %{x}<br>"
                 "Median readiness: "
-                "%{customdata:.1f}%"
+                "%{customdata:.0f}%"
                 "<extra></extra>"
             ),
             colorbar={
@@ -3354,7 +3926,7 @@ def _create_category_gap_distribution(
         hovertemplate=(
             "<b>%{y}</b><br>"
             "Status: %{fullData.name}<br>"
-            "Percentage: %{x:.1f}%<br>"
+            "Percentage: %{x:.0f}%<br>"
             "Competency records: "
             "%{customdata,.0f}"
             "<extra></extra>"
@@ -3516,7 +4088,7 @@ def _create_competency_risk_matrix(
             "Category": True,
             "Affected Personnel": True,
             "Assessed Personnel": True,
-            "Gap Burden": ":.1f",
+            "Gap Burden": ":.0f",
             "Major Gap Count": True,
         },
         color_discrete_map={
@@ -3657,18 +4229,18 @@ def _create_top_competency_gap_chart(
     )
 
     figure.update_traces(
-        texttemplate="%{x:.1f}",
+        texttemplate="%{x:.0f}",
         textposition="outside",
         hovertemplate=(
             "<b>%{y}</b><br>"
             "Affected personnel: "
             "%{customdata,.0f}<br>"
             "Gap prevalence: "
-            "%{customdata.1f}%<br>"
+            "%{customdata.0f}%<br>"
             "Average severity: "
             "%{customdata.2f}<br>"
             "Gap burden: "
-            "%{customdata.1f}<br>"
+            "%{customdata.0f}<br>"
             "Major gaps: "
             "%{customdata,.0f}"
             "<extra></extra>"
@@ -3815,7 +4387,7 @@ def _create_department_competency_heatmap(
                 "<b>%{y}</b><br>"
                 "Competency: %{x}<br>"
                 "Personnel below target: "
-                "%{z:.1f}%"
+                "%{z:.0f}%"
                 "<extra></extra>"
             ),
             colorbar={
@@ -3954,8 +4526,8 @@ def _create_personnel_priority_scatter(
         "Current SG": True,
         "Career Ruler": True,
         "Target SG": True,
-        "Assessment Coverage %": ":.1f",
-        "Strict Readiness %": ":.1f",
+        "Assessment Coverage %": ":.0f",
+        "Strict Readiness %": ":.0f",
         "Major Gaps": True,
         "Minor Gaps": True,
         "Recommended Action": True,
@@ -4244,7 +4816,7 @@ def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_a
 
     readiness_data = [
         ["Weighted Readiness", "Strict Readiness", "Met", "Minor Gaps", "Major Gaps", "Not Assessed"],
-        [f"{weighted_readiness:.1f}%", f"{strict_readiness:.1f}%", str(met_count), str(minor_count), str(major_count), str(unassessed_count)],
+        [f"{weighted_readiness:.0f}%", f"{strict_readiness:.0f}%", str(met_count), str(minor_count), str(major_count), str(unassessed_count)],
     ]
 
     readiness_table = Table(readiness_data, repeatRows=1)
@@ -4317,7 +4889,7 @@ def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_a
     if category_readiness:
         elements.append(Spacer(1, 12))
         elements.append(Paragraph("Category Readiness", styles["Heading2"]))
-        summary_lines = [f"{name}: {value:.1f}%" for name, value in category_readiness.items()]
+        summary_lines = [f"{name}: {value:.0f}%" for name, value in category_readiness.items()]
         elements.append(Paragraph(", ".join(summary_lines), styles["BodyText"]))
 
     document.build(elements)
@@ -4427,7 +4999,7 @@ if page == "🏠 Dashboard Home":
 # =========================================================================
 
     st.markdown("---")
-    st.subheader("🌐 RE Around The Globe")
+    st.subheader("🌐 RE Nationalities")
     
     nationality_map_df, unmatched_nationalities = prepare_nationality_map_data(df)
 
@@ -4657,10 +5229,10 @@ if page == "🏠 Dashboard Home":
             
             # 2. Combine departments < threshold into "Others"
             total_count = dept["Count"].sum()
-            threshold = 0.02  # 2% threshold
+            threshold = 0.027  # 2% threshold
             
             dept["Department"] = dept.apply(
-                lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
+                lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "International",
                 axis=1
             )
             
@@ -4686,7 +5258,7 @@ if page == "🏠 Dashboard Home":
             
             # 5. Clean layout & margins
             fig.update_layout(
-                height=400,
+                height=500,
                 margin=dict(t=20, b=20, l=10, r=10),
                 legend=dict(
                     orientation="h",
@@ -4868,13 +5440,8 @@ if page == "🏠 Dashboard Home":
                 yaxis_title="Number of Personnel",
                 height=400,
                 hovermode="x unified",
-                legend=dict(title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99),
-                yaxis2=dict(
-                    title="Average Age",
-                    overlaying="y",
-                    side="right",
-                    showgrid=False, # Keeps secondary gridlines from cluttering the chart
-                ),
+                legend=dict( orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.1, title_text=""),
+                yaxis2=dict( title="Average Age", overlaying="y", side="right", showgrid=False),
             )
 
             # Show stacked counts inside bars
@@ -4889,8 +5456,6 @@ if page == "🏠 Dashboard Home":
     # =========================================================================
 
     st.subheader("📈 Age vs Salary Grade Analysis")
-
-
 
     # 1. Custom Hover Card Generator (No Overall_avg)
     def create_hover_text(row):
@@ -4987,40 +5552,63 @@ if page == "🏠 Dashboard Home":
     sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
     scatter_df2 = an.scatter_age_vs_grade(fdf1)
 
-    # Create Colorful Legend for 'Years in RE Experience'
+    # ============================================================
+    # RE EXPERIENCE — COLOR + BUBBLE SIZE
+    # ============================================================
+
+    # Use the ACTUAL column name from your dataframe
+    re_exp_col = "Years of RE Experience"
+
     color_col = None
-    
-    if "Years in RE Experience" in scatter_df2.columns:
-            # Ensure numeric type
-            scatter_df2["Years in RE Experience"] = pd.to_numeric(scatter_df2["Years in RE Experience"], errors='coerce')
-            
-            # 1. Define Bin Ranges & Labels
-            bins = [-1, 2, 5, 10, 15, 100]
-            labels = ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs"]
-            
-            # 2. Categorize data into distinct groups
-            scatter_df2["RE Experience Tier"] = pd.cut(
-                scatter_df2["Years in RE Experience"], 
-                bins=bins, 
-                labels=labels
-            ).astype(str)
-            
-            # Clean up any NaNs/Missing data
-            scatter_df2["RE Experience Tier"] = scatter_df2["RE Experience Tier"].replace({"nan": "Unknown / Unspecified"})
-            
-            color_col = "RE Experience Tier"
-    
-        # Define explicit color mapping so each tier ALWAYS gets a distinct solid color
-    # Determine size column
     size_col = None
-    if "Years in RE Experience" in scatter_df2.columns:
-        size_col = "Years in RE Experience"
-    elif "Years in PET" in scatter_df2.columns:
-        size_col = "Years in PET"
+
+    if re_exp_col in scatter_df2.columns:
+
+        # Ensure numeric
+        scatter_df2[re_exp_col] = pd.to_numeric(
+            scatter_df2[re_exp_col],
+            errors="coerce"
+        )
+
+        # --------------------------------------------------------
+        # 1. Create RE Experience Tier for COLOR
+        # --------------------------------------------------------
+
+        bins = [-float("inf"), 2, 5, 10, 15, float("inf")]
+
+        labels = [
+            "< 2 Yrs",
+            "2 - 5 Yrs",
+            "5 - 10 Yrs",
+            "10 - 15 Yrs",
+            "15+ Yrs"
+        ]
+
+        scatter_df2["RE Experience Tier"] = pd.cut(
+            scatter_df2[re_exp_col],
+            bins=bins,
+            labels=labels,
+            right=False
+        )
+
+        # Handle missing values
+        scatter_df2["RE Experience Tier"] = ( scatter_df2["RE Experience Tier"] .astype(object) .where(scatter_df2[re_exp_col].notna(), "Unknown / Unspecified"))
+        color_col = "RE Experience Tier"
+
+        # --------------------------------------------------------
+        # 2. Use EXACT RE Experience for BUBBLE SIZE
+        # --------------------------------------------------------
+
+        scatter_df2["RE Experience Bubble Size"] = ( scatter_df2[re_exp_col] .fillna(0).clip(lower=0))
+        size_col = "RE Experience Bubble Size"
+
+    else:
+
+        st.warning(f"'{re_exp_col}' is not available in the scatter dataset. "
+            "RE Experience cannot be used for colour or bubble size.")
 
     # Attach HTML Hover String
     scatter_df2["Beautiful_Hover"] = scatter_df2.apply(create_hover_text, axis=1)
-
 
     # --- 2D TAB ---
     with tab2d:
@@ -5038,6 +5626,7 @@ if page == "🏠 Dashboard Home":
             y="SG",
             color=color_col,
             size=size_col,
+            size_max=40,
             custom_data=["Beautiful_Hover"],  # Custom HTML injection
             category_orders={
             "SG": sg_order,
@@ -5066,7 +5655,7 @@ if page == "🏠 Dashboard Home":
             scatter_df2,
             x="Age",
             y="SG",
-            z="Years in PET",
+            z="Years of RE Experience",
             color=color_col,
             size=size_col,
             custom_data=["Beautiful_Hover"],  # Custom HTML injection
@@ -5575,7 +6164,7 @@ elif page == "🌡️ Competency Heatmap":
 
     metric5.metric(
         "Assessment Coverage",
-        f"{coverage_pct:.1f}%",
+        f"{coverage_pct:.0f}%",
         help=(
             "Populated competency-score cells divided "
             "by all possible cells in the displayed matrix."
@@ -5846,7 +6435,7 @@ elif page == "🌡️ Competency Heatmap":
                         "Assessment Coverage",
                         min_value=0,
                         max_value=100,
-                        format="%.1f%%",
+                        format="%.0f%%",
                     ),
                 "Assessed Competencies":
                     st.column_config.NumberColumn(
@@ -6005,7 +6594,7 @@ elif page == "🌡️ Competency Heatmap":
                         "Assessment Coverage",
                         min_value=0,
                         max_value=100,
-                        format="%.1f%%",
+                        format="%.0f%%",
                     ),
             },
         )
@@ -6133,7 +6722,7 @@ elif page == "🌡️ Competency Heatmap":
                             "Assessment Coverage",
                             min_value=0,
                             max_value=100,
-                            format="%.1f%%",
+                            format="%.0f%%",
                         ),
                 },
             )
@@ -6285,7 +6874,8 @@ elif page == "👤 Individual Assessment & Talent Profile":
             profile_department_col,
             profile_assignment_col,
             profile_service_col,
-        ) = st.columns(4)
+            profile_re_experience_col,
+        ) = st.columns(5)
 
         with profile_position_col:
             staff_position = (
@@ -6360,12 +6950,23 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 ),
             )
 
+        with profile_re_experience_col:
+            st.metric(
+                            "Years of RE Experiences",
+                            _safe_integer_display(
+                                person_row.get(
+                                    "Years of RE Experience"
+                                )
+                            ),
+                        )
+
         (
             profile_age_col,
             profile_employment_col,
             profile_expiry_col,
             profile_grade_length_col,
-        ) = st.columns(4)
+            profile_assessement_col,
+        ) = st.columns(5)
 
         with profile_age_col:
             st.metric(
@@ -6396,16 +6997,20 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 ),
             )
 
-        with profile_grade_length_col:
+        with profile_assessement_col:
             st.metric(
-                "Length in Grade",
-                _safe_integer_display(
-                    person_row.get(
-                        "Years in Salary Grade"
+                        "Length in Grade",
+                         _safe_integer_display(
+                            person_row.get("Years in Salary Grade")),
                     )
-                ),
-            )
 
+        with profile_grade_length_col:
+                    st.metric(
+                        "Assessment Type",
+                        _safe_display_value(
+                            person_row.get(
+                                "Assessment Level")),)
+                    
         st.markdown(
             "### 💪 Talent Profile"
         )
@@ -6461,6 +7066,83 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 )
             )
 
+        # ============================================================================
+        # ASSESSMENT-BASED COMPETENCY STRENGTH
+        # ============================================================================
+
+        st.markdown("---")
+
+        st.markdown(
+            "### 📊 Assessment-Based Competency Strength"
+        )
+
+        st.caption(
+            "Automatically derived from the selected personnel's "
+            "assessed competency scores. The strongest competencies "
+            "are ranked within each competency class."
+        )
+
+
+        # ============================================================================
+        # FOUR COMPETENCY CLASS TABS
+        # ============================================================================
+
+        base_tab, key_tab, pace_tab, emerging_tab = st.tabs(
+            [
+                "🟢 Base",
+                "🔵 Key",
+                "🟠 Pace",
+                "🟣 Emerging",
+            ]
+        )
+
+        # ============================================================================
+        # BASE
+        # ============================================================================
+
+        with base_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="B",
+                class_config=COMP_TYPES["B"],
+            )
+
+        # ============================================================================
+        # KEY / KNOWLEDGE
+        # ============================================================================
+
+        with key_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="K",
+                class_config=COMP_TYPES["K"],
+            )
+
+        # ============================================================================
+        # PACE
+        # ============================================================================
+
+        with pace_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="P",
+                class_config=COMP_TYPES["P"],
+            )
+
+        # ============================================================================
+        # EMERGING
+        # ============================================================================
+
+        with emerging_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="E",
+                class_config=COMP_TYPES["E"],
+            )
     # -------------------------------------------------------------------------
     # CV DOCUMENTS
     # -------------------------------------------------------------------------
@@ -6979,89 +7661,112 @@ elif page == "👤 Individual Assessment & Talent Profile":
         # ---------------------------------------------------------------------
         # STORED SUMMARY SCORE, ONCE
         # ---------------------------------------------------------------------
+
+        # ---------------------------------------------------------------------
+        # STORED SUMMARY SCORE
+        # ---------------------------------------------------------------------
+
         if summary_score is not None:
-                with st.expander(
-                    (
-                        "📊 Summary Personnel Scores and Competencies "
-                        "for Staff, Principal, and Custodian"
-                    ),
-                    expanded=False,
-                ):
-                    summary_groups = {
-                        "Staff": {
-                            "Base": "staff_base",
-                            "Keys": "staff_keys",
-                            "Pacing": "staff_pacing",
-                            "Emerging": "staff_emerging",
-                            "CTI": "staff_cti",
-                        },
-                        "Principal": {
-                            "Base": "principal_base",
-                            "Keys": "principal_keys",
-                            "Pacing": "principal_pacing",
-                            "Emerging": "principal_emerging",
-                            "CTI": "principal_cti",
-                        },
-                        "Custodian": {
-                            "Base": "custodian_base",
-                            "Keys": "custodian_keys",
-                            "Pacing": "custodian_pacing",
-                            "Emerging": "custodian_emerging",
-                            "CTI": "custodian_cti",
-                        },
-                    }
 
-                    staff_tab, principal_tab, custodian_tab = st.tabs(
-                        [
-                            "Staff",
-                            "Principal",
-                            "Custodian",
-                        ]
-                    )
+            with st.expander(
+                "📊 Summary Personnel Scores and Competencies",
+                expanded=True,
+            ):
 
-                    group_tabs = {
-                        "Staff": staff_tab,
-                        "Principal": principal_tab,
-                        "Custodian": custodian_tab,
-                    }
+                summary_groups = {
+                    "Next Grade": {
+                        "Base": "next_grade_base",
+                        "Keys": "next_grade_keys",
+                        "Pacing": "next_grade_pacing",
+                        "Emerging": "next_grade_emerging",
+                        "CTI": "next_grade_cti",
+                    },
 
-                    for group_name, score_fields in summary_groups.items():
-                        with group_tabs[group_name]:
-                            st.markdown(
-                                f"✨Talent's Summary Scores and Readiness"
+                    "Staff": {
+                        "Base": "staff_base",
+                        "Keys": "staff_keys",
+                        "Pacing": "staff_pacing",
+                        "Emerging": "staff_emerging",
+                        "CTI": "staff_cti",
+                    },
+
+                    "Principal": {
+                        "Base": "principal_base",
+                        "Keys": "principal_keys",
+                        "Pacing": "principal_pacing",
+                        "Emerging": "principal_emerging",
+                        "CTI": "principal_cti",
+                    },
+
+                    "Custodian": {
+                        "Base": "custodian_base",
+                        "Keys": "custodian_keys",
+                        "Pacing": "custodian_pacing",
+                        "Emerging": "custodian_emerging",
+                        "CTI": "custodian_cti",
+                    },
+                }
+
+                (
+                    next_grade_tab,
+                    staff_tab,
+                    principal_tab,
+                    custodian_tab,
+                ) = st.tabs(
+                    [
+                        "🎯 Next Grade",
+                        "👤 Staff",
+                        "⭐ Principal",
+                        "🏆 Custodian",
+                    ]
+                )
+
+                group_tabs = {
+                    "Next Grade": next_grade_tab,
+                    "Staff": staff_tab,
+                    "Principal": principal_tab,
+                    "Custodian": custodian_tab,
+                }
+
+                for group_name, score_fields in summary_groups.items():
+
+                    with group_tabs[group_name]:
+
+                        st.markdown(
+                            f"### ✨ {group_name} — Talent Summary Scores"
+                        )
+
+                        metric_columns = st.columns(5)
+
+                        for (
+                            metric_column,
+                            (metric_name, field_name),
+                        ) in zip(
+                            metric_columns,
+                            score_fields.items(),
+                        ):
+
+                            raw_value = getattr(
+                                summary_score,
+                                field_name,
+                                None,
                             )
 
-                            metric_columns = st.columns(5)
+                            with metric_column:
 
-                            for (
-                                metric_column,
-                                (
+                                st.metric(
                                     metric_name,
-                                    field_name,
-                                ),
-                            ) in zip(
-                                metric_columns,
-                                score_fields.items(),
-                            ):
-                                raw_value = getattr(
-                                    summary_score,
-                                    field_name,
-                                    None,
+                                    _format_summary_metric(
+                                        raw_value
+                                    ),
                                 )
 
-                                with metric_column:
-                                    st.metric(
-                                        metric_name,
-                                        _format_summary_metric(
-                                            raw_value
-                                        ),
-                                    )
-
         else:
-                st.caption(
-                    "No stored competency summary scores are "
-                    "available for this personnel."
-                )
+
+            st.caption(
+                "No stored competency summary scores are "
+                "available for this personnel."
+            )
         # ---------------------------------------------------------------------
         # CATEGORY READINESS
         # ---------------------------------------------------------------------
@@ -7097,7 +7802,9 @@ elif page == "👤 Individual Assessment & Talent Profile":
                         f"{category_readiness[category]:.0f}%"
                     ),
                 )
-
+            with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
+                    render_readiness_methodology()
+            
         # =========================================================================
         # VISUALIZATIONS
         # =========================================================================
@@ -7274,17 +7981,17 @@ elif page == "👤 Individual Assessment & Talent Profile":
                     "Actual Score":
                         st.column_config.NumberColumn(
                             "Actual",
-                            format="%.2f",
+                            format="%.0f",
                         ),
                     "Target Score":
                         st.column_config.NumberColumn(
                             "Target",
-                            format="%.2f",
+                            format="%.0f",
                         ),
                     "Gap":
                         st.column_config.NumberColumn(
                             "Gap",
-                            format="%.2f",
+                            format="%.0f",
                         ),
                 },
             )
@@ -7323,17 +8030,17 @@ elif page == "👤 Individual Assessment & Talent Profile":
                 "Actual Score":
                     st.column_config.NumberColumn(
                         "Actual",
-                        format="%.2f",
+                        format="%.0f",
                     ),
                 "Target Score":
                     st.column_config.NumberColumn(
                         "Target",
-                        format="%.2f",
+                        format="%.0f",
                     ),
                 "Gap":
                     st.column_config.NumberColumn(
                         "Gap",
-                        format="%.2f",
+                        format="%.0f",
                     ),
                 "Status":
                     st.column_config.TextColumn(
@@ -8071,7 +8778,7 @@ elif page == "🎯 Readiness & Gaps":
     median_kpi_col.metric(
         "Median Readiness",
         (
-            f"{median_readiness:.1f}%"
+            f"{median_readiness:.0f}%"
             if pd.notna(
                 median_readiness
             )
@@ -8089,7 +8796,9 @@ elif page == "🎯 Readiness & Gaps":
     # =========================================================================
     # ANALYTICAL TABS
     # =========================================================================
-
+    with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
+                        render_readiness_methodology()
+                        
     (
         overview_tab,
         distribution_tab,
@@ -8186,6 +8895,11 @@ elif page == "🎯 Readiness & Gaps":
                 "Current SG",
                 "Career Ruler",
                 "Target SG",
+                "Next Grade Base",
+                "Next Grade Keys",
+                "Next Grade Pacing",
+                "Next Grade Emerging",
+                "Next Grade CTI",
                 "Assessment Coverage %",
                 "Weighted Readiness %",
                 "Strict Readiness %",
@@ -8211,21 +8925,21 @@ elif page == "🎯 Readiness & Gaps":
                             "Coverage",
                             min_value=0,
                             max_value=100,
-                            format="%.1f%%",
+                            format="%.0f%%",
                         ),
                     "Weighted Readiness %":
                         st.column_config.ProgressColumn(
                             "Weighted Readiness",
                             min_value=0,
                             max_value=100,
-                            format="%.1f%%",
+                            format="%.0f%%",
                         ),
                     "Strict Readiness %":
                         st.column_config.ProgressColumn(
                             "Strict Readiness",
                             min_value=0,
                             max_value=100,
-                            format="%.1f%%",
+                            format="%.0f%%",
                         ),
                 },
             )
@@ -8244,6 +8958,11 @@ elif page == "🎯 Readiness & Gaps":
                 "Target SG",
                 "Required Competencies",
                 "Assessed Competencies",
+                "Next Grade Base",
+                "Next Grade Keys",
+                "Next Grade Pacing",
+                "Next Grade Emerging",
+                "Next Grade CTI",
                 "Assessment Coverage %",
                 "Weighted Readiness %",
                 "Strict Readiness %",
@@ -8506,7 +9225,7 @@ elif page == "🎯 Readiness & Gaps":
                                 "Gap Prevalence",
                                 min_value=0,
                                 max_value=100,
-                                format="%.1f%%",
+                                format="%.0f%%",
                             ),
                         "Average Gap Severity":
                             st.column_config.NumberColumn(
@@ -8516,7 +9235,7 @@ elif page == "🎯 Readiness & Gaps":
                         "Gap Burden":
                             st.column_config.NumberColumn(
                                 "Gap Burden",
-                                format="%.1f",
+                                format="%.0f",
                             ),
                     },
                 )
@@ -8631,31 +9350,31 @@ elif page == "🎯 Readiness & Gaps":
                         "Coverage",
                         min_value=0,
                         max_value=100,
-                        format="%.1f%%",
+                        format="%.0f%%",
                     ),
                 "Weighted Readiness %":
                     st.column_config.ProgressColumn(
                         "Weighted Readiness",
                         min_value=0,
                         max_value=100,
-                        format="%.1f%%",
+                        format="%.0f%%",
                     ),
                 "Strict Readiness %":
                     st.column_config.ProgressColumn(
                         "Strict Readiness",
                         min_value=0,
                         max_value=100,
-                        format="%.1f%%",
+                        format="%.0f%%",
                     ),
                 "Gap Burden":
                     st.column_config.NumberColumn(
                         "Gap Burden",
-                        format="%.1f",
+                        format="%.0f",
                     ),
                 "Years in Grade":
                     st.column_config.NumberColumn(
                         "Years in Grade",
-                        format="%.1f",
+                        format="%.0f",
                     ),
             },
         )
@@ -8768,14 +9487,14 @@ elif page == "🎯 Readiness & Gaps":
                 person_readiness_col.metric(
                     "Weighted Readiness",
                     (
-                        f"{selected_person_summary['Weighted Readiness %']:.1f}%"
+                        f"{selected_person_summary['Weighted Readiness %']:.0f}%"
                     ),
                 )
 
                 person_coverage_col.metric(
                     "Assessment Coverage",
                     (
-                        f"{selected_person_summary['Assessment Coverage %']:.1f}%"
+                        f"{selected_person_summary['Assessment Coverage %']:.0f}%"
                     ),
                 )
 

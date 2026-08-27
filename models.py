@@ -117,6 +117,12 @@ class SummaryScore(Base):
     personnel_id    = Column(Integer, ForeignKey("personnel.id"), nullable=False, index=True)
     assessment_id   = Column(Integer, ForeignKey("assessments.id"), nullable=True)
 
+    # next_grade_base     = Column(Float)
+    # next_grade_keys     = Column(Float)
+    # next_grade_pacing   = Column(Float)
+    # next_grade_emerging = Column(Float)
+    # next_grade_cti      = Column(Float)
+
     staff_base      = Column(Float)
     staff_keys      = Column(Float)
     staff_pacing    = Column(Float)

@@ -44,10 +44,10 @@ USE_LIVE_EXCEL_SOURCE = True
 # ── Overarching Position & Salary Grade Brackets ─────────────────────────────
 POSITION_GRADE_RANGES = {
     "UPTREX" : ["P1"],
-    "Executive": ["P1", "P2", "P3", "P4"],
-    "Staff / Manager": ["P5", "P6"],
-    "Principal / SM": ["P7", "P8"],
-    "Custodian / GM": ["P9", "P10"],
+    "Executive - (P1 -P4)": ["P1", "P2", "P3", "P4"],
+    "Staff - (P5 - P6)" : ["P5", "P6"],
+    "Principal - (P7 - P8)" : ["P7", "P8"],
+    "Custodian - (P9 - 10)" : ["P9", "P10"],
 }
 
 # Helper mapping to lookup a bracket given a specific Salary Grade (SG)
@@ -201,13 +201,14 @@ GAP_COLS  = [f"G--{c}" for c in SCORE_COLS]
 
 COMP_TYPES = {
     "B": {"label": "Base Competency",  "cols": [f"B{i}" for i in range(1,13)]},
-    "K": {"label": "Knowledge",         "cols": [f"K{i}" for i in range(1,6)]},
+    "K": {"label": "Key",         "cols": [f"K{i}" for i in range(1,6)]},
     "P": {"label": "Pacing",            "cols": [f"P{i}" for i in range(1,6)]},
     "E": {"label": "Emerging",          "cols": ["E1","E2"]},
 }
 
 # Summary score columns present in Excel
 SUMMARY_GROUPS = {
+    # "Next Grade" : ["Next Grade Base","Next Grade Keys","Next Grade Pacing","Next Grade Emerging","Next Grade CTI"],
     "Staff":      ["Staff Base","Staff Keys","Staff Pacing","Staff Emerging","Staff CTI"],
     "Principal":  ["Principal Base","Principal Keys","Principal Pacing","Principal Emerging","Principal CTI"],
     "Custodian":  ["Custodian Base","Custodian Keys","Custodian Pacing","Custodian Emerging","Custodian CTI"],

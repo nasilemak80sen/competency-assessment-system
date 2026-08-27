@@ -135,7 +135,7 @@ def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
     Returns only columns that exist in the input dataframe.
     """
     # Define ideal columns in order of preference
-    size_cols = ["Years in RE Experience", "Years in PET"]
+    size_cols = ["Years of RE Experience", "Years in PET"]
     
     # Find which size column actually exists
     size_col_available = None

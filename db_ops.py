@@ -813,6 +813,11 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
 
         # ── Import summary scores ──────────────────────────────────────────
         sum_data = {
+            "next_grade_base" : _safe(row.get("Next Grade Base")),
+            "next_grade_keys" : _safe(row.get("Next Grade Keys")),
+            "next_grade_pacing" : _safe(row.get("Next Grade Pacing")),
+            "next_grade_emerging" : _safe(row.get("Next Grade Emerging")),
+            "next_grade_cti" : _safe(row.get("Next Grade CTI")),
             "staff_base":       _safe(row.get("Staff Base")),
             "staff_keys":       _safe(row.get("Staff Keys")),
             "staff_pacing":     _safe(row.get("Staff Pacing")),
@@ -981,6 +986,11 @@ def get_wide_dataframe(session: Session) -> pd.DataFrame:
         )
         if summary is not None:
             summary_columns = {
+                # "next_grade_base": "Next Grade Base",
+                # "next_grade_keys": "Next Grade Keys",
+                # "next_grade_pacing": "Next Grade Pacing",
+                # "next_grade_emerging": "Next Grade Emerging",
+                # "next_grade_cti": "Next Grade CTI",
                 "staff_base": "Staff Base",
                 "staff_keys": "Staff Keys",
                 "staff_pacing": "Staff Pacing",
