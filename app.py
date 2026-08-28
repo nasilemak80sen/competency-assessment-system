@@ -8786,7 +8786,10 @@ elif page == "🎯 Readiness & Gaps":
         ),
     )
 
-    st.caption(
+    with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
+                        render_readiness_methodology()
+
+    st.info( "ℹ️: "
         "Competency readiness is a decision-support indicator. "
         "Assessment and progression decisions should also consider "
         "experience, performance evidence, assignment exposure, "
@@ -8796,9 +8799,7 @@ elif page == "🎯 Readiness & Gaps":
     # =========================================================================
     # ANALYTICAL TABS
     # =========================================================================
-    with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
-                        render_readiness_methodology()
-                        
+    
     (
         overview_tab,
         distribution_tab,
@@ -8990,7 +8991,7 @@ elif page == "🎯 Readiness & Gaps":
                 width="stretch",
                 hide_index=True,
             )
-
+    
     # =========================================================================
     # TAB 2: READINESS DISTRIBUTION
     # =========================================================================
