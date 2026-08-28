@@ -113,6 +113,41 @@ from chart_builder import (
 # mapping from the Competency Heatmap.
 # ============================================================================
 
+from io import BytesIO
+
+
+def plotly_figure_to_png(
+    figure,
+    width=1400,
+    height=800,
+    scale=2,
+):
+    """
+    Convert a Plotly figure into PNG bytes for PDF inclusion.
+    """
+    if figure is None:
+        return None
+
+    try:
+        image_bytes = figure.to_image(
+            format="png",
+            width=width,
+            height=height,
+            scale=scale,
+            engine="kaleido",
+        )
+
+        return BytesIO(
+            image_bytes
+        )
+
+    except Exception as exc:
+        print(
+            f"Unable to export Plotly chart: {exc}"
+        )
+
+        return None
+
 def _safe_numeric(value):
     """
     Safely convert a value to a numeric float.
@@ -1819,10 +1854,10 @@ NATIONALITY_ALIASES = {
     "UK": "United Kingdom",
     "U.K.": "United Kingdom",
     "England": "United Kingdom",
-    "Russia": "Russian Federation",
-    "Iran": "Iran, Islamic Republic of",
-    "Vietnam": "Viet Nam",
-    "Venezuela": "Venezuela, Bolivarian Republic of",
+    "Russian Federation" :"Russia",
+    "Iran, Islamic Republic of":"Iran",
+    "Viet Nam": "Vietnam",
+    "Venezuela, Bolivarian Republic of": "Venezuela",
     "South Korea": "Korea, Republic of",
     "Korea": "Korea, Republic of",
     "USA": "United States",
@@ -4737,28 +4772,402 @@ def load_ruler_and_mappings():
     st.session_state.setdefault("timings", {})["ruler_map"] = duration
     return r_map, t_labels
 
-def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_assessment_report.pdf"):
-    """Create a PDF report for the selected competency assessment."""
-    from io import BytesIO
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+def export_to_pdf(
+    person_row,
+    target_sg,
+    df_gap,
+    metrics,
+    filename="individual_assessment_report.pdf",
+    selected_ruler=None,
+    summary_score=None,
+    cv_documents=None,
+    chart_images=None,
+    assessment_coverage=None,
+):
+    """
+    Generate a complete Individual Competency Assessment PDF.
 
-    if not isinstance(metrics, (tuple, list)) or len(metrics) < 2:
-        strict_readiness = 0.0
-        weighted_readiness = 0.0
-        category_readiness = {}
-    else:
-        strict_readiness = float(metrics[0]) if metrics[0] is not None else 0.0
-        weighted_readiness = float(metrics[1]) if metrics[1] is not None else 0.0
-        category_readiness = metrics[2] if len(metrics) > 2 else {}
+    Required inputs:
+        person_row:
+            Selected personnel pandas Series or dictionary.
+
+        target_sg:
+            Selected target salary grade.
+
+        df_gap:
+            Detailed competency-gap DataFrame.
+
+        metrics:
+            Tuple/list:
+                (
+                    strict_readiness,
+                    weighted_readiness,
+                    category_readiness,
+                )
+
+            Or dictionary:
+                {
+                    "strict_readiness": ...,
+                    "weighted_readiness": ...,
+                    "category_readiness": ...,
+                    "assessment_coverage": ...,
+                    "overall_status": ...,
+                }
+
+    Optional inputs:
+        selected_ruler:
+            Career Ruler currently selected on the page.
+
+        summary_score:
+            Latest SummaryScore SQLAlchemy record.
+
+        cv_documents:
+            DataFrame returned by db_ops.get_cv_documents().
+
+        chart_images:
+            Dictionary of BytesIO PNG images:
+                {
+                    "actual_vs_target": BytesIO(...),
+                    "competency_radar": BytesIO(...),
+                    "assessment_history": BytesIO(...),
+                }
+    """
+    from datetime import datetime
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+
+    import pandas as pd
+
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import (
+        ParagraphStyle,
+        getSampleStyleSheet,
+    )
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        Image,
+        KeepTogether,
+        PageBreak,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    # =========================================================================
+    # LOCAL FORMATTERS
+    # =========================================================================
+
+    def safe_text(
+        value,
+        fallback="Not Available",
+    ):
+        if value is None:
+            return fallback
+
+        try:
+            if pd.isna(value):
+                return fallback
+        except (TypeError, ValueError):
+            pass
+
+        cleaned = str(value).strip()
+
+        if cleaned.casefold() in {
+            "",
+            "none",
+            "nan",
+            "nat",
+        }:
+            return fallback
+
+        return cleaned
+
+    def safe_html_text(
+        value,
+        fallback="Not Available",
+    ):
+        return escape(
+            safe_text(
+                value,
+                fallback,
+            )
+        )
+
+    def format_number(
+        value,
+        decimal_places=1,
+        fallback="N/A",
+    ):
+        numeric_value = pd.to_numeric(
+            value,
+            errors="coerce",
+        )
+
+        if pd.isna(numeric_value):
+            return fallback
+
+        return f"{float(numeric_value):.{decimal_places}f}"
+
+    def format_percentage(
+        value,
+        decimal_places=0,
+    ):
+        numeric_value = pd.to_numeric(
+            value,
+            errors="coerce",
+        )
+
+        if pd.isna(numeric_value):
+            return "N/A"
+
+        return f"{float(numeric_value):.{decimal_places}f}"
+
+    def format_date(
+        value,
+        fallback="Not Available",
+    ):
+        parsed_date = pd.to_datetime(
+            value,
+            errors="coerce",
+        )
+
+        if pd.isna(parsed_date):
+            return fallback
+
+        return parsed_date.strftime(
+            "%d %b %Y"
+        )
+
+    # =========================================================================
+    # READINESS METRICS
+    # =========================================================================
+
+    strict_readiness = 0.0
+    weighted_readiness = 0.0
+    category_readiness = {}
+    supplied_overall_status = None
+
+    if isinstance(metrics, dict):
+        strict_readiness = float(
+            metrics.get(
+                "strict_readiness",
+                0.0,
+            )
+            or 0.0
+        )
+
+        weighted_readiness = float(
+            metrics.get(
+                "weighted_readiness",
+                0.0,
+            )
+            or 0.0
+        )
+
+        category_readiness = (
+            metrics.get(
+                "category_readiness",
+                {},
+            )
+            or {}
+        )
+
+        supplied_overall_status = (
+            metrics.get(
+                "overall_status"
+            )
+        )
+
+        if assessment_coverage is None:
+            assessment_coverage = (
+                metrics.get(
+                    "assessment_coverage"
+                )
+            )
+
+    elif (
+        isinstance(
+            metrics,
+            (tuple, list),
+        )
+        and len(metrics) >= 2
+    ):
+        strict_readiness = float(
+            metrics[0]
+            if metrics[0] is not None
+            else 0.0
+        )
+
+        weighted_readiness = float(
+            metrics[1]
+            if metrics[1] is not None
+            else 0.0
+        )
+
+        if len(metrics) > 2:
+            category_readiness = (
+                metrics[2]
+                or {}
+            )
 
     if df_gap is None:
-        df_gap = pd.DataFrame(columns=["Status"])
+        df_gap = pd.DataFrame(
+            columns=[
+                "Category",
+                "Competency Code",
+                "Competency Name",
+                "Actual Score",
+                "Target Score",
+                "Gap",
+                "Status",
+            ]
+        )
+    else:
+        df_gap = df_gap.copy()
+
+    if assessment_coverage is None:
+        if (
+            not df_gap.empty
+            and "Actual Score"
+            in df_gap.columns
+        ):
+            assessment_coverage = (
+                df_gap[
+                    "Actual Score"
+                ]
+                .notna()
+                .mean()
+                * 100
+            )
+        else:
+            assessment_coverage = 0.0
+
+    met_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "✅ Met"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    minor_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "🟡 Minor Gap"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    major_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "🔴 Major Gap"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    unassessed_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "Not Assessed"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    if supplied_overall_status:
+        overall_status = str(
+            supplied_overall_status
+        )
+
+    elif assessment_coverage < 40:
+        overall_status = "Not Assessed"
+
+    elif (
+        weighted_readiness >= 80
+        and strict_readiness >= 75
+        and assessment_coverage >= 90
+        and major_count == 0
+    ):
+        overall_status = "Ready"
+
+    elif (
+        weighted_readiness >= 65
+        and assessment_coverage >= 75
+        and major_count <= 2
+    ):
+        overall_status = "Near Ready"
+
+    else:
+        overall_status = (
+            "Development Required"
+        )
+
+    # =========================================================================
+    # PERSONNEL DATA
+    # =========================================================================
+
+    employee_name = safe_text(
+        person_row.get("Name")
+    )
+
+    staff_id = safe_text(
+        person_row.get("Staff ID")
+    )
+
+    current_sg = safe_text(
+        person_row.get("SG")
+    )
+
+    staff_position = safe_text(
+        person_row.get(
+            "Staff Position"
+        )
+    )
+
+    department = safe_text(
+        person_row.get("Department")
+    )
+
+    section_name = safe_text(
+        person_row.get(
+            "Section Name"
+        )
+    )
+
+    current_assignment = safe_text(
+        person_row.get(
+            "Current Assignment / Loc:"
+        )
+    )
+
+    ruler_type = safe_text(
+        selected_ruler
+        or person_row.get("Ruler Type")
+        or person_row.get("ruler_type")
+    )
+
+    # =========================================================================
+    # DOCUMENT INITIALIZATION
+    # =========================================================================
 
     pdf_buffer = BytesIO()
+
     document = SimpleDocTemplate(
         pdf_buffer,
         pagesize=landscape(A4),
@@ -4766,134 +5175,1739 @@ def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_a
         leftMargin=12 * mm,
         topMargin=12 * mm,
         bottomMargin=12 * mm,
+        title=(
+            "Individual Competency "
+            "Assessment Report"
+        ),
+        author=(
+            "DPE Reservoir Engineering"
+        ),
+        subject=(
+            f"Competency Assessment - "
+            f"{employee_name}"
+        ),
     )
 
     styles = getSampleStyleSheet()
+
+    styles.add(
+        ParagraphStyle(
+            name="ReportTitle",
+            parent=styles["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=20,
+            leading=24,
+            textColor=colors.HexColor(
+                "#003D5C"
+            ),
+            spaceAfter=4 * mm,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="SectionHeading",
+            parent=styles["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=13,
+            leading=16,
+            textColor=colors.HexColor(
+                "#003D5C"
+            ),
+            spaceBefore=3 * mm,
+            spaceAfter=2 * mm,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="CardLabel",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=10,
+            textColor=colors.HexColor(
+                "#20419A"
+            ),
+            spaceAfter=2,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="CardValue",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor(
+                "#17223B"
+            ),
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="SmallBody",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=11,
+            textColor=colors.HexColor(
+                "#17223B"
+            ),
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="TableBody",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=7.5,
+            leading=9.5,
+            alignment=TA_LEFT,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="SmallCenter",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=7,
+            leading=9,
+            alignment=TA_CENTER,
+        )
+    )
+
     elements = []
 
-    employee_name = person_row.get("Name") or "Not Available"
-    staff_id = person_row.get("Staff ID") or "Not Available"
-    current_sg = person_row.get("SG") or "Not Available"
-    staff_position = person_row.get("Staff Position") or "Not Available"
-    department = person_row.get("Department") or "Not Available"
-    ruler_type = person_row.get("Ruler Type") or "Not Available"
+    # =========================================================================
+    # REPORT HEADER
+    # =========================================================================
 
-    elements.append(Paragraph("Individual Competency Assessment Report", styles["Title"]))
-    elements.append(Spacer(1, 8))
+    elements.append(
+        Paragraph(
+            (
+                "DPE Reservoir Engineering "
+                "Talent Profile Dashboard"
+            ),
+            styles["ReportTitle"],
+        )
+    )
 
-    personnel_data = [
-        ["Employee", str(employee_name), "Staff ID", str(staff_id)],
-        ["Position", str(staff_position), "Current Grade", str(current_sg)],
-        ["Department", str(department), "Target Grade", str(target_sg)],
-        ["Career Ruler", str(ruler_type), "Report Date", datetime.now().strftime("%d %b %Y")],
+    elements.append(
+        Paragraph(
+            (
+                "Individual Competency "
+                "Assessment Report"
+            ),
+            styles["SectionHeading"],
+        )
+    )
+
+    elements.append(
+        Spacer(
+            1,
+            2 * mm,
+        )
+    )
+
+    # =========================================================================
+    # PERSONNEL PROFILE CARDS
+    # =========================================================================
+
+    profile_card_data = [
+        [
+            Paragraph(
+                (
+                    "<b>Employee</b><br/>"
+                    f"{safe_html_text(employee_name)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Staff ID</b><br/>"
+                    f"{safe_html_text(staff_id)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Position / Grade</b><br/>"
+                    f"{safe_html_text(staff_position)} "
+                    f"({safe_html_text(current_sg)})"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Career Ruler / Target</b><br/>"
+                    f"{safe_html_text(ruler_type)} / "
+                    f"{safe_html_text(target_sg)}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
+        [
+            Paragraph(
+                (
+                    "<b>Department / Section</b><br/>"
+                    f"{safe_html_text(department)} / "
+                    f"{safe_html_text(section_name)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Current Assignment</b><br/>"
+                    f"{safe_html_text(current_assignment)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Employment / Years in PETRONAS</b><br/>"
+                    f"{safe_html_text(person_row.get('Employment Category'))} / "
+                    f"{safe_html_text(person_row.get('Years in PET'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Report Date</b><br/>"
+                    f"{datetime.now():%d %b %Y}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
     ]
 
-    personnel_table = Table(personnel_data, colWidths=[32 * mm, 70 * mm, 32 * mm, 70 * mm])
-    personnel_table.setStyle(
+    profile_table = Table(
+        profile_card_data,
+        colWidths=[
+            66 * mm,
+            42 * mm,
+            66 * mm,
+            75 * mm,
+        ],
+    )
+
+    profile_table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#00A19C")),
-                ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#00A19C")),
-                ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-                ("TEXTCOLOR", (2, 0), (2, -1), colors.white),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("PADDING", (0, 0), (-1, -1), 6),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, -1),
+                    colors.HexColor(
+                        "#F7FAFC"
+                    ),
+                ),
+                (
+                    "BOX",
+                    (0, 0),
+                    (-1, -1),
+                    0.6,
+                    colors.HexColor(
+                        "#CBD5E1"
+                    ),
+                ),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.4,
+                    colors.HexColor(
+                        "#E2E8F0"
+                    ),
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE",
+                ),
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
             ]
         )
     )
-    elements.append(personnel_table)
-    elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph("Readiness Summary", styles["Heading2"]))
+    elements.append(profile_table)
+    elements.append(
+        Spacer(
+            1,
+            5 * mm,
+        )
+    )
 
-    met_count = int((df_gap["Status"] == "✅ Met").sum()) if "Status" in df_gap.columns else 0
-    minor_count = int((df_gap["Status"] == "🟡 Minor Gap").sum()) if "Status" in df_gap.columns else 0
-    major_count = int((df_gap["Status"] == "🔴 Major Gap").sum()) if "Status" in df_gap.columns else 0
-    unassessed_count = int((df_gap["Status"] == "Not Assessed").sum()) if "Status" in df_gap.columns else 0
+    # =========================================================================
+    # TALENT PROFILE
+    # =========================================================================
 
-    readiness_data = [
-        ["Weighted Readiness", "Strict Readiness", "Met", "Minor Gaps", "Major Gaps", "Not Assessed"],
-        [f"{weighted_readiness:.0f}%", f"{strict_readiness:.0f}%", str(met_count), str(minor_count), str(major_count), str(unassessed_count)],
+    elements.append(
+        Paragraph(
+            "Talent Profile",
+            styles["SectionHeading"],
+        )
+    )
+
+    talent_profile_data = [
+        [
+            Paragraph(
+                (
+                    "<b>Strength</b><br/>"
+                    f"{safe_html_text(person_row.get('Strength'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Interest</b><br/>"
+                    f"{safe_html_text(person_row.get('Interest'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Background</b><br/>"
+                    f"{safe_html_text(person_row.get('Background') or person_row.get('Sub-Disciplines'))}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
+        [
+            Paragraph(
+                (
+                    "<b>Potential</b><br/>"
+                    f"{safe_html_text(person_row.get('Potential'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Recommendation</b><br/>"
+                    f"{safe_html_text(person_row.get('Recommendation'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Resource / SME</b><br/>"
+                    f"{safe_html_text(person_row.get('Resource/SME'))}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
     ]
 
-    readiness_table = Table(readiness_data, repeatRows=1)
+    talent_profile_table = Table(
+        talent_profile_data,
+        colWidths=[
+            83 * mm,
+            83 * mm,
+            83 * mm,
+        ],
+    )
+
+    talent_profile_table.setStyle(
+        TableStyle(
+            [
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, -1),
+                    colors.HexColor(
+                        "#F8FAFC"
+                    ),
+                ),
+                (
+                    "BOX",
+                    (0, 0),
+                    (-1, -1),
+                    0.6,
+                    colors.HexColor(
+                        "#CBD5E1"
+                    ),
+                ),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.4,
+                    colors.HexColor(
+                        "#E2E8F0"
+                    ),
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "TOP",
+                ),
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+            ]
+        )
+    )
+
+    elements.append(
+        talent_profile_table
+    )
+
+    elements.append(
+        Spacer(
+            1,
+            5 * mm,
+        )
+    )
+
+    # =========================================================================
+    # READINESS SUMMARY
+    # =========================================================================
+
+    elements.append(
+        Paragraph(
+            "Readiness Summary",
+            styles["SectionHeading"],
+        )
+    )
+
+    readiness_data = [
+        [
+            "Weighted",
+            "Strict",
+            "Coverage",
+            "Status",
+            "Met",
+            "Minor",
+            "Major",
+            "Not Assessed",
+        ],
+        [
+            format_percentage(
+                weighted_readiness
+            ),
+            format_percentage(
+                strict_readiness
+            ),
+            format_percentage(
+                assessment_coverage
+            ),
+            overall_status,
+            str(met_count),
+            str(minor_count),
+            str(major_count),
+            str(unassessed_count),
+        ],
+    ]
+
+    readiness_table = Table(
+        readiness_data,
+        repeatRows=1,
+        colWidths=[
+            29 * mm,
+            29 * mm,
+            29 * mm,
+            38 * mm,
+            22 * mm,
+            22 * mm,
+            22 * mm,
+            30 * mm,
+        ],
+    )
+
     readiness_table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("PADDING", (0, 0), (-1, -1), 6),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.HexColor(
+                        "#20419A"
+                    ),
+                ),
+                (
+                    "TEXTCOLOR",
+                    (0, 0),
+                    (-1, 0),
+                    colors.white,
+                ),
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold",
+                ),
+                (
+                    "FONTNAME",
+                    (0, 1),
+                    (-1, 1),
+                    "Helvetica-Bold",
+                ),
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "CENTER",
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE",
+                ),
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.HexColor(
+                        "#CBD5E1"
+                    ),
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7,
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7,
+                ),
             ]
         )
     )
+
     elements.append(readiness_table)
-    elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph(f"Competency Gap Analysis to {target_sg}", styles["Heading2"]))
+    # =========================================================================
+    # CATEGORY READINESS
+    # =========================================================================
 
-    gap_table_data: list[list[object]] = [["Category", "Code", "Competency", "Actual", "Target", "Gap", "Status"]]
-    for _, row in df_gap.iterrows():
-        actual_value = row.get("Actual Score")
-        target_value = row.get("Target Score")
-        gap_value = row.get("Gap")
+    if category_readiness:
+        elements.append(
+            Spacer(
+                1,
+                4 * mm,
+            )
+        )
 
-        actual_display = str(int(round(float(actual_value)))) if pd.notna(actual_value) else "-"
-        target_display = str(int(round(float(target_value)))) if pd.notna(target_value) else "-"
-        gap_display = str(int(round(float(gap_value)))) if pd.notna(gap_value) else "-"
+        category_headers = []
+        category_values = []
 
+        for category_name in [
+            "Base",
+            "Key",
+            "Pacing",
+            "Emerging",
+        ]:
+            if (
+                category_name
+                in category_readiness
+            ):
+                category_headers.append(
+                    category_name
+                )
+
+                category_values.append(
+                    format_percentage(
+                        category_readiness[
+                            category_name
+                        ]
+                    )
+                )
+
+        if category_headers:
+            category_table = Table(
+                [
+                    category_headers,
+                    category_values,
+                ],
+                colWidths=[
+                    45 * mm
+                    for _ in category_headers
+                ],
+            )
+
+            category_table.setStyle(
+                TableStyle(
+                    [
+                        (
+                            "BACKGROUND",
+                            (0, 0),
+                            (-1, 0),
+                            colors.HexColor(
+                                "#00A19C"
+                            ),
+                        ),
+                        (
+                            "TEXTCOLOR",
+                            (0, 0),
+                            (-1, 0),
+                            colors.white,
+                        ),
+                        (
+                            "FONTNAME",
+                            (0, 0),
+                            (-1, -1),
+                            "Helvetica-Bold",
+                        ),
+                        (
+                            "ALIGN",
+                            (0, 0),
+                            (-1, -1),
+                            "CENTER",
+                        ),
+                        (
+                            "GRID",
+                            (0, 0),
+                            (-1, -1),
+                            0.5,
+                            colors.HexColor(
+                                "#CBD5E1"
+                            ),
+                        ),
+                        (
+                            "TOPPADDING",
+                            (0, 0),
+                            (-1, -1),
+                            6,
+                        ),
+                        (
+                            "BOTTOMPADDING",
+                            (0, 0),
+                            (-1, -1),
+                            6,
+                        ),
+                    ]
+                )
+            )
+
+            elements.append(
+                category_table
+            )
+
+    # =========================================================================
+    # ALL 15 SUMMARY SCORES
+    # =========================================================================
+
+    if summary_score is not None:
+        elements.append(
+            Spacer(
+                1,
+                5 * mm,
+            )
+        )
+
+        elements.append(
+            Paragraph(
+                (
+                    "Staff, Principal and "
+                    "Custodian Summary Scores"
+                ),
+                styles["SectionHeading"],
+            )
+        )
+
+        summary_table_data = [
+            [
+                "Level",
+                "Base",
+                "Keys",
+                "Pacing",
+                "Emerging",
+                "CTI",
+            ],
+            [
+                "Staff",
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_base",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_keys",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_pacing",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_emerging",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_cti",
+                        None,
+                    ),
+                    2,
+                ),
+            ],
+            [
+                "Principal",
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_base",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_keys",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_pacing",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_emerging",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_cti",
+                        None,
+                    ),
+                    2,
+                ),
+            ],
+            [
+                "Custodian",
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_base",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_keys",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_pacing",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_emerging",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_cti",
+                        None,
+                    ),
+                    2,
+                ),
+            ],
+        ]
+
+        summary_table = Table(
+            summary_table_data,
+            repeatRows=1,
+            colWidths=[
+                40 * mm,
+                34 * mm,
+                34 * mm,
+                34 * mm,
+                40 * mm,
+                34 * mm,
+            ],
+        )
+
+        summary_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor(
+                            "#003D5C"
+                        ),
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white,
+                    ),
+                    (
+                        "BACKGROUND",
+                        (0, 1),
+                        (0, -1),
+                        colors.HexColor(
+                            "#E8F5F3"
+                        ),
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 1),
+                        (0, -1),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "ALIGN",
+                        (1, 0),
+                        (-1, -1),
+                        "CENTER",
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "MIDDLE",
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.HexColor(
+                            "#CBD5E1"
+                        ),
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                ]
+            )
+        )
+
+        elements.append(
+            summary_table
+        )
+
+    # =========================================================================
+    # CHARTS
+    # =========================================================================
+
+    if chart_images:
+        valid_chart_images = {
+            chart_name: chart_buffer
+            for chart_name, chart_buffer
+            in chart_images.items()
+            if chart_buffer is not None
+        }
+
+        if valid_chart_images:
+            elements.append(
+                PageBreak()
+            )
+
+            elements.append(
+                Paragraph(
+                    "Competency Visualizations",
+                    styles["SectionHeading"],
+                )
+            )
+
+            actual_chart_buffer = (
+                valid_chart_images.get(
+                    "actual_vs_target"
+                )
+            )
+
+            radar_chart_buffer = (
+                valid_chart_images.get(
+                    "competency_radar"
+                )
+            )
+
+            chart_row = []
+
+            if actual_chart_buffer is not None:
+                actual_chart_buffer.seek(0)
+
+                chart_row.append(
+                    Image(
+                        actual_chart_buffer,
+                        width=158 * mm,
+                        height=79 * mm,
+                    )
+                )
+
+            if radar_chart_buffer is not None:
+                radar_chart_buffer.seek(0)
+
+                chart_row.append(
+                    Image(
+                        radar_chart_buffer,
+                        width=92 * mm,
+                        height=79 * mm,
+                    )
+                )
+
+            if chart_row:
+                if len(chart_row) == 1:
+                    chart_widths = [
+                        220 * mm
+                    ]
+                else:
+                    chart_widths = [
+                        160 * mm,
+                        92 * mm,
+                    ]
+
+                chart_table = Table(
+                    [chart_row],
+                    colWidths=chart_widths,
+                )
+
+                chart_table.setStyle(
+                    TableStyle(
+                        [
+                            (
+                                "VALIGN",
+                                (0, 0),
+                                (-1, -1),
+                                "MIDDLE",
+                            ),
+                            (
+                                "ALIGN",
+                                (0, 0),
+                                (-1, -1),
+                                "CENTER",
+                            ),
+                            (
+                                "LEFTPADDING",
+                                (0, 0),
+                                (-1, -1),
+                                2,
+                            ),
+                            (
+                                "RIGHTPADDING",
+                                (0, 0),
+                                (-1, -1),
+                                2,
+                            ),
+                        ]
+                    )
+                )
+
+                elements.append(
+                    chart_table
+                )
+
+            history_chart_buffer = (
+                valid_chart_images.get(
+                    "assessment_history"
+                )
+            )
+
+            if history_chart_buffer is not None:
+                elements.append(
+                    Spacer(
+                        1,
+                        5 * mm,
+                    )
+                )
+
+                elements.append(
+                    Paragraph(
+                        "Assessment History",
+                        styles["SectionHeading"],
+                    )
+                )
+
+                history_chart_buffer.seek(0)
+
+                elements.append(
+                    Image(
+                        history_chart_buffer,
+                        width=230 * mm,
+                        height=105 * mm,
+                    )
+                )
+
+    # =========================================================================
+    # PRIORITY DEVELOPMENT AREAS
+    # =========================================================================
+
+    priority_gap_df = pd.DataFrame()
+
+    if (
+        not df_gap.empty
+        and "Status" in df_gap.columns
+    ):
+        priority_gap_df = (
+            df_gap[
+                df_gap["Status"].isin(
+                    [
+                        "🔴 Major Gap",
+                        "🟡 Minor Gap",
+                    ]
+                )
+            ]
+            .copy()
+        )
+
+    if not priority_gap_df.empty:
+        elements.append(
+            PageBreak()
+        )
+
+        elements.append(
+            Paragraph(
+                "Priority Development Areas",
+                styles["SectionHeading"],
+            )
+        )
+
+        priority_table_data = [
+            [
+                "Category",
+                "Code",
+                "Competency",
+                "Actual",
+                "Target",
+                "Gap",
+                "Status",
+            ]
+        ]
+
+        for _, gap_row in (
+            priority_gap_df.iterrows()
+        ):
+            priority_table_data.append(
+                [
+                    safe_text(
+                        gap_row.get("Category"),
+                        "",
+                    ),
+                    safe_text(
+                        gap_row.get(
+                            "Competency Code"
+                        ),
+                        "",
+                    ),
+                    Paragraph(
+                        safe_html_text(
+                            gap_row.get(
+                                "Competency Name"
+                            ),
+                            "",
+                        ),
+                        styles["TableBody"],
+                    ),
+                    format_number(
+                        gap_row.get(
+                            "Actual Score"
+                        ),
+                        1,
+                        "-",
+                    ),
+                    format_number(
+                        gap_row.get(
+                            "Target Score"
+                        ),
+                        1,
+                        "-",
+                    ),
+                    format_number(
+                        gap_row.get("Gap"),
+                        1,
+                        "-",
+                    ),
+                    safe_text(
+                        gap_row.get("Status"),
+                        "",
+                    ),
+                ]
+            )
+
+        priority_table = Table(
+            priority_table_data,
+            repeatRows=1,
+            colWidths=[
+                24 * mm,
+                14 * mm,
+                102 * mm,
+                18 * mm,
+                18 * mm,
+                18 * mm,
+                34 * mm,
+            ],
+        )
+
+        priority_style = [
+            (
+                "BACKGROUND",
+                (0, 0),
+                (-1, 0),
+                colors.HexColor(
+                    "#763F98"
+                ),
+            ),
+            (
+                "TEXTCOLOR",
+                (0, 0),
+                (-1, 0),
+                colors.white,
+            ),
+            (
+                "FONTNAME",
+                (0, 0),
+                (-1, 0),
+                "Helvetica-Bold",
+            ),
+            (
+                "ALIGN",
+                (0, 0),
+                (1, -1),
+                "CENTER",
+            ),
+            (
+                "ALIGN",
+                (3, 1),
+                (-1, -1),
+                "CENTER",
+            ),
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "MIDDLE",
+            ),
+            (
+                "GRID",
+                (0, 0),
+                (-1, -1),
+                0.4,
+                colors.HexColor(
+                    "#CBD5E1"
+                ),
+            ),
+            (
+                "TOPPADDING",
+                (0, 0),
+                (-1, -1),
+                5,
+            ),
+            (
+                "BOTTOMPADDING",
+                (0, 0),
+                (-1, -1),
+                5,
+            ),
+        ]
+
+        for table_row_number, (
+            _,
+            gap_row,
+        ) in enumerate(
+            priority_gap_df.iterrows(),
+            start=1,
+        ):
+            if (
+                gap_row.get("Status")
+                == "🔴 Major Gap"
+            ):
+                status_background = (
+                    colors.HexColor(
+                        "#FFCDD2"
+                    )
+                )
+            else:
+                status_background = (
+                    colors.HexColor(
+                        "#FFF2CC"
+                    )
+                )
+
+            priority_style.append(
+                (
+                    "BACKGROUND",
+                    (
+                        6,
+                        table_row_number,
+                    ),
+                    (
+                        6,
+                        table_row_number,
+                    ),
+                    status_background,
+                )
+            )
+
+        priority_table.setStyle(
+            TableStyle(
+                priority_style
+            )
+        )
+
+        elements.append(
+            priority_table
+        )
+
+    # =========================================================================
+    # FULL COMPETENCY BREAKDOWN
+    # =========================================================================
+
+    elements.append(
+        PageBreak()
+    )
+
+    elements.append(
+        Paragraph(
+            (
+                f"Full Competency Gap Analysis "
+                f"to {safe_html_text(target_sg)}"
+            ),
+            styles["SectionHeading"],
+        )
+    )
+
+    gap_table_data = [
+        [
+            "Category",
+            "Code",
+            "Competency",
+            "Actual",
+            "Target",
+            "Gap",
+            "Status",
+        ]
+    ]
+
+    for _, gap_row in df_gap.iterrows():
         gap_table_data.append(
             [
-                str(row.get("Category", "")),
-                str(row.get("Competency Code", "")),
-                Paragraph(str(row.get("Competency Name", "")), styles["BodyText"]),
-                actual_display,
-                target_display,
-                gap_display,
-                str(row.get("Status", "")),
+                safe_text(
+                    gap_row.get("Category"),
+                    "",
+                ),
+                safe_text(
+                    gap_row.get(
+                        "Competency Code"
+                    ),
+                    "",
+                ),
+                Paragraph(
+                    safe_html_text(
+                        gap_row.get(
+                            "Competency Name"
+                        ),
+                        "",
+                    ),
+                    styles["TableBody"],
+                ),
+                format_number(
+                    gap_row.get(
+                        "Actual Score"
+                    ),
+                    1,
+                    "-",
+                ),
+                format_number(
+                    gap_row.get(
+                        "Target Score"
+                    ),
+                    1,
+                    "-",
+                ),
+                format_number(
+                    gap_row.get("Gap"),
+                    1,
+                    "-",
+                ),
+                safe_text(
+                    gap_row.get("Status"),
+                    "",
+                ),
             ]
         )
 
-    gap_table = Table(gap_table_data, repeatRows=1, colWidths=[25 * mm, 16 * mm, 90 * mm, 18 * mm, 18 * mm, 18 * mm, 30 * mm])
+    gap_table = Table(
+        gap_table_data,
+        repeatRows=1,
+        colWidths=[
+            24 * mm,
+            14 * mm,
+            102 * mm,
+            18 * mm,
+            18 * mm,
+            18 * mm,
+            34 * mm,
+        ],
+    )
+
     gap_table_style = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003D5C")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN", (0, 0), (1, -1), "CENTER"),
-        ("ALIGN", (3, 1), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
-        ("PADDING", (0, 0), (-1, -1), 4),
+        (
+            "BACKGROUND",
+            (0, 0),
+            (-1, 0),
+            colors.HexColor(
+                "#003D5C"
+            ),
+        ),
+        (
+            "TEXTCOLOR",
+            (0, 0),
+            (-1, 0),
+            colors.white,
+        ),
+        (
+            "FONTNAME",
+            (0, 0),
+            (-1, 0),
+            "Helvetica-Bold",
+        ),
+        (
+            "ALIGN",
+            (0, 0),
+            (1, -1),
+            "CENTER",
+        ),
+        (
+            "ALIGN",
+            (3, 1),
+            (-1, -1),
+            "CENTER",
+        ),
+        (
+            "VALIGN",
+            (0, 0),
+            (-1, -1),
+            "MIDDLE",
+        ),
+        (
+            "GRID",
+            (0, 0),
+            (-1, -1),
+            0.4,
+            colors.HexColor(
+                "#CBD5E1"
+            ),
+        ),
+        (
+            "TOPPADDING",
+            (0, 0),
+            (-1, -1),
+            4,
+        ),
+        (
+            "BOTTOMPADDING",
+            (0, 0),
+            (-1, -1),
+            4,
+        ),
     ]
 
-    for table_row_number, (_, row) in enumerate(df_gap.iterrows(), start=1):
-        status = row.get("Status")
-        if status == "✅ Met":
-            background = colors.HexColor("#C8E6C9")
-        elif status == "🟡 Minor Gap":
-            background = colors.HexColor("#FFF9C4")
-        elif status == "🔴 Major Gap":
-            background = colors.HexColor("#FFCDD2")
-        else:
-            background = colors.HexColor("#E0E0E0")
-        gap_table_style.append(("BACKGROUND", (6, table_row_number), (6, table_row_number), background))
+    for table_row_number, (
+        _,
+        gap_row,
+    ) in enumerate(
+        df_gap.iterrows(),
+        start=1,
+    ):
+        status = gap_row.get(
+            "Status"
+        )
 
-    gap_table.setStyle(TableStyle(gap_table_style))
+        if status == "✅ Met":
+            status_background = (
+                colors.HexColor(
+                    "#C8E6C9"
+                )
+            )
+
+        elif status == "🟡 Minor Gap":
+            status_background = (
+                colors.HexColor(
+                    "#FFF2CC"
+                )
+            )
+
+        elif status == "🔴 Major Gap":
+            status_background = (
+                colors.HexColor(
+                    "#FFCDD2"
+                )
+            )
+
+        else:
+            status_background = (
+                colors.HexColor(
+                    "#E0E0E0"
+                )
+            )
+
+        gap_table_style.append(
+            (
+                "BACKGROUND",
+                (
+                    6,
+                    table_row_number,
+                ),
+                (
+                    6,
+                    table_row_number,
+                ),
+                status_background,
+            )
+        )
+
+    gap_table.setStyle(
+        TableStyle(
+            gap_table_style
+        )
+    )
+
     elements.append(gap_table)
 
-    if category_readiness:
-        elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Category Readiness", styles["Heading2"]))
-        summary_lines = [f"{name}: {value:.0f}%" for name, value in category_readiness.items()]
-        elements.append(Paragraph(", ".join(summary_lines), styles["BodyText"]))
+    # =========================================================================
+    # CV AND SUPPORTING DOCUMENTS
+    # =========================================================================
 
-    document.build(elements)
+    if (
+        cv_documents is not None
+        and not cv_documents.empty
+    ):
+        elements.append(
+            Spacer(
+                1,
+                5 * mm,
+            )
+        )
+
+        elements.append(
+            Paragraph(
+                "CV and Supporting Documents",
+                styles["SectionHeading"],
+            )
+        )
+
+        document_table_data = [
+            [
+                "File Name",
+                "Type",
+                "Modified",
+                "SharePoint Link",
+            ]
+        ]
+
+        for _, document_row in (
+            cv_documents.iterrows()
+        ):
+            sharepoint_url = safe_text(
+                document_row.get(
+                    "SharePoint URL"
+                ),
+                "",
+            )
+
+            if sharepoint_url.lower().startswith(
+                (
+                    "https://",
+                    "http://",
+                )
+            ):
+                link_value = Paragraph(
+                    (
+                        f'{escape(sharepoint_url)}'
+                        "Open in SharePoint"
+                        "</link>"
+                    ),
+                    styles["SmallBody"],
+                )
+            else:
+                link_value = Paragraph(
+                    "No valid link",
+                    styles["SmallBody"],
+                )
+
+            document_table_data.append(
+                [
+                    Paragraph(
+                        safe_html_text(
+                            document_row.get(
+                                "CV File Name"
+                            ),
+                            "Document",
+                        ),
+                        styles["SmallBody"],
+                    ),
+                    safe_text(
+                        document_row.get(
+                            "File Type"
+                        ),
+                        "N/A",
+                    ),
+                    format_date(
+                        document_row.get(
+                            "Modified Date"
+                        )
+                    ),
+                    link_value,
+                ]
+            )
+
+        document_table = Table(
+            document_table_data,
+            repeatRows=1,
+            colWidths=[
+                120 * mm,
+                25 * mm,
+                37 * mm,
+                60 * mm,
+            ],
+        )
+
+        document_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor(
+                            "#20419A"
+                        ),
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white,
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "ALIGN",
+                        (1, 0),
+                        (-1, -1),
+                        "CENTER",
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "MIDDLE",
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.4,
+                        colors.HexColor(
+                            "#CBD5E1"
+                        ),
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "LEFTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "RIGHTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                ]
+            )
+        )
+
+        elements.append(
+            document_table
+        )
+
+    # =========================================================================
+    # FOOTER
+    # =========================================================================
+
+    def add_page_footer(
+        canvas,
+        report_document,
+    ):
+        canvas.saveState()
+
+        canvas.setStrokeColor(
+            colors.HexColor(
+                "#CBD5E1"
+            )
+        )
+
+        canvas.line(
+            12 * mm,
+            9 * mm,
+            landscape(A4)[0]
+            - 12 * mm,
+            9 * mm,
+        )
+
+        canvas.setFont(
+            "Helvetica",
+            7,
+        )
+
+        canvas.setFillColor(
+            colors.HexColor(
+                "#64748B"
+            )
+        )
+
+        canvas.drawString(
+            12 * mm,
+            5 * mm,
+            (
+                "DPE Reservoir Engineering "
+                "Talent Profile Dashboard"
+            ),
+        )
+
+        canvas.drawRightString(
+            landscape(A4)[0]
+            - 12 * mm,
+            5 * mm,
+            (
+                f"Page "
+                f"{report_document.page}"
+            ),
+        )
+
+        canvas.restoreState()
+
+    document.build(
+        elements,
+        onFirstPage=add_page_footer,
+        onLaterPages=add_page_footer,
+    )
+
     pdf_buffer.seek(0)
+
     return pdf_buffer
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. INITIALIZE SESSION STATE SAFELY
@@ -8066,7 +10080,6 @@ elif page == "👤 Individual Assessment & Talent Profile":
             vertical_alignment="top",
         )
     )
-
     with history_column:
         history_dataframe = pd.DataFrame()
 
@@ -8200,6 +10213,38 @@ elif page == "👤 Individual Assessment & Talent Profile":
                     "responsive": True,
                 },
             )
+
+        chart_images = {}
+
+    if actual_target_figure is not None:
+        chart_images[
+            "actual_vs_target"
+        ] = plotly_figure_to_png(
+            actual_target_figure,
+            width=1400,
+            height=700,
+            scale=2,
+        )
+
+    if radar_figure is not None:
+        chart_images[
+            "competency_radar"
+        ] = plotly_figure_to_png(
+            radar_figure,
+            width=1000,
+            height=850,
+            scale=2,
+        )
+
+    if history_figure is not None:
+        chart_images[
+            "assessment_history"
+        ] = plotly_figure_to_png(
+            history_figure,
+            width=1400,
+            height=650,
+            scale=2,
+        )
 
     with export_column:
         st.markdown(
@@ -8786,7 +10831,10 @@ elif page == "🎯 Readiness & Gaps":
         ),
     )
 
-    st.caption(
+    with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
+                        render_readiness_methodology()
+
+    st.info( "ℹ️: "
         "Competency readiness is a decision-support indicator. "
         "Assessment and progression decisions should also consider "
         "experience, performance evidence, assignment exposure, "
@@ -8796,9 +10844,7 @@ elif page == "🎯 Readiness & Gaps":
     # =========================================================================
     # ANALYTICAL TABS
     # =========================================================================
-    with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
-                        render_readiness_methodology()
-                        
+    
     (
         overview_tab,
         distribution_tab,
@@ -8990,7 +11036,7 @@ elif page == "🎯 Readiness & Gaps":
                 width="stretch",
                 hide_index=True,
             )
-
+    
     # =========================================================================
     # TAB 2: READINESS DISTRIBUTION
     # =========================================================================
