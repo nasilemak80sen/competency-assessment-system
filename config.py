@@ -20,9 +20,15 @@ def resolve_excel_path() -> str:
             return str(path.resolve())
 
     candidates = [
-        BASE_DIR / "RE Fraternity Jul2026_Master.xlsx",
-        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsx",
-        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsx"),
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
+        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
     ]
 
     for candidate in candidates:
@@ -35,9 +41,34 @@ def resolve_excel_path() -> str:
 EXCEL_PATH = resolve_excel_path()
 USE_LIVE_EXCEL_SOURCE = True
 
-# ── Salary Grades (SG column in Excel) ──────────────────────────────────────
+# ── Overarching Position & Salary Grade Brackets ─────────────────────────────
+POSITION_GRADE_RANGES = {
+    "UPTREX" : ["P1"],
+    "Executive - (P1 -P4)": ["P1", "P2", "P3", "P4"],
+    "Staff - (P5 - P6)" : ["P5", "P6"],
+    "Principal - (P7 - P8)" : ["P7", "P8"],
+    "Custodian - (P9 - 10)" : ["P9", "P10"],
+}
+
+# Helper mapping to lookup a bracket given a specific Salary Grade (SG)
+SG_TO_POSITION_BRACKET = {}
+for bracket, grades in POSITION_GRADE_RANGES.items():
+    for grade in grades:
+        SG_TO_POSITION_BRACKET[grade] = bracket
+
+# Ordered list for rendering charts properly from lowest to highest hierarchy
+POSITION_HIERARCHY_ORDER = list(POSITION_GRADE_RANGES.keys())
+
+# ── Salary Grade Hierarchy ───────────────────────────────────────────────────
+# Single source of truth for the RE competency hierarchy.
+#
+# IMPORTANT:
+# The order of this dictionary defines the official hierarchy:
+
 GRADE_LABELS = {
     "UPTREX": "UPTREX",
+    "P1": "Junior Executive",
+    "P2": "Executive",
     "P1": "Junior Executive",
     "P2": "Executive",
     "P3": "Senior Executive",
@@ -47,19 +78,114 @@ GRADE_LABELS = {
     "P7": "Principal",
     "P8": "Senior Principal",
     "P9": "Custodian",
-    "P10": "Senior Custiodian",
+    "P10": "Senior Custodian",
+    "P9": "Custodian",
+    "P10": "Senior Custodian",
 }
 
-# Staff Position → SG mapping (from data)
+# ── Position → Salary Grade mapping ──────────────────────────────────────────
+# All recognised position names are normalised to the official SG hierarchy.
+#
+# Multiple position aliases can point to the same SG.
+# This prevents differences such as "Snr RE" vs "Senior Reservoir Engineer"
+# from breaking filtering, grouping, or chart generation.
+
 POSITION_TO_SG = {
-    "Senior Executive": "P3",
-    "Senior Reservoir Engineer": "P4",
-    "Staff": "P5",
-    "Principal": "P7",
-    "Specialist": "P6",
+    # UPTREX
     "UPTREX": "UPTREX",
-    "Manager": "CDH",
-    "Custodian": "CDH",
+
+    # P1
+    "Junior Executive": "P1",
+
+    # P2
+    "Executive": "P2",
+
+    # P3
+    "Senior Executive" : "P3",
+    
+    # P4
+    "Senior RE" : "P4",
+
+    # P5
+    "Staff": "P5",
+
+    # P6
+
+    # P6
+    "Specialist": "P6",
+
+    # P7
+    "Principal": "P7",
+
+    # P8
+    "Senior Principal": "P8",
+
+    # P9
+    "Custodian": "P9",
+
+    # P10
+    "Senior Custodian": "P10",
+
+}
+
+
+# ── Official Position Hierarchy ──────────────────────────────────────────────
+# Used for dropdowns, filters, charts and ordered displays.
+#
+# Do NOT derive this from the order of rows in Excel.
+# The order here is intentional and follows GRADE_LABELS.
+
+POSITIONS = [
+    GRADE_LABELS["UPTREX"],
+    GRADE_LABELS["P1"],
+    GRADE_LABELS["P2"],
+    GRADE_LABELS["P3"],
+    GRADE_LABELS["P4"],
+    GRADE_LABELS["P5"],
+    GRADE_LABELS["P6"],
+    GRADE_LABELS["P7"],
+    GRADE_LABELS["P8"],
+    GRADE_LABELS["P9"],
+    GRADE_LABELS["P10"],
+    "All",
+]
+
+
+# ── Salary Grade Hierarchy ───────────────────────────────────────────────────
+# Useful when a chart/table needs to sort by SG rather than alphabetically.
+
+SG_HIERARCHY = [
+    "UPTREX",
+    "P1",
+    "P2",
+    "P3",
+    "P4",
+    "P5",
+    "P6",
+    "P7",
+    "P8",
+    "P9",
+    "P10",
+]
+
+
+# ── Salary Grade Rank ────────────────────────────────────────────────────────
+# Numeric ranking makes sorting reliable.
+#
+# Lower number = lower position in the hierarchy.
+
+SG_RANK = {
+    sg: rank
+    for rank, sg in enumerate(SG_HIERARCHY, start=0)
+}
+
+
+# ── Position Rank ────────────────────────────────────────────────────────────
+# Allows the application to sort using the official hierarchy.
+
+POSITION_RANK = {
+    GRADE_LABELS[sg]: SG_RANK[sg]
+    for sg in SG_HIERARCHY
 }
 
 # ── Competency Columns ───────────────────────────────────────────────────────
@@ -75,13 +201,14 @@ GAP_COLS  = [f"G--{c}" for c in SCORE_COLS]
 
 COMP_TYPES = {
     "B": {"label": "Base Competency",  "cols": [f"B{i}" for i in range(1,13)]},
-    "K": {"label": "Knowledge",         "cols": [f"K{i}" for i in range(1,6)]},
+    "K": {"label": "Key",         "cols": [f"K{i}" for i in range(1,6)]},
     "P": {"label": "Pacing",            "cols": [f"P{i}" for i in range(1,6)]},
     "E": {"label": "Emerging",          "cols": ["E1","E2"]},
 }
 
 # Summary score columns present in Excel
 SUMMARY_GROUPS = {
+    "Next Grade" : ["Next Grade Base","Next Grade Keys","Next Grade Pacing","Next Grade Emerging","Next Grade CTI"],
     "Staff":      ["Staff Base","Staff Keys","Staff Pacing","Staff Emerging","Staff CTI"],
     "Principal":  ["Principal Base","Principal Keys","Principal Pacing","Principal Emerging","Principal CTI"],
     "Custodian":  ["Custodian Base","Custodian Keys","Custodian Pacing","Custodian Emerging","Custodian CTI"],
@@ -97,7 +224,9 @@ EMPLOYMENT_COLS = [
     "Joining Date","Years in PET","Years of RE Experience",
     "Age Promoted to Staff or Principal","Years in Salary Grade",
     "Date of Appointment to Current Grade",
-    "Current Assignment / Loc:","Date in Position","Length in Current Assignment",
+    "Current Location:","Date in Position","Length in Current Assignment",
+    "Current Location:","Date in Position","Length in Current Assignment",
+    "Current Location:","Date in Position","Length in Current Assignment",
 ]
 ASSESSMENT_COLS = [
     "Chat Status","Chat Date","Assessment Level","Last Assesment Date",
@@ -319,4 +448,4 @@ HEATMAP_COLORSCALE = [
     [1.0, "#2E7D32"],   # dark green – 5
 ]
 
-APP_TITLE = "RE Fraternity Competency Assessment System"
+APP_TITLE = "DPE | Reservoir Engineering Talent Profile Dashboard (Beta Release)"

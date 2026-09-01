@@ -1,5 +1,5 @@
 """
-app.py - RE Fraternity Competency Assessment System v3.0
+app.py - DPE | Reservoir Engineering Talent Profile
 Run with: streamlit run app.py
 """
 
@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import time
+import config
 
 
 # =============================================================================
@@ -56,7 +57,7 @@ from config import (
     SCORE_COLS,
     SECONDARY,
     SUMMARY_GROUPS,
-    USE_LIVE_EXCEL_SOURCE,
+    USE_LIVE_EXCEL_SOURCE,POSITION_RANK, POSITION_TO_SG, SG_HIERARCHY, SG_RANK
 )
 
 
@@ -68,6 +69,7 @@ from models import (
     Assessment,
     Base,
     Personnel,
+    SummaryScore,
     get_session,
     init_db,
 )
@@ -92,9 +94,1738 @@ from chart_builder import (
     ChartCompatibility,
     DataElementInfo,
 )
+
+# ============================================================================
+# ASSESSMENT-BASED TALENT STRENGTH
+# ============================================================================
+#
+# Purpose:
+#   Automatically identify the strongest competencies for the selected
+#   personnel based on their assessed competency scores.
+#
+# Competency classes are sourced directly from COMP_TYPES:
+#   B = Base Competency
+#   K = Knowledge
+#   P = Pacing
+#   E = Emerging
+#
+# This prevents the Talent Profile from maintaining a separate competency
+# mapping from the Competency Heatmap.
+# ============================================================================
+
+from io import BytesIO
+
+
+def plotly_figure_to_png(
+    figure,
+    width=1400,
+    height=800,
+    scale=2,
+):
+    """
+    Convert a Plotly figure into PNG bytes for PDF inclusion.
+    """
+    if figure is None:
+        return None
+
+    try:
+        image_bytes = figure.to_image(
+            format="png",
+            width=width,
+            height=height,
+            scale=scale,
+            engine="kaleido",
+        )
+
+        return BytesIO(
+            image_bytes
+        )
+
+    except Exception as exc:
+        print(
+            f"Unable to export Plotly chart: {exc}"
+        )
+
+        return None
+
+def _safe_numeric(value):
+    """
+    Safely convert a value to a numeric float.
+
+    Returns None when the value is missing or invalid.
+    """
+    try:
+        value = pd.to_numeric(value, errors="coerce")
+
+        if pd.isna(value):
+            return None
+
+        return int(round(value))
+
+    except Exception:
+        return None
+
+def _get_competency_display_name(code):
+
+    return COMPETENCY_FULLNAMES.get(
+        code, code
+    )
+  
+def _get_top_competency_strengths(
+    person_row,
+    competency_codes,
+    competency_labels=None,
+    top_n=3,
+):
+    """
+    Get the highest-scoring competencies for a personnel.
+
+    Parameters
+    ----------
+    person_row:
+        Selected personnel pandas Series.
+
+    competency_codes:
+        List of competency score columns, e.g. B1-B12.
+
+    competency_labels:
+        Optional mapping of competency codes to display names.
+
+    top_n:
+        Number of top strengths to return.
+
+    Returns
+    -------
+    pandas.DataFrame
+    """
+
+    results = []
+
+    if person_row is None:
+        return pd.DataFrame()
+
+    for code in competency_codes:
+
+        # Make sure the competency exists in the personnel record
+        if code not in person_row.index:
+            continue
+
+        score = _safe_numeric(
+            person_row.get(code)
+        )
+
+        # Ignore unassessed / invalid scores
+        if score is None:
+            continue
+
+        results.append(
+            {
+                "Code": code,
+                "Competency": _get_competency_display_name(
+                    code,
+                    competency_labels,
+                ),
+                "Score": score,
+            }
+        )
+
+    if not results:
+        return pd.DataFrame(
+            columns=[
+                "Rank",
+                "Code",
+                "Competency",
+                "Score",
+            ]
+        )
+
+    result_df = pd.DataFrame(results)
+
+    # Highest score first.
+    # Competency name is used as a deterministic secondary sort.
+    result_df = result_df.sort_values(
+        by=[
+            "Score",
+            "Competency",
+        ],
+        ascending=[
+            False,
+            True,
+        ],
+    ).reset_index(drop=True)
+
+    # Add rank
+    result_df.insert(
+        0,
+        "Rank",
+        range(
+            1,
+            len(result_df) + 1,
+        ),
+    )
+
+    return result_df.head(top_n)
+
+def _get_all_competency_strengths(
+    person_row,
+    competency_codes,
+):
+    """
+    Return all assessed competencies with:
+
+        - Rank
+        - Competency Code
+        - Competency Name
+        - Actual Score
+        - Target Score
+        - Gap
+        - Gap Status
+
+    Gap is calculated as:
+
+        Gap = Actual Score - Target Score
+
+    Interpretation:
+
+        Gap > 0  → Above Target
+        Gap = 0  → Gap Closed
+        Gap < 0  → Gap Remaining
+    """
+
+    results = []
+
+    if person_row is None:
+        return pd.DataFrame()
+
+    for code in competency_codes:
+
+        # =========================================================
+        # ACTUAL SCORE
+        # =========================================================
+
+        if code not in person_row.index:
+            continue
+
+        actual = _safe_numeric(
+            person_row.get(code)
+        )
+
+        # No assessment → skip
+        if actual is None:
+            continue
+
+        # =========================================================
+        # TARGET / REQUIRED SCORE
+        # =========================================================
+
+        req_col = f"R-{code}"
+
+        required = None
+
+        if req_col in person_row.index:
+
+            required = _safe_numeric(
+                person_row.get(req_col)
+            )
+
+        # =========================================================
+        # GAP
+        # =========================================================
+
+        gap = None
+        gap_status = "Target unavailable"
+
+        if required is not None:
+
+            gap = actual - required
+
+            if gap > 0:
+                gap_status = "Above Target"
+
+            elif gap == 0:
+                gap_status = "Gap Closed"
+
+            else:
+                gap_status = "Gap Remaining"
+
+        # =========================================================
+        # STORE RESULT
+        # =========================================================
+
+        results.append(
+            {
+                "Code": code,
+
+                "Competency": (
+                    _get_competency_display_name(code)
+                ),
+
+                "Score": actual,
+
+                "Target": required,
+
+                "Gap": gap,
+
+                "Gap Status": gap_status,
+            }
+        )
+
+    # =============================================================
+    # NO RESULTS
+    # =============================================================
+
+    if not results:
+
+        return pd.DataFrame(
+            columns=[
+                "Rank",
+                "Code",
+                "Competency",
+                "Score",
+                "Target",
+                "Gap",
+                "Gap Status",
+            ]
+        )
+
+    result_df = pd.DataFrame(
+        results
+    )
+
+    # =============================================================
+    # SORT
+    # =============================================================
+
+    result_df = result_df.sort_values(
+        by=[
+            "Score",
+            "Competency",
+        ],
+        ascending=[
+            False,
+            True,
+        ],
+    ).reset_index(drop=True)
+
+    # =============================================================
+    # RANK
+    # =============================================================
+
+    result_df.insert(
+        0,
+        "Rank",
+        range(
+            1,
+            len(result_df) + 1,
+        ),
+    )
+
+    return result_df
+
+def _render_competency_strength_class(
+    person_row,
+    class_code,
+    class_config,
+):
+    """
+    Render one competency-class section.
+
+    Displays:
+        - Top 3 strengths
+        - Expandable complete ranking
+    """
+
+    class_label = class_config.get(
+        "label",
+        class_code,
+    )
+
+    competency_codes = class_config.get(
+        "cols",
+        [],
+    )
+
+    st.markdown(
+        f"#### {class_label}"
+    )
+
+    if not competency_codes:
+
+        st.info(
+            "No competencies are configured for this class."
+        )
+
+        return
+
+    # -------------------------------------------------------------
+    # GET SCORES
+    # -------------------------------------------------------------
+
+    strength_df = _get_all_competency_strengths(
+        person_row=person_row,
+        competency_codes=competency_codes,
+    )
+
+    if strength_df.empty:
+
+        st.info(
+            f"No assessed {class_label.lower()} scores "
+            "are available for this personnel."
+        )
+
+        return
+
+    # -------------------------------------------------------------
+    # TOP 3
+    # -------------------------------------------------------------
+
+    top3 = strength_df.head(3)
+
+    medals = [
+        "🥇",
+        "🥈",
+        "🥉",
+    ]
+
+    strength_columns = st.columns(
+        len(top3)
+    )
+
+    for index, (_, row) in enumerate(
+        top3.iterrows()
+    ):
+
+        with strength_columns[index]:
+
+            st.markdown(
+                f"### {medals[index]}"
+            )
+
+            st.markdown(
+                f"**{row['Competency']}**"
+            )
+
+            # -----------------------------------------------------
+            # SCORE
+            # -----------------------------------------------------
+
+            score = row["Score"]
+
+            st.metric(
+                "Score",
+                f"{score:.0f}",
+            )
+
+            # -----------------------------------------------------
+            # TARGET
+            # -----------------------------------------------------
+
+            target = row["Target"]
+
+            if pd.notna(target):
+
+                st.caption(
+                    f"Target: **{target:.0f}**"
+                )
+
+            else:
+
+                st.caption(
+                    "Target: **Not Available**"
+                )
+
+            # -----------------------------------------------------
+            # GAP
+            # -----------------------------------------------------
+
+            gap = row["Gap"]
+
+            if pd.isna(gap):
+
+                st.info(
+                    "Target unavailable"
+                )
+
+            elif gap > 0:
+
+                st.success(
+                    f"Gap: +{gap:.0f} · Above Target"
+                )
+
+            elif gap == 0:
+
+                st.success(
+                    "Gap: 0 · Gap Closed"
+                )
+
+            else:
+
+                st.warning(
+                    f"Gap: {gap:.0f} · Gap Remaining"
+                )
 # =============================================================================
 # CAREER PROGRESSION CONFIGURATION
 # =============================================================================
+
+def _grade_rank(sg_value):
+    """
+    Convert a salary grade into a numeric rank.
+
+    Examples:
+        P1 -> 1
+        P4 -> 4
+        P10 -> 10
+    """
+    if sg_value is None:
+        return None
+
+    try:
+        if pd.isna(sg_value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    match = re.fullmatch(
+        r"P(\d+)",
+        str(sg_value).strip().upper(),
+    )
+
+    if match is None:
+        return None
+
+    return int(match.group(1))
+
+def _safe_display_value(
+    value,
+    fallback="Not Applicable",
+):
+    """
+    Convert missing profile values into a readable fallback.
+    """
+    if value is None:
+        return fallback
+
+    try:
+        if pd.isna(value):
+            return fallback
+    except (TypeError, ValueError):
+        pass
+
+    cleaned = str(value).strip()
+
+    if cleaned.lower() in {
+        "",
+        "nan",
+        "none",
+        "nat",
+    }:
+        return fallback
+
+    return cleaned
+
+def _safe_integer_display(
+    value,
+    fallback="Not Applicable",
+):
+    """
+    Display a numeric value as a rounded integer.
+    """
+    numeric_value = pd.to_numeric(
+        value,
+        errors="coerce",
+    )
+
+    if pd.isna(numeric_value):
+        return fallback
+
+    return int(round(float(numeric_value)))
+
+def _safe_date_display(
+    value,
+    fallback="Not Applicable",
+):
+    """
+    Format a date as 10 Aug 2026.
+    """
+    parsed_date = pd.to_datetime(
+        value,
+        errors="coerce",
+    )
+
+    if pd.isna(parsed_date):
+        return fallback
+
+    return parsed_date.strftime(
+        "%d %b %Y"
+    )
+
+def _get_assessment_status(gap_value):
+    """
+    Classify a competency gap.
+    """
+    if pd.isna(gap_value):
+        return "Not Assessed"
+
+    if gap_value >= 0:
+        return "✅ Met"
+
+    if gap_value >= -1:
+        return "🟡 Minor Gap"
+
+    return "🔴 Major Gap"
+
+def _build_target_gap_dataframe(
+    person_row,
+    target_sg,
+    selected_ruler_requirements,
+    tech_labels,
+):
+    """
+    Compare actual competency scores against the selected
+    target salary-grade requirements.
+    """
+    if not target_sg:
+        return pd.DataFrame()
+
+    target_requirements = (
+        selected_ruler_requirements.get(
+            target_sg,
+            {},
+        )
+    )
+
+    competency_groups = {
+        "Base": [
+            f"B{i}"
+            for i in range(1, 13)
+        ],
+        "Key": [
+            f"K{i}"
+            for i in range(1, 6)
+        ],
+        "Pacing": [
+            f"P{i}"
+            for i in range(1, 6)
+        ],
+        "Emerging": [
+            "E1",
+            "E2",
+        ],
+    }
+
+    records = []
+
+    for category, competency_codes in (
+        competency_groups.items()
+    ):
+        for competency_code in competency_codes:
+            if (
+                competency_code
+                not in target_requirements
+            ):
+                continue
+
+            actual_score = pd.to_numeric(
+                person_row.get(
+                    competency_code
+                ),
+                errors="coerce",
+            )
+
+            target_score = pd.to_numeric(
+                target_requirements.get(
+                    competency_code
+                ),
+                errors="coerce",
+            )
+
+            gap_score = (
+                actual_score - target_score
+                if (
+                    pd.notna(actual_score)
+                    and pd.notna(target_score)
+                )
+                else np.nan
+            )
+
+            records.append(
+                {
+                    "Category": category,
+                    "Competency Code":
+                        competency_code,
+                    "Competency Name":
+                        tech_labels.get(
+                            competency_code,
+                            COMPETENCY_FULLNAMES.get(
+                                competency_code,
+                                competency_code,
+                            ),
+                        ),
+                    "Actual Score":
+                        actual_score,
+                    "Target Score":
+                        target_score,
+                    "Gap": gap_score,
+                }
+            )
+
+    gap_dataframe = pd.DataFrame(
+        records
+    )
+
+    if not gap_dataframe.empty:
+        gap_dataframe["Status"] = (
+            gap_dataframe["Gap"]
+            .apply(
+                _get_assessment_status
+            )
+        )
+
+    return gap_dataframe
+
+def _calculate_readiness_metrics(
+    gap_dataframe,
+):
+    """
+    Calculate strict, weighted, and category readiness.
+
+    Strict readiness:
+        Percentage of competencies meeting or exceeding target.
+
+    Weighted readiness:
+        Actual achievement capped at the required target.
+    """
+    if (
+        gap_dataframe is None
+        or gap_dataframe.empty
+    ):
+        return 0.0, 0.0, {}
+
+    total_requirements = len(
+        gap_dataframe
+    )
+
+    number_met = int(
+        (
+            gap_dataframe["Gap"]
+            .fillna(-np.inf)
+            >= 0
+        ).sum()
+    )
+
+    strict_readiness = (
+        number_met
+        / total_requirements
+        * 100
+        if total_requirements > 0
+        else 0.0
+    )
+
+    valid_targets = (
+        gap_dataframe[
+            "Target Score"
+        ]
+        .fillna(0)
+        .clip(lower=0)
+    )
+
+    capped_actual = gap_dataframe.apply(
+        lambda row: (
+            min(
+                float(row["Actual Score"]),
+                float(row["Target Score"]),
+            )
+            if (
+                pd.notna(
+                    row["Actual Score"]
+                )
+                and pd.notna(
+                    row["Target Score"]
+                )
+                and row["Target Score"] > 0
+            )
+            else 0.0
+        ),
+        axis=1,
+    )
+
+    total_possible_score = (
+        valid_targets.sum()
+    )
+
+    weighted_readiness = (
+        capped_actual.sum()
+        / total_possible_score
+        * 100
+        if total_possible_score > 0
+        else 0.0
+    )
+
+    category_readiness = {}
+
+    for category in [
+        "Base",
+        "Key",
+        "Pacing",
+        "Emerging",
+    ]:
+        category_dataframe = (
+            gap_dataframe[
+                gap_dataframe["Category"]
+                == category
+            ]
+        )
+
+        if category_dataframe.empty:
+            continue
+
+        category_total = (
+            category_dataframe[
+                "Target Score"
+            ]
+            .fillna(0)
+            .clip(lower=0)
+            .sum()
+        )
+
+        category_achieved = (
+            category_dataframe.apply(
+                lambda row: (
+                    min(
+                        float(
+                            row[
+                                "Actual Score"
+                            ]
+                        ),
+                        float(
+                            row[
+                                "Target Score"
+                            ]
+                        ),
+                    )
+                    if (
+                        pd.notna(
+                            row[
+                                "Actual Score"
+                            ]
+                        )
+                        and pd.notna(
+                            row[
+                                "Target Score"
+                            ]
+                        )
+                        and row[
+                            "Target Score"
+                        ] > 0
+                    )
+                    else 0.0
+                ),
+                axis=1,
+            )
+            .sum()
+        )
+
+        category_readiness[
+            category
+        ] = (
+            category_achieved
+            / category_total
+            * 100
+            if category_total > 0
+            else 0.0
+        )
+
+    return (
+        strict_readiness,
+        weighted_readiness,
+        category_readiness,
+    )
+
+def _make_widget_safe_text(value):
+    """
+    Convert a value into text that is safe for Streamlit keys.
+    """
+    return re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        str(value).strip(),
+    ).strip("_")
+
+def _get_personnel_widget_key(
+    person_row,
+):
+    """
+    Build a stable identifier for person-specific widgets.
+    """
+    personnel_identifier = (
+        person_row.get("id")
+        or person_row.get("Staff ID")
+        or person_row.get("Name")
+        or "unknown"
+    )
+
+    return _make_widget_safe_text(
+        personnel_identifier
+    )
+
+def _normalize_ruler_name(value):
+    """
+    Normalize career-ruler values.
+    """
+    if value is None:
+        return "BASE"
+
+    try:
+        if pd.isna(value):
+            return "BASE"
+    except (TypeError, ValueError):
+        pass
+
+    cleaned = str(
+        value
+    ).strip().upper()
+
+    aliases = {
+        "": "BASE",
+        "NO RULER ASSIGNED": "BASE",
+        "BASE": "BASE",
+        "RDP": "RDP",
+        "RMS": "RMS",
+        "RSS": "RSS",
+    }
+
+    return aliases.get(
+        cleaned,
+        cleaned,
+    )
+
+def _get_personnel_ruler(
+    person_row,
+):
+    """
+    Get the selected personnel's current career ruler.
+    """
+    ruler_value = (
+        person_row.get("Ruler Type")
+        or person_row.get("ruler_type")
+    )
+
+    if (
+        ruler_value is None
+        or (
+            isinstance(
+                ruler_value,
+                float,
+            )
+            and pd.isna(ruler_value)
+        )
+    ):
+        ruler_value = person_row.get(
+            "Background"
+        )
+
+    return _normalize_ruler_name(
+        ruler_value
+    )
+
+def _get_personnel_sg(person_row):
+    """
+    Safely retrieve personnel Salary Grade (SG).
+
+    Handles pandas NaN / pd.NA without triggering:
+    TypeError: boolean value of NA is ambiguous
+    """
+
+    if person_row is None:
+        return ""
+
+    # Try Excel-style column name first
+    sg_value = person_row.get("SG", None)
+
+    # If SG is missing/null, try lowercase database-style column
+    if sg_value is None or pd.isna(sg_value):
+        sg_value = person_row.get("sg", None)
+
+    # Final null protection
+    if sg_value is None or pd.isna(sg_value):
+        return ""
+
+    return str(sg_value).strip()
+
+def _render_ruler_target_filters(
+    person_row,
+    ruler_map,
+    suffix="main",
+):
+    """
+    Render one Career Ruler and Target Salary Grade filter pair.
+
+    Defaults:
+        Career Ruler -> selected person's current ruler.
+        Target SG     -> selected person's current salary grade.
+
+    Widget keys are person-specific, so selecting a new person
+    automatically initializes that person's defaults.
+    """
+    ruler_column, target_column = (
+        st.columns(2)
+    )
+
+    person_key = (
+        _get_personnel_widget_key(
+            person_row
+        )
+    )
+
+    current_ruler = (
+        _get_personnel_ruler(
+            person_row
+        )
+    )
+
+    current_sg = (
+        _get_personnel_sg(
+            person_row
+        )
+    )
+
+    ruler_options = list(
+        ruler_map.keys()
+    )
+
+    ruler_options = sorted(
+        ruler_options,
+        key=lambda value: (
+            0
+            if str(value).upper()
+            == "BASE"
+            else 1,
+            str(value),
+        ),
+    )
+
+    if not ruler_options:
+        with ruler_column:
+            st.warning(
+                "No career-ruler data is available."
+            )
+
+        with target_column:
+            st.warning(
+                "No salary-grade data is available."
+            )
+
+        return None, None, {}
+
+    ruler_lookup = {
+        str(ruler).strip().upper():
+            ruler
+        for ruler in ruler_options
+    }
+
+    default_ruler = (
+        ruler_lookup.get(
+            current_ruler
+        )
+        or ruler_lookup.get(
+            "BASE"
+        )
+        or ruler_options[0]
+    )
+
+    default_ruler_index = (
+        ruler_options.index(
+            default_ruler
+        )
+    )
+
+    ruler_widget_key = (
+        f"career_ruler_"
+        f"{person_key}_"
+        f"{suffix}"
+    )
+
+    with ruler_column:
+        selected_ruler = (
+            st.selectbox(
+                "Career Ruler",
+                options=ruler_options,
+                index=default_ruler_index,
+                key=ruler_widget_key,
+                help=(
+                    "Defaults to the selected "
+                    "person's current career ruler."
+                ),
+            )
+        )
+
+    selected_ruler_requirements = (
+        ruler_map.get(
+            selected_ruler,
+            {},
+        )
+    )
+
+    available_salary_grades = list(
+        selected_ruler_requirements.keys()
+    )
+
+    available_salary_grades = sorted(
+        available_salary_grades,
+        key=lambda salary_grade: (
+            _grade_rank(
+                salary_grade
+            )
+            if _grade_rank(
+                salary_grade
+            ) is not None
+            else 999
+        ),
+    )
+
+    current_rank = _grade_rank(
+        current_sg
+    )
+
+    if current_rank is None:
+        target_salary_grade_options = (
+            available_salary_grades
+        )
+    else:
+        target_salary_grade_options = [
+            salary_grade
+            for salary_grade
+            in available_salary_grades
+            if (
+                _grade_rank(
+                    salary_grade
+                )
+                is not None
+                and _grade_rank(
+                    salary_grade
+                )
+                >= current_rank
+            )
+        ]
+
+    with target_column:
+        if not target_salary_grade_options:
+            st.warning(
+                "No current or future salary grades "
+                "are available for this career ruler."
+            )
+
+            return (
+                selected_ruler,
+                None,
+                selected_ruler_requirements,
+            )
+
+        if (
+            current_sg
+            in target_salary_grade_options
+        ):
+            default_target_index = (
+                target_salary_grade_options
+                .index(
+                    current_sg
+                )
+            )
+        else:
+            default_target_index = 0
+
+        target_widget_key = (
+            f"target_sg_"
+            f"{person_key}_"
+            f"{selected_ruler}_"
+            f"{suffix}"
+        )
+
+        target_sg = st.selectbox(
+            "Target Salary Grade",
+            options=(
+                target_salary_grade_options
+            ),
+            index=default_target_index,
+            key=target_widget_key,
+            help=(
+                "Defaults to the selected person's "
+                "current salary grade when available."
+            ),
+        )
+
+    return (
+        selected_ruler,
+        target_sg,
+        selected_ruler_requirements,
+    )
+
+def _load_personnel_database_details(
+    person_row,
+    engine,
+):
+    """
+    Resolve the personnel ID and retrieve CV documents
+    and the latest stored summary score in one session.
+    """
+    personnel_id = None
+    cv_documents = pd.DataFrame()
+    summary_score = None
+    retrieval_error = None
+
+    session = None
+
+    try:
+        session = get_session(
+            engine
+        )
+
+        personnel_id = (
+            db_ops.resolve_personnel_id(
+                session=session,
+                database_id=(
+                    person_row.get("id")
+                ),
+                staff_id=(
+                    person_row.get(
+                        "Staff ID"
+                    )
+                ),
+                name=(
+                    person_row.get("Name")
+                ),
+            )
+        )
+
+        if personnel_id is not None:
+            cv_documents = (
+                db_ops.get_cv_documents(
+                    session,
+                    personnel_id,
+                )
+            )
+
+            summary_score = (
+                session.query(
+                    SummaryScore
+                )
+                .filter_by(
+                    personnel_id=(
+                        personnel_id
+                    )
+                )
+                .order_by(
+                    SummaryScore
+                    .updated_at
+                    .desc()
+                )
+                .first()
+            )
+
+    except Exception as exc:
+        retrieval_error = str(exc)
+
+    finally:
+        if session is not None:
+            session.close()
+
+    return (
+        personnel_id,
+        cv_documents,
+        summary_score,
+        retrieval_error,
+    )
+
+def _format_summary_metric(
+    value,
+):
+    """
+    Format a stored summary score.
+    """
+    if value is None:
+        return "N/A"
+
+    try:
+        if pd.isna(value):
+            return "N/A"
+    except (TypeError, ValueError):
+        pass
+
+    numeric_value = pd.to_numeric(
+        value,
+        errors="coerce",
+    )
+
+    if pd.isna(numeric_value):
+        return str(value)
+
+    return f"{float(numeric_value):.2f}"
+
+def _render_tech_class_reference():
+    """
+    Render one competency-definition reference expander.
+    """
+    with st.expander(
+        "📚 Tech Class Reference - "
+        "Competency Definitions",
+        expanded=False,
+    ):
+        st.markdown(
+            "**Understanding Competency Codes "
+            "and Their Meanings**"
+        )
+
+        st.caption(
+            "Use this reference to understand "
+            "the competency codes shown in the "
+            "assessment results."
+        )
+
+        reference_records = []
+
+        for category_key in [
+            "B",
+            "K",
+            "P",
+            "E",
+        ]:
+            category_information = (
+                COMP_TYPES.get(
+                    category_key,
+                    {},
+                )
+            )
+
+            category_name = (
+                category_information.get(
+                    "label",
+                    category_key,
+                )
+            )
+
+            competency_codes = (
+                category_information.get(
+                    "cols",
+                    [],
+                )
+            )
+
+            for competency_code in (
+                competency_codes
+            ):
+                reference_records.append(
+                    {
+                        "Category":
+                            category_name,
+                        "Code":
+                            competency_code,
+                        "Competency Name":
+                            COMPETENCY_FULLNAMES.get(
+                                competency_code,
+                                competency_code,
+                            ),
+                    }
+                )
+
+        reference_dataframe = pd.DataFrame(
+            reference_records
+        )
+
+        st.dataframe(
+            reference_dataframe,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Category":
+                    st.column_config.TextColumn(
+                        "Category",
+                        width="medium",
+                    ),
+                "Code":
+                    st.column_config.TextColumn(
+                        "Code",
+                        width="small",
+                    ),
+                "Competency Name":
+                    st.column_config.TextColumn(
+                        "Competency Name",
+                        width="large",
+                    ),
+            },
+        )
+
+        st.markdown(
+            "**Category Definitions**"
+        )
+
+        category_definitions = {
+            "Base Competency":
+                "Core technical competencies required "
+                "for reservoir engineering work.",
+            "Key":
+                "Specialized reservoir engineering "
+                "and management knowledge.",
+            "Pacing":
+                "Advanced professional competencies "
+                "for complex systems and work.",
+            "Emerging":
+                "Future-focused technologies and "
+                "new technical capabilities.",
+        }
+
+        for category, description in (
+            category_definitions.items()
+        ):
+            st.markdown(
+                f"**{category}:** "
+                f"{description}"
+            )
+
+def render_readiness_methodology():
+    st.markdown( "### 📐 Metric Methodology")
+
+    st.markdown(
+        """
+        Readiness metrics compare the personnel's assessed
+        competency performance against the required competency
+        level defined by the applicable Career Ruler and target grade.
+        """
+    )
+
+    methodology_df = pd.DataFrame(
+        [
+            {
+                "Metric": "Weighted Readiness",
+                "Definition": (
+                    "Measures how close assessed competency "
+                    "performance is to the required target."
+                ),
+            },
+            {
+                "Metric": "Strict Readiness",
+                "Definition": (
+                    "Proportion of assessed competencies "
+                    "that have met or exceeded the required level."
+                ),
+            },
+            {
+                "Metric": "Assessment Coverage",
+                "Definition": (
+                    "Proportion of required competencies "
+                    "that have an available assessment score."
+                ),
+            },
+            {
+                "Metric": "Competency Gap",
+                "Definition": (
+                    "Difference between Actual Score "
+                    "and Required Score."
+                ),
+            },
+            {
+                "Metric": "Major Gap",
+                "Definition": (
+                    "Significant competency deficiency "
+                    "according to the configured gap rule."
+                ),
+            },
+            {
+                "Metric": "Minor Gap",
+                "Definition": (
+                    "Smaller competency deficiency "
+                    "according to the configured gap rule."
+                ),
+            },
+            {
+                "Metric": "Gap Burden",
+                "Definition": (
+                    "Accumulated outstanding competency "
+                    "shortfall."
+                ),
+            },
+            {
+                "Metric": "Readiness Status",
+                "Definition": (
+                    "Readiness classification based on "
+                    "the configured readiness threshold."
+                ),
+            },
+        ]
+    )
+
+    st.dataframe(
+        methodology_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown(
+        "#### 🧮 Core Calculations"
+    )
+
+    calc_col1, calc_col2, calc_col3 = st.columns(3)
+
+    with calc_col1:
+
+        st.markdown(
+            "**Competency Gap**"
+        )
+
+        st.code(
+            "Gap = Actual Score − Required Score",
+            language="text",
+        )
+
+    with calc_col2:
+
+        st.markdown(
+            "**Strict Readiness**"
+        )
+
+        st.code(
+            "Meeting Target ÷ Assessed Competencies",
+            language="text",
+        )
+
+    with calc_col3:
+
+        st.markdown(
+            "**Assessment Coverage**"
+        )
+
+        st.code(
+            "Assessed Competencies ÷ Required Competencies",
+            language="text",
+        )
+
+    st.warning(
+        """
+        **Readiness ≠ Assessment Coverage ≠ Gap Closure**
+
+        Readiness should be interpreted together with assessment
+        coverage, competency gaps, career grade and managerial
+        judgement.
+
+        **Readiness is not a standalone promotion or appointment decision.**
+        """
+    )
+    st.info("© Disclaimer: Yet to check with GHRM / Upstream Focal to validate on this methodology")
+
+def _build_gap_charts(
+    gap_dataframe,
+    target_sg,
+):
+    """
+    Build the Actual vs Target and radar charts.
+    """
+    bar_figure = go.Figure()
+
+    bar_figure.add_trace(
+        go.Bar(
+            x=gap_dataframe[
+                "Competency Code"
+            ],
+            y=gap_dataframe[
+                "Actual Score"
+            ],
+            name="Actual",
+            marker_color="#20419A",
+        )
+    )
+
+    bar_figure.add_trace(
+        go.Scatter(
+            x=gap_dataframe[
+                "Competency Code"
+            ],
+            y=gap_dataframe[
+                "Target Score"
+            ],
+            name="Target",
+            mode="markers+lines",
+            marker={
+                "color": "#C62828",
+                "size": 9,
+                "symbol": "diamond",
+            },
+            line={
+                "color": "#C62828",
+                "dash": "dash",
+            },
+        )
+    )
+
+    bar_figure.update_layout(
+        title=(
+            f"Actual vs Target ({target_sg})"
+        ),
+        height=430,
+        hovermode="x unified",
+        barmode="group",
+        margin={
+            "l": 30,
+            "r": 20,
+            "t": 60,
+            "b": 40,
+        },
+        legend={
+            "orientation": "h",
+            "y": 1.08,
+            "x": 0,
+        },
+        xaxis_title="Competency",
+        yaxis_title="Score",
+        yaxis={
+            "range": [0, 5],
+            "dtick": 1,
+        },
+    )
+
+    radar_dataframe = (
+        gap_dataframe[
+            gap_dataframe[
+                "Actual Score"
+            ].notna()
+        ]
+        .copy()
+    )
+
+    radar_figure = None
+
+    if not radar_dataframe.empty:
+        radar_actual = (
+            radar_dataframe[
+                "Actual Score"
+            ]
+            .astype(float)
+            .tolist()
+        )
+
+        radar_target = (
+            radar_dataframe[
+                "Target Score"
+            ]
+            .astype(float)
+            .tolist()
+        )
+
+        radar_names = (
+            radar_dataframe[
+                "Competency Code"
+            ]
+            .tolist()
+        )
+
+        closed_actual = (
+            radar_actual
+            + [radar_actual[0]]
+        )
+
+        closed_target = (
+            radar_target
+            + [radar_target[0]]
+        )
+
+        closed_names = (
+            radar_names
+            + [radar_names[0]]
+        )
+
+        radar_figure = go.Figure()
+
+        radar_figure.add_trace(
+            go.Scatterpolar(
+                r=closed_actual,
+                theta=closed_names,
+                fill="toself",
+                name="Actual",
+                line={
+                    "color": "#20419A",
+                    "width": 2,
+                },
+                fillcolor=(
+                    "rgba(0, 161, 156, 0.30)"
+                ),
+            )
+        )
+
+        radar_figure.add_trace(
+            go.Scatterpolar(
+                r=closed_target,
+                theta=closed_names,
+                fill="none",
+                name=f"Target ({target_sg})",
+                line={
+                    "color": "#C62828",
+                    "width": 2,
+                    "dash": "dash",
+                },
+            )
+        )
+
+        radar_figure.update_layout(
+            title="Competency Profile",
+            height=430,
+            showlegend=True,
+            margin={
+                "l": 40,
+                "r": 40,
+                "t": 60,
+                "b": 40,
+            },
+            polar={
+                "radialaxis": {
+                    "visible": True,
+                    "range": [0, 5],
+                    "dtick": 1,
+                    "gridcolor": "#D9E2E8",
+                },
+                "angularaxis": {
+                    "tickfont": {
+                        "size": 10,
+                        "color": "#20419A",
+                    },
+                },
+                "bgcolor": (
+                    "rgba(248, 250, 252, 1)"
+                ),
+            },
+        )
+
+    return (
+        bar_figure,
+        radar_figure,
+    )
+
+def _gap_status_style(value):
+    """
+    Apply background colors to gap statuses.
+    """
+    if value == "✅ Met":
+        return (
+            "background-color: #C6EFCE; "
+            "color: #006100;"
+        )
+
+    if value == "🟡 Minor Gap":
+        return (
+            "background-color: #FFF2CC; "
+            "color: #7F6000;"
+        )
+
+    if value == "🔴 Major Gap":
+        return (
+            "background-color: #FFC7CE; "
+            "color: #9C0006;"
+        )
+
+    if value == "Not Assessed":
+        return (
+            "background-color: #E7E6E6; "
+            "color: #595959;"
+        )
+
+    return ""
 
 def load_asset_text(relative_path: str) -> str:
     """Load a text asset from the project directory."""
@@ -123,10 +1854,10 @@ NATIONALITY_ALIASES = {
     "UK": "United Kingdom",
     "U.K.": "United Kingdom",
     "England": "United Kingdom",
-    "Russia": "Russian Federation",
-    "Iran": "Iran, Islamic Republic of",
-    "Vietnam": "Viet Nam",
-    "Venezuela": "Venezuela, Bolivarian Republic of",
+    "Russian Federation" :"Russia",
+    "Iran, Islamic Republic of":"Iran",
+    "Viet Nam": "Vietnam",
+    "Venezuela, Bolivarian Republic of": "Venezuela",
     "South Korea": "Korea, Republic of",
     "Korea": "Korea, Republic of",
     "USA": "United States",
@@ -285,14 +2016,14 @@ def prepare_nationality_map_data(
 
     map_df["Representation Display"] = (
         map_df["Representation"]
-        .map(lambda value: f"{value:.1f}%")
+        .map(lambda value: f"{value:.0f}%")
     )
 
     return map_df, unmatched
 
-def create_nationality_bubble_map(map_df: pd.DataFrame,):
+def create_nationality_bubble_map(map_df: pd.DataFrame):
     """
-    Build a professional Plotly Express nationality bubble map.
+    Build a professional Plotly Express nationality bubble map using OpenStreetMap tiles.
     """
     fig = px.scatter_map(
         map_df,
@@ -313,19 +2044,20 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
             "Representation Display",
         ],
         size_max=42,
-        zoom=0.7,
+        zoom=2.0,
         center={
             "lat": 15,
             "lon": 65,
         },
         color_continuous_scale=[
             [0.00, "#BFD730"],
-            [0.35, "#00A19C"],
-            [0.70, "#20419A"],
+            [0.01, "#00A19C"],
+            [0.04, "#20419A"],
             [1.00, "#763F98"],
         ],
-        map_style="carto-positron",
-        opacity=0.82,
+        # 🗺️ Change map_style to "open-street-map" or "carto-voyager"
+        map_style="carto-voyager", 
+        opacity=0.75,
     )
 
     fig.update_traces(
@@ -334,29 +2066,18 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
         },
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
-            "Personnel: %{customdata,.0f}<br>"
+            "Personnel: %{customdata[1]:.0f}<br>"
             "Representation: %{customdata[2]}"
             "<extra></extra>"
         ),
     )
 
     fig.update_layout(
-        title={
-            "text": (""),
-            "x": 0.01,
-            "xanchor": "left",
-            "y": 0.97,
-            "yanchor": "top",
-            "font": {
-                "size": 20,
-                "color": "#20419A",
-            },
-        },
         height=560,
         margin={
             "l": 0,
             "r": 0,
-            "t": 80,
+            "t": 40,
             "b": 0,
         },
         paper_bgcolor="#FFFFFF",
@@ -368,7 +2089,7 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
             "orientation": "h",
             "x": 0.5,
             "xanchor": "center",
-            "y": -0.03,
+            "y": -0.05,
             "yanchor": "top",
             "len": 0.45,
             "thickness": 12,
@@ -379,15 +2100,6 @@ def create_nationality_bubble_map(map_df: pd.DataFrame,):
         font={
             "family": "Arial, sans-serif",
             "color": "#263238",
-        },
-        hoverlabel={
-            "bgcolor": "#FFFFFF",
-            "bordercolor": "#00A19C",
-            "font": {
-                "family": "Arial, sans-serif",
-                "size": 13,
-                "color": "#263238",
-            },
         },
     )
 
@@ -440,7 +2152,15 @@ def grade_rank(sg_value):
         return None
 
     text = str(sg_value).strip().upper()
+    text = str(sg_value).strip().upper()
+    text = str(sg_value).strip().upper()
 
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
+    # Put UPTREX first (rank 0), then P1..P10
+    if text == "UPTREX":
+        return 0
     # Put UPTREX first (rank 0), then P1..P10
     if text == "UPTREX":
         return 0
@@ -451,8 +2171,6 @@ def grade_rank(sg_value):
             return int(match.group(1))
         except Exception:
             return None
-
-    return None
 
 def normalize_ruler_type(value):
     """
@@ -691,6 +2409,2286 @@ def scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
     
     # Remove rows missing Age or SG
     return out.dropna(subset=["Age", "SG"])
+
+# =============================================================================
+# READINESS AND GAP ANALYSIS CONFIGURATION
+# =============================================================================
+
+READINESS_STATUS_ORDER = [
+    "Ready",
+    "Near Ready",
+    "Development Required",
+    "Not Assessed",
+]
+
+READINESS_STATUS_COLORS = {
+    "Ready": "#00A19C",
+    "Near Ready": "#BFD730",
+    "Development Required": "#FDB924",
+    "Not Assessed": "#9E9E9E",
+}
+
+GAP_SEVERITY_ORDER = [
+    "Met",
+    "Minor Gap",
+    "Major Gap",
+    "Not Assessed",
+]
+
+GAP_SEVERITY_COLORS = {
+    "Met": "#00A19C",
+    "Minor Gap": "#FDB924",
+    "Major Gap": "#C62828",
+    "Not Assessed": "#9E9E9E",
+}
+
+CATEGORY_ORDER = [
+    "Base",
+    "Key",
+    "Pacing",
+    "Emerging",
+]
+
+
+# =============================================================================
+# GENERAL HELPERS
+# =============================================================================
+
+def _rg_clean_value(
+    value,
+    fallback=None,
+):
+    """
+    Clean values used by the Readiness and Gaps page.
+    """
+    if value is None:
+        return fallback
+
+    try:
+        if pd.isna(value):
+            return fallback
+    except (TypeError, ValueError):
+        pass
+
+    cleaned = str(value).strip()
+
+    if cleaned.casefold() in {
+        "",
+        "none",
+        "nan",
+        "nat",
+    }:
+        return fallback
+
+    return cleaned
+
+
+def _rg_grade_rank(
+    salary_grade,
+):
+    """
+    Convert P1 through P10 into numeric ranks.
+    """
+    cleaned_grade = _rg_clean_value(
+        salary_grade
+    )
+
+    if cleaned_grade is None:
+        return None
+
+    match = re.fullmatch(
+        r"P(\d+)",
+        cleaned_grade.upper(),
+    )
+
+    if match is None:
+        return None
+
+    return int(match.group(1))
+
+
+def _rg_sort_salary_grades(
+    salary_grades,
+):
+    """
+    Sort salary grades numerically.
+    """
+    unique_grades = {
+        str(grade).strip().upper()
+        for grade in salary_grades
+        if _rg_clean_value(grade) is not None
+    }
+
+    return sorted(
+        unique_grades,
+        key=lambda grade: (
+            _rg_grade_rank(grade)
+            if _rg_grade_rank(grade) is not None
+            else 999
+        ),
+    )
+
+
+def _rg_normalize_ruler(
+    ruler_value,
+):
+    """
+    Normalize career-ruler values.
+    """
+    cleaned_ruler = _rg_clean_value(
+        ruler_value,
+        "BASE",
+    ).upper()
+
+    aliases = {
+        "NO RULER ASSIGNED": "BASE",
+        "BASE": "BASE",
+        "RDP": "RDP",
+        "RMS": "RMS",
+        "RSS": "RSS",
+    }
+
+    return aliases.get(
+        cleaned_ruler,
+        cleaned_ruler,
+    )
+
+
+def _rg_get_person_ruler(
+    person_row,
+    ruler_map,
+):
+    """
+    Retrieve a person's ruler and ensure the ruler exists.
+    """
+    ruler_value = (
+        person_row.get("Ruler Type")
+        or person_row.get("ruler_type")
+    )
+
+    if _rg_clean_value(ruler_value) is None:
+        ruler_value = (
+            person_row.get("Background")
+        )
+
+    ruler_name = _rg_normalize_ruler(
+        ruler_value
+    )
+
+    ruler_lookup = {
+        str(key).strip().upper(): key
+        for key in ruler_map.keys()
+    }
+
+    if ruler_name in ruler_lookup:
+        return ruler_lookup[ruler_name]
+
+    if "BASE" in ruler_lookup:
+        return ruler_lookup["BASE"]
+
+    return next(
+        iter(ruler_map.keys()),
+        None,
+    )
+
+
+def _rg_get_competency_category(
+    competency_code,
+):
+    """
+    Map competency codes into analytical categories.
+    """
+    prefix = str(
+        competency_code
+    ).strip().upper()[:1]
+
+    category_map = {
+        "B": "Base",
+        "K": "Key",
+        "P": "Pacing",
+        "E": "Emerging",
+    }
+
+    return category_map.get(
+        prefix,
+        "Other",
+    )
+
+
+def _rg_gap_severity(
+    gap_value,
+    is_assessed,
+):
+    """
+    Classify one competency gap.
+
+    Gap equals Actual Score minus Target Score.
+    """
+    if not is_assessed:
+        return "Not Assessed"
+
+    if pd.isna(gap_value):
+        return "Not Assessed"
+
+    if gap_value >= 0:
+        return "Met"
+
+    if gap_value >= -1:
+        return "Minor Gap"
+
+    return "Major Gap"
+
+
+def _rg_determine_target_sg(
+    current_sg,
+    ruler_requirements,
+    target_mode,
+    selected_target_sg=None,
+):
+    """
+    Determine the target SG for one person.
+
+    Modes:
+        Current requirement
+        Next salary grade
+        Selected target grade
+    """
+    available_grades = _rg_sort_salary_grades(
+        ruler_requirements.keys()
+    )
+
+    if not available_grades:
+        return None
+
+    current_sg = str(
+        current_sg or ""
+    ).strip().upper()
+
+    if target_mode == "Current requirement":
+        if current_sg in available_grades:
+            return current_sg
+
+        return None
+
+    if target_mode == "Selected target grade":
+        if selected_target_sg in available_grades:
+            return selected_target_sg
+
+        return None
+
+    current_rank = _rg_grade_rank(
+        current_sg
+    )
+
+    if current_rank is None:
+        return available_grades[0]
+
+    future_grades = [
+        grade
+        for grade in available_grades
+        if (
+            _rg_grade_rank(grade)
+            is not None
+            and _rg_grade_rank(grade)
+            > current_rank
+        )
+    ]
+
+    if future_grades:
+        return future_grades[0]
+
+    return None
+
+
+# =============================================================================
+# GRANULAR READINESS DATASET
+# =============================================================================
+
+def _build_readiness_detail_dataframe(
+    personnel_dataframe,
+    ruler_map,
+    target_mode,
+    selected_target_sg=None,
+):
+    """
+    Build one row per personnel per required competency.
+
+    This granular dataset is the single analytical source for:
+        Personnel readiness
+        Category readiness
+        Competency gap severity
+        Gap-risk analysis
+        Department heatmaps
+    """
+    detail_records = []
+
+    if (
+        personnel_dataframe is None
+        or personnel_dataframe.empty
+        or not ruler_map
+    ):
+        return pd.DataFrame()
+
+    for dataframe_index, person_row in (
+        personnel_dataframe.iterrows()
+    ):
+        person_name = _rg_clean_value(
+            person_row.get("Name"),
+            "Unknown Personnel",
+        )
+
+        staff_id = _rg_clean_value(
+            person_row.get("Staff ID")
+        )
+
+        personnel_id = person_row.get("id")
+
+        department = _rg_clean_value(
+            person_row.get("Department"),
+            "Not Specified",
+        )
+
+        position = _rg_clean_value(
+            person_row.get("Staff Position"),
+            "Not Specified",
+        )
+
+        employment_category = _rg_clean_value(
+            person_row.get(
+                "Employment Category"
+            ),
+            "Not Specified",
+        )
+
+        current_sg = _rg_clean_value(
+            person_row.get("SG"),
+            "",
+        ).upper()
+
+        years_in_grade = pd.to_numeric(
+            person_row.get(
+                "Years in Salary Grade"
+            ),
+            errors="coerce",
+        )
+
+        career_ruler = _rg_get_person_ruler(
+            person_row=person_row,
+            ruler_map=ruler_map,
+        )
+
+        if career_ruler is None:
+            continue
+
+        ruler_requirements = ruler_map.get(
+            career_ruler,
+            {},
+        )
+
+        target_sg = _rg_determine_target_sg(
+            current_sg=current_sg,
+            ruler_requirements=(
+                ruler_requirements
+            ),
+            target_mode=target_mode,
+            selected_target_sg=(
+                selected_target_sg
+            ),
+        )
+
+        if target_sg is None:
+            continue
+
+        target_requirements = (
+            ruler_requirements.get(
+                target_sg,
+                {},
+            )
+        )
+
+        for competency_code in SCORE_COLS:
+            if (
+                competency_code
+                not in target_requirements
+            ):
+                continue
+
+            target_score = pd.to_numeric(
+                target_requirements.get(
+                    competency_code
+                ),
+                errors="coerce",
+            )
+
+            if pd.isna(target_score):
+                continue
+
+            actual_score = pd.to_numeric(
+                person_row.get(
+                    competency_code
+                ),
+                errors="coerce",
+            )
+
+            is_assessed = pd.notna(
+                actual_score
+            )
+
+            gap_value = (
+                float(actual_score)
+                - float(target_score)
+                if is_assessed
+                else np.nan
+            )
+
+            capped_actual = (
+                min(
+                    float(actual_score),
+                    float(target_score),
+                )
+                if (
+                    is_assessed
+                    and target_score > 0
+                )
+                else 0.0
+            )
+
+            negative_gap_burden = (
+                abs(min(gap_value, 0))
+                if pd.notna(gap_value)
+                else 0.0
+            )
+
+            gap_severity = _rg_gap_severity(
+                gap_value=gap_value,
+                is_assessed=is_assessed,
+            )
+
+            detail_records.append(
+                {
+                    "Personnel ID":
+                        personnel_id,
+                    "DataFrame Index":
+                        dataframe_index,
+                    "Name":
+                        person_name,
+                    "Staff ID":
+                        staff_id,
+                    "Department":
+                        department,
+                    "Staff Position":
+                        position,
+                    "Employment Category":
+                        employment_category,
+                    "Current SG":
+                        current_sg,
+                    "Career Ruler":
+                        career_ruler,
+                    "Target SG":
+                        target_sg,
+                    "Years in Grade":
+                        years_in_grade,
+                    "Competency Code":
+                        competency_code,
+                    "Competency Name":
+                        COMPETENCY_FULLNAMES.get(
+                            competency_code,
+                            competency_code,
+                        ),
+                    "Category":
+                        _rg_get_competency_category(
+                            competency_code
+                        ),
+                    "Actual Score":
+                        actual_score,
+                    "Target Score":
+                        float(target_score),
+                    "Capped Actual":
+                        capped_actual,
+                    "Gap":
+                        gap_value,
+                    "Gap Burden":
+                        negative_gap_burden,
+                    "Gap Severity":
+                        gap_severity,
+                    "Is Assessed":
+                        bool(is_assessed),
+                    "Is Met":
+                        bool(
+                            is_assessed
+                            and gap_value >= 0
+                        ),
+                    "Is Major Gap":
+                        bool(
+                            is_assessed
+                            and gap_value < -1
+                        ),
+                    "Is Minor Gap":
+                        bool(
+                            is_assessed
+                            and -1 <= gap_value < 0
+                        ),
+                }
+            )
+
+    return pd.DataFrame(
+        detail_records
+    )
+# =============================================================================
+# PERSONNEL READINESS SUMMARY
+# =============================================================================
+
+def _classify_readiness_status(
+    weighted_readiness,
+    strict_readiness,
+    coverage,
+    major_gap_count,
+):
+    """
+    Apply transparent readiness-status rules.
+    """
+    if coverage < 40:
+        return "Not Assessed"
+
+    if (
+        weighted_readiness >= 80
+        and strict_readiness >= 75
+        and coverage >= 90
+        and major_gap_count == 0
+    ):
+        return "Ready"
+
+    if (
+        weighted_readiness >= 65
+        and coverage >= 75
+        and major_gap_count <= 2
+    ):
+        return "Near Ready"
+
+    return "Development Required"
+
+def _recommend_readiness_action(
+    readiness_status,
+    coverage,
+    major_gap_count,
+    minor_gap_count,
+):
+    """
+    Generate transparent rule-based actions.
+    """
+    if coverage < 40:
+        return "Complete Assessment"
+
+    if readiness_status == "Ready":
+        return "Ready for Assessment"
+
+    if (
+        readiness_status == "Near Ready"
+        and major_gap_count == 0
+        and minor_gap_count <= 2
+    ):
+        return "Close 1-2 Minor Gaps"
+
+    if major_gap_count >= 3:
+        return "Leadership Review Required"
+
+    if major_gap_count > 0:
+        return "Targeted Technical Development"
+
+    return "Focused Development Plan"
+
+def _find_top_personnel_gap(
+    person_detail_dataframe,
+):
+    """
+    Return the largest negative competency gap for one person.
+    """
+    assessed_gaps = person_detail_dataframe[
+        person_detail_dataframe[
+            "Gap"
+        ].notna()
+        & (
+            person_detail_dataframe[
+                "Gap"
+            ] < 0
+        )
+    ]
+
+    if assessed_gaps.empty:
+        return "None"
+
+    worst_gap_row = (
+        assessed_gaps.sort_values(
+            "Gap",
+            ascending=True,
+        )
+        .iloc[0]
+    )
+
+    return (
+        f"{worst_gap_row['Competency Code']} - "
+        f"{worst_gap_row['Competency Name']}"
+    )
+
+def _build_personnel_readiness_summary(
+    detail_dataframe,
+):
+    """
+    Aggregate granular competency rows into one row per person.
+    """
+    if (
+        detail_dataframe is None
+        or detail_dataframe.empty
+    ):
+        return pd.DataFrame()
+
+    personnel_records = []
+
+    grouping_columns = [
+        "DataFrame Index",
+        "Name",
+        "Staff ID",
+        "Department",
+        "Staff Position",
+        "Employment Category",
+        "Current SG",
+        "Career Ruler",
+        "Target SG",
+    ]
+
+    for group_values, person_detail in (
+        detail_dataframe.groupby(
+            grouping_columns,
+            dropna=False,
+        )
+    ):
+        group_record = dict(
+            zip(
+                grouping_columns,
+                group_values,
+            )
+        )
+
+        total_required = len(
+            person_detail
+        )
+
+        assessed_count = int(
+            person_detail[
+                "Is Assessed"
+            ].sum()
+        )
+
+        met_count = int(
+            person_detail[
+                "Is Met"
+            ].sum()
+        )
+
+        major_gap_count = int(
+            person_detail[
+                "Is Major Gap"
+            ].sum()
+        )
+
+        minor_gap_count = int(
+            person_detail[
+                "Is Minor Gap"
+            ].sum()
+        )
+
+        coverage = (
+            assessed_count
+            / total_required
+            * 100
+            if total_required > 0
+            else 0.0
+        )
+
+        strict_readiness = (
+            met_count
+            / total_required
+            * 100
+            if total_required > 0
+            else 0.0
+        )
+
+        total_target_score = (
+            person_detail[
+                "Target Score"
+            ]
+            .fillna(0)
+            .clip(lower=0)
+            .sum()
+        )
+
+        weighted_readiness = (
+            person_detail[
+                "Capped Actual"
+            ].sum()
+            / total_target_score
+            * 100
+            if total_target_score > 0
+            else 0.0
+        )
+
+        gap_burden = (
+            person_detail[
+                "Gap Burden"
+            ].sum()
+        )
+
+        readiness_status = (
+            _classify_readiness_status(
+                weighted_readiness=(
+                    weighted_readiness
+                ),
+                strict_readiness=(
+                    strict_readiness
+                ),
+                coverage=coverage,
+                major_gap_count=(
+                    major_gap_count
+                ),
+            )
+        )
+
+        recommended_action = (
+            _recommend_readiness_action(
+                readiness_status=(
+                    readiness_status
+                ),
+                coverage=coverage,
+                major_gap_count=(
+                    major_gap_count
+                ),
+                minor_gap_count=(
+                    minor_gap_count
+                ),
+            )
+        )
+
+        category_readiness = {}
+
+        for category in CATEGORY_ORDER:
+            category_detail = (
+                person_detail[
+                    person_detail["Category"]
+                    == category
+                ]
+            )
+
+            category_target = (
+                category_detail[
+                    "Target Score"
+                ]
+                .fillna(0)
+                .clip(lower=0)
+                .sum()
+            )
+
+            category_readiness[
+                category
+            ] = (
+                category_detail[
+                    "Capped Actual"
+                ].sum()
+                / category_target
+                * 100
+                if category_target > 0
+                else np.nan
+            )
+
+        years_in_grade = (
+            person_detail[
+                "Years in Grade"
+            ]
+            .dropna()
+        )
+
+        personnel_records.append(
+            {
+                **group_record,
+                "Required Competencies":
+                    total_required,
+                "Assessed Competencies":
+                    assessed_count,
+                "Assessment Coverage %":
+                    coverage,
+                "Weighted Readiness %":
+                    weighted_readiness,
+                "Strict Readiness %":
+                    strict_readiness,
+                "Met Competencies":
+                    met_count,
+                "Minor Gaps":
+                    minor_gap_count,
+                "Major Gaps":
+                    major_gap_count,
+                "Gap Burden":
+                    gap_burden,
+                "Readiness Status":
+                    readiness_status,
+                "Recommended Action":
+                    recommended_action,
+                "Top Gap":
+                    _find_top_personnel_gap(
+                        person_detail
+                    ),
+                "Years in Grade":
+                    (
+                        float(
+                            years_in_grade.iloc[0]
+                        )
+                        if not years_in_grade.empty
+                        else np.nan
+                    ),
+                "Base Readiness %":
+                    category_readiness.get(
+                        "Base"
+                    ),
+                "Key Readiness %":
+                    category_readiness.get(
+                        "Key"
+                    ),
+                "Pacing Readiness %":
+                    category_readiness.get(
+                        "Pacing"
+                    ),
+                "Emerging Readiness %":
+                    category_readiness.get(
+                        "Emerging"
+                    ),
+            }
+        )
+
+    return pd.DataFrame(
+        personnel_records
+    )
+
+
+# =============================================================================
+# READINESS PAGE FILTERS
+# =============================================================================
+
+def _apply_readiness_personnel_filters(
+    personnel_dataframe,
+    search_text,
+    departments,
+    positions,
+    salary_grades,
+    employment_categories,
+):
+    """
+    Apply filters that exist before readiness calculations.
+    """
+    filtered_dataframe = (
+        personnel_dataframe.copy()
+    )
+
+    if search_text:
+        search_text = str(
+            search_text
+        ).strip().casefold()
+
+        name_series = (
+            filtered_dataframe[
+                "Name"
+            ]
+            .fillna("")
+            .astype(str)
+            .str.casefold()
+        )
+
+        staff_id_series = (
+            filtered_dataframe.get(
+                "Staff ID",
+                pd.Series(
+                    "",
+                    index=(
+                        filtered_dataframe.index
+                    ),
+                ),
+            )
+            .fillna("")
+            .astype(str)
+            .str.casefold()
+        )
+
+        filtered_dataframe = (
+            filtered_dataframe[
+                name_series.str.contains(
+                    search_text,
+                    na=False,
+                    regex=False,
+                )
+                | staff_id_series.str.contains(
+                    search_text,
+                    na=False,
+                    regex=False,
+                )
+            ]
+        )
+
+    if departments:
+        filtered_dataframe = (
+            filtered_dataframe[
+                filtered_dataframe[
+                    "Department"
+                ].isin(departments)
+            ]
+        )
+
+    if positions:
+        filtered_dataframe = (
+            filtered_dataframe[
+                filtered_dataframe[
+                    "Staff Position"
+                ].isin(positions)
+            ]
+        )
+
+    if salary_grades:
+        filtered_dataframe = (
+            filtered_dataframe[
+                filtered_dataframe[
+                    "SG"
+                ].isin(salary_grades)
+            ]
+        )
+
+    if (
+        employment_categories
+        and "Employment Category"
+        in filtered_dataframe.columns
+    ):
+        filtered_dataframe = (
+            filtered_dataframe[
+                filtered_dataframe[
+                    "Employment Category"
+                ].isin(
+                    employment_categories
+                )
+            ]
+        )
+
+    return filtered_dataframe.copy()
+
+def _build_filter_options(
+    dataframe,
+    column_name,
+):
+    """
+    Safely build sorted filter options.
+    """
+    if (
+        dataframe is None
+        or dataframe.empty
+        or column_name
+        not in dataframe.columns
+    ):
+        return []
+
+    return sorted(
+        dataframe[
+            column_name
+        ]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .loc[
+            lambda values:
+                values.ne("")
+        ]
+        .unique()
+        .tolist()
+    )
+
+def _reset_readiness_filters():
+    """
+    Clear all Readiness and Gaps page widget state.
+    """
+    readiness_filter_keys = [
+        "rg_search",
+        "rg_department",
+        "rg_position",
+        "rg_sg",
+        "rg_ruler",
+        "rg_employment",
+        "rg_target_mode",
+        "rg_selected_target_sg",
+        "rg_target_sg_disabled",
+        "rg_coverage",
+        "rg_status",
+        "rg_ranking_metric",
+        "rg_heatmap_scope",
+        "rg_priority_person",
+    ]
+
+    for filter_key in readiness_filter_keys:
+        if filter_key in st.session_state:
+            del st.session_state[
+                filter_key
+            ]
+
+
+# =============================================================================
+# READINESS VISUAL HELPERS
+# =============================================================================
+
+def _create_readiness_status_chart(
+    summary_dataframe,
+):
+    """
+    Build the readiness-status horizontal bar chart.
+    """
+    status_counts = (
+        summary_dataframe[
+            "Readiness Status"
+        ]
+        .value_counts()
+        .reindex(
+            READINESS_STATUS_ORDER,
+            fill_value=0,
+        )
+        .rename_axis(
+            "Readiness Status"
+        )
+        .reset_index(
+            name="Personnel"
+        )
+    )
+
+    figure = px.bar(
+        status_counts,
+        x="Personnel",
+        y="Readiness Status",
+        orientation="h",
+        text="Personnel",
+        color="Readiness Status",
+        color_discrete_map=(
+            READINESS_STATUS_COLORS
+        ),
+        category_orders={
+            "Readiness Status":
+                READINESS_STATUS_ORDER,
+        },
+    )
+
+    figure.update_traces(
+        textposition="outside",
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Personnel: %{x:,.0f}"
+            "<extra></extra>"
+        ),
+    )
+
+    figure.update_layout(
+        title="Competency Readiness Status",
+        height=390,
+        showlegend=False,
+        xaxis_title="Personnel",
+        yaxis_title=None,
+        margin={
+            "l": 10,
+            "r": 40,
+            "t": 60,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+
+    figure.update_xaxes(
+        showgrid=True,
+        gridcolor="#E8EDF2",
+        zeroline=False,
+    )
+
+    return figure
+
+def _create_department_readiness_chart(
+    summary_dataframe,
+):
+    """
+    Build readiness by department with population context.
+    """
+    department_summary = (
+        summary_dataframe
+        .groupby(
+            "Department",
+            as_index=False,
+        )
+        .agg(
+            Median_Readiness=(
+                "Weighted Readiness %",
+                "median",
+            ),
+            Personnel=(
+                "Name",
+                "count",
+            ),
+            Median_Coverage=(
+                "Assessment Coverage %",
+                "median",
+            ),
+            Personnel_With_Major_Gaps=(
+                "Major Gaps",
+                lambda values: int(
+                    (values > 0).sum()
+                ),
+            ),
+        )
+    )
+
+    department_summary[
+        "Major Gap Rate %"
+    ] = (
+        department_summary[
+            "Personnel_With_Major_Gaps"
+        ]
+        / department_summary[
+            "Personnel"
+        ]
+        * 100
+    )
+
+    department_summary = (
+        department_summary.sort_values(
+            "Median_Readiness",
+            ascending=True,
+        )
+    )
+
+    figure = px.scatter(
+        department_summary,
+        x="Median_Readiness",
+        y="Department",
+        size="Personnel",
+        color="Median_Coverage",
+        custom_data=[
+            "Personnel",
+            "Median_Coverage",
+            "Major Gap Rate %",
+        ],
+        color_continuous_scale=[
+            [0.0, "#FDB924"],
+            [0.5, "#BFD730"],
+            [1.0, "#00A19C"],
+        ],
+        size_max=35,
+    )
+
+    figure.update_traces(
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Median readiness: %{x:.0f}%<br>"
+            "Personnel: %{customdata,.0f}<br>"
+            "Median coverage: "
+            "%{customdata.0f}%<br>"
+            "Major-gap rate: "
+            "%{customdata.0f}%"
+            "<extra></extra>"
+        ),
+    )
+
+    figure.add_vline(
+        x=80,
+        line_dash="dash",
+        line_color="#00A19C",
+        annotation_text="80% readiness",
+        annotation_position="top",
+    )
+
+    figure.update_layout(
+        title=(
+            "Median Readiness by Department"
+        ),
+        height=390,
+        xaxis_title=(
+            "Median Weighted Readiness (%)"
+        ),
+        yaxis_title=None,
+        coloraxis_colorbar={
+            "title": "Coverage %",
+        },
+        margin={
+            "l": 10,
+            "r": 20,
+            "t": 60,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+
+    figure.update_xaxes(
+        range=[0, 105],
+        showgrid=True,
+        gridcolor="#E8EDF2",
+    )
+
+    return figure
+
+def _create_readiness_box_plot(
+    summary_dataframe,
+):
+    """
+    Build readiness distribution by current salary grade.
+    """
+    salary_grade_order = (
+        _rg_sort_salary_grades(
+            summary_dataframe[
+                "Current SG"
+            ].dropna()
+        )
+    )
+
+    figure = px.box(
+        summary_dataframe,
+        x="Current SG",
+        y="Weighted Readiness %",
+        color="Current SG",
+        points="all",
+        hover_name="Name",
+        hover_data={
+            "Current SG": False,
+            "Department": True,
+            "Staff Position": True,
+            "Assessment Coverage %": ":.0f",
+            "Major Gaps": True,
+            "Target SG": True,
+        },
+        category_orders={
+            "Current SG":
+                salary_grade_order,
+        },
+    )
+
+    figure.add_hline(
+        y=80,
+        line_dash="dash",
+        line_color="#00A19C",
+        annotation_text=(
+            "Ready threshold"
+        ),
+        annotation_position="top left",
+    )
+
+    figure.update_layout(
+        title=(
+            "Weighted Readiness Distribution "
+            "by Current Salary Grade"
+        ),
+        height=480,
+        showlegend=False,
+        xaxis_title="Current Salary Grade",
+        yaxis_title="Weighted Readiness (%)",
+        margin={
+            "l": 20,
+            "r": 20,
+            "t": 70,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+
+    figure.update_yaxes(
+        range=[0, 105],
+        showgrid=True,
+        gridcolor="#E8EDF2",
+    )
+
+    return figure
+
+def _create_readiness_coverage_scatter(
+    summary_dataframe,
+):
+    """
+    Build the readiness versus coverage quadrant.
+    """
+    scatter_dataframe = (
+        summary_dataframe.copy()
+    )
+
+    scatter_dataframe[
+        "Bubble Size"
+    ] = (
+        scatter_dataframe[
+            "Major Gaps"
+        ]
+        .fillna(0)
+        + 1
+    )
+
+    figure = px.scatter(
+        scatter_dataframe,
+        x="Assessment Coverage %",
+        y="Weighted Readiness %",
+        size="Bubble Size",
+        color="Readiness Status",
+        hover_name="Name",
+        hover_data={
+            "Bubble Size": False,
+            "Department": True,
+            "Staff Position": True,
+            "Current SG": True,
+            "Target SG": True,
+            "Strict Readiness %": ":.0f",
+            "Major Gaps": True,
+        },
+        color_discrete_map=(
+            READINESS_STATUS_COLORS
+        ),
+        size_max=32,
+    )
+
+    figure.add_vline(
+        x=90,
+        line_dash="dash",
+        line_color="#20419A",
+        annotation_text=(
+            "90% coverage"
+        ),
+        annotation_position="top",
+    )
+
+    figure.add_hline(
+        y=80,
+        line_dash="dash",
+        line_color="#00A19C",
+        annotation_text=(
+            "80% readiness"
+        ),
+        annotation_position="top left",
+    )
+
+    figure.update_layout(
+        title=(
+            "Readiness versus Assessment Coverage"
+        ),
+        height=520,
+        xaxis_title="Assessment Coverage (%)",
+        yaxis_title="Weighted Readiness (%)",
+        legend_title="Readiness Status",
+        margin={
+            "l": 20,
+            "r": 20,
+            "t": 70,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+
+    figure.update_xaxes(
+        range=[0, 105],
+        showgrid=True,
+        gridcolor="#E8EDF2",
+    )
+
+    figure.update_yaxes(
+        range=[0, 105],
+        showgrid=True,
+        gridcolor="#E8EDF2",
+    )
+
+    return figure
+
+def _create_category_readiness_heatmap(
+    summary_dataframe,
+):
+    """
+    Build position by category readiness heatmap.
+    """
+    category_columns = {
+        "Base Readiness %": "Base",
+        "Key Readiness %": "Key",
+        "Pacing Readiness %": "Pacing",
+        "Emerging Readiness %": "Emerging",
+    }
+
+    available_columns = [
+        column
+        for column in category_columns
+        if column
+        in summary_dataframe.columns
+    ]
+
+    heatmap_dataframe = (
+        summary_dataframe
+        .groupby(
+            "Staff Position"
+        )[
+            available_columns
+        ]
+        .median()
+        .rename(
+            columns=category_columns
+        )
+        .reindex(
+            columns=CATEGORY_ORDER
+        )
+    )
+
+    heatmap_dataframe = (
+        heatmap_dataframe.dropna(
+            how="all"
+        )
+    )
+
+    figure = go.Figure(
+        data=go.Heatmap(
+            z=heatmap_dataframe.values,
+            x=heatmap_dataframe.columns,
+            y=heatmap_dataframe.index,
+            colorscale=[
+                [0.0, "#C62828"],
+                [0.5, "#FDB924"],
+                [0.8, "#BFD730"],
+                [1.0, "#00A19C"],
+            ],
+            zmin=0,
+            zmax=100,
+            text=np.round(
+                heatmap_dataframe.values,
+                1,
+            ),
+            texttemplate="%{text:.0f}%",
+            customdata=np.round(
+                heatmap_dataframe.values,
+                1,
+            ),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Category: %{x}<br>"
+                "Median readiness: "
+                "%{customdata:.0f}%"
+                "<extra></extra>"
+            ),
+            colorbar={
+                "title": "Readiness %",
+            },
+        )
+    )
+
+    figure.update_layout(
+        title=(
+            "Median Category Readiness "
+            "by Staff Position"
+        ),
+        height=450,
+        xaxis_title="Competency Category",
+        yaxis_title="Staff Position",
+        margin={
+            "l": 20,
+            "r": 20,
+            "t": 70,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+    )
+
+    return figure
+
+def _create_category_gap_distribution(
+    detail_dataframe,
+):
+    """
+    Build a 100 percent category severity chart.
+    """
+    category_status_counts = (
+        detail_dataframe
+        .groupby(
+            [
+                "Category",
+                "Gap Severity",
+            ]
+        )
+        .size()
+        .reset_index(
+            name="Competencies"
+        )
+    )
+
+    category_totals = (
+        category_status_counts
+        .groupby(
+            "Category"
+        )[
+            "Competencies"
+        ]
+        .transform("sum")
+    )
+
+    category_status_counts[
+        "Percentage"
+    ] = (
+        category_status_counts[
+            "Competencies"
+        ]
+        / category_totals
+        * 100
+    )
+
+    figure = px.bar(
+        category_status_counts,
+        x="Percentage",
+        y="Category",
+        color="Gap Severity",
+        orientation="h",
+        barmode="stack",
+        text="Percentage",
+        custom_data=[
+            "Competencies",
+        ],
+        category_orders={
+            "Category":
+                CATEGORY_ORDER,
+            "Gap Severity":
+                GAP_SEVERITY_ORDER,
+        },
+        color_discrete_map=(
+            GAP_SEVERITY_COLORS
+        ),
+    )
+
+    figure.update_traces(
+        texttemplate="%{x:.0f}%",
+        textposition="inside",
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Status: %{fullData.name}<br>"
+            "Percentage: %{x:.0f}%<br>"
+            "Competency records: "
+            "%{customdata,.0f}"
+            "<extra></extra>"
+        ),
+    )
+
+    figure.update_layout(
+        title=(
+            "Gap Severity Distribution "
+            "by Competency Category"
+        ),
+        height=430,
+        xaxis_title="Share of Required Competencies (%)",
+        yaxis_title=None,
+        legend_title="Gap Severity",
+        legend={
+            "orientation": "h",
+            "y": 1.12,
+            "x": 0.5,
+            "xanchor": "center",
+        },
+        margin={
+            "l": 20,
+            "r": 20,
+            "t": 90,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+
+    figure.update_xaxes(
+        range=[0, 100],
+    )
+
+    return figure
+
+def _build_competency_risk_summary(
+    detail_dataframe,
+):
+    """
+    Aggregate competency prevalence and severity.
+    """
+    risk_records = []
+
+    for (
+        competency_code,
+        competency_detail,
+    ) in detail_dataframe.groupby(
+        "Competency Code"
+    ):
+        assessed_detail = (
+            competency_detail[
+                competency_detail[
+                    "Is Assessed"
+                ]
+            ]
+        )
+
+        assessed_personnel = (
+            assessed_detail[
+                "Name"
+            ]
+            .nunique()
+        )
+
+        gap_detail = (
+            assessed_detail[
+                assessed_detail[
+                    "Gap"
+                ] < 0
+            ]
+        )
+
+        affected_personnel = (
+            gap_detail[
+                "Name"
+            ]
+            .nunique()
+        )
+
+        prevalence = (
+            affected_personnel
+            / assessed_personnel
+            * 100
+            if assessed_personnel > 0
+            else 0.0
+        )
+
+        average_severity = (
+            gap_detail[
+                "Gap Burden"
+            ].mean()
+            if not gap_detail.empty
+            else 0.0
+        )
+
+        risk_records.append(
+            {
+                "Competency Code":
+                    competency_code,
+                "Competency Name":
+                    competency_detail[
+                        "Competency Name"
+                    ].iloc[0],
+                "Category":
+                    competency_detail[
+                        "Category"
+                    ].iloc[0],
+                "Assessed Personnel":
+                    assessed_personnel,
+                "Affected Personnel":
+                    affected_personnel,
+                "Gap Prevalence %":
+                    prevalence,
+                "Average Gap Severity":
+                    average_severity,
+                "Gap Burden":
+                    gap_detail[
+                        "Gap Burden"
+                    ].sum(),
+                "Major Gap Count":
+                    int(
+                        gap_detail[
+                            "Is Major Gap"
+                        ].sum()
+                    ),
+            }
+        )
+
+    return pd.DataFrame(
+        risk_records
+    )
+
+def _create_competency_risk_matrix(
+    risk_dataframe,
+):
+    """
+    Build prevalence versus severity bubble chart.
+    """
+    plot_dataframe = (
+        risk_dataframe[
+            risk_dataframe[
+                "Affected Personnel"
+            ] > 0
+        ]
+        .copy()
+    )
+
+    figure = px.scatter(
+        plot_dataframe,
+        x="Gap Prevalence %",
+        y="Average Gap Severity",
+        size="Affected Personnel",
+        color="Category",
+        hover_name="Competency Code",
+        hover_data={
+            "Competency Name": True,
+            "Category": True,
+            "Affected Personnel": True,
+            "Assessed Personnel": True,
+            "Gap Burden": ":.0f",
+            "Major Gap Count": True,
+        },
+        color_discrete_map={
+            "Base": "#00A19C",
+            "Key": "#20419A",
+            "Pacing": "#763F98",
+            "Emerging": "#FDB924",
+        },
+        size_max=45,
+    )
+
+    if not plot_dataframe.empty:
+        prevalence_median = (
+            plot_dataframe[
+                "Gap Prevalence %"
+            ].median()
+        )
+
+        severity_median = (
+            plot_dataframe[
+                "Average Gap Severity"
+            ].median()
+        )
+
+        figure.add_vline(
+            x=prevalence_median,
+            line_dash="dot",
+            line_color="#64748B",
+        )
+
+        figure.add_hline(
+            y=severity_median,
+            line_dash="dot",
+            line_color="#64748B",
+        )
+
+    figure.update_layout(
+        title="Competency Risk Matrix",
+        height=540,
+        xaxis_title=(
+            "Personnel with a Gap (%)"
+        ),
+        yaxis_title=(
+            "Average Gap Severity"
+        ),
+        legend_title="Category",
+        margin={
+            "l": 20,
+            "r": 20,
+            "t": 70,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+
+    figure.update_xaxes(
+        range=[0, 105],
+        showgrid=True,
+        gridcolor="#E8EDF2",
+    )
+
+    figure.update_yaxes(
+        rangemode="tozero",
+        showgrid=True,
+        gridcolor="#E8EDF2",
+    )
+
+    return figure
+
+def _create_top_competency_gap_chart(
+    risk_dataframe,
+    ranking_metric,
+):
+    """
+    Build ranked competency-gap chart.
+    """
+    ranking_map = {
+        "Affected personnel":
+            "Affected Personnel",
+        "Average gap severity":
+            "Average Gap Severity",
+        "Total gap burden":
+            "Gap Burden",
+        "Major-gap count":
+            "Major Gap Count",
+    }
+
+    metric_column = ranking_map[
+        ranking_metric
+    ]
+
+    plot_dataframe = (
+        risk_dataframe.sort_values(
+            metric_column,
+            ascending=False,
+        )
+        .head(12)
+        .sort_values(
+            metric_column,
+            ascending=True,
+        )
+        .copy()
+    )
+
+    plot_dataframe[
+        "Competency Label"
+    ] = (
+        plot_dataframe[
+            "Competency Code"
+        ]
+        + " - "
+        + plot_dataframe[
+            "Competency Name"
+        ]
+    )
+
+    figure = px.bar(
+        plot_dataframe,
+        x=metric_column,
+        y="Competency Label",
+        orientation="h",
+        color="Category",
+        text=metric_column,
+        color_discrete_map={
+            "Base": "#00A19C",
+            "Key": "#20419A",
+            "Pacing": "#763F98",
+            "Emerging": "#FDB924",
+        },
+        custom_data=[
+            "Affected Personnel",
+            "Gap Prevalence %",
+            "Average Gap Severity",
+            "Gap Burden",
+            "Major Gap Count",
+        ],
+    )
+
+    figure.update_traces(
+        texttemplate="%{x:.0f}",
+        textposition="outside",
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Affected personnel: "
+            "%{customdata,.0f}<br>"
+            "Gap prevalence: "
+            "%{customdata.0f}%<br>"
+            "Average severity: "
+            "%{customdata.2f}<br>"
+            "Gap burden: "
+            "%{customdata.0f}<br>"
+            "Major gaps: "
+            "%{customdata,.0f}"
+            "<extra></extra>"
+        ),
+    )
+
+    figure.update_layout(
+        title=(
+            f"Top Competency Gaps by "
+            f"{ranking_metric}"
+        ),
+        height=540,
+        xaxis_title=ranking_metric.title(),
+        yaxis_title=None,
+        legend_title="Category",
+        margin={
+            "l": 10,
+            "r": 50,
+            "t": 70,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+
+    figure.update_xaxes(
+        showgrid=True,
+        gridcolor="#E8EDF2",
+    )
+
+    return figure
+
+def _create_department_competency_heatmap(
+    detail_dataframe,
+    top_n,
+):
+    """
+    Build department by competency gap-rate heatmap.
+    """
+    assessed_detail = (
+        detail_dataframe[
+            detail_dataframe[
+                "Is Assessed"
+            ]
+        ]
+        .copy()
+    )
+
+    if assessed_detail.empty:
+        return None
+
+    assessed_detail[
+        "Has Gap"
+    ] = (
+        assessed_detail[
+            "Gap"
+        ] < 0
+    )
+
+    competency_gap_rates = (
+        assessed_detail
+        .groupby(
+            "Competency Code"
+        )[
+            "Has Gap"
+        ]
+        .mean()
+        .sort_values(
+            ascending=False
+        )
+    )
+
+    if top_n != "All":
+        selected_competencies = (
+            competency_gap_rates
+            .head(int(top_n))
+            .index
+            .tolist()
+        )
+    else:
+        selected_competencies = (
+            competency_gap_rates
+            .index
+            .tolist()
+        )
+
+    heatmap_source = (
+        assessed_detail[
+            assessed_detail[
+                "Competency Code"
+            ].isin(
+                selected_competencies
+            )
+        ]
+    )
+
+    heatmap_dataframe = (
+        heatmap_source
+        .groupby(
+            [
+                "Department",
+                "Competency Code",
+            ]
+        )[
+            "Has Gap"
+        ]
+        .mean()
+        .mul(100)
+        .unstack(
+            "Competency Code"
+        )
+        .reindex(
+            columns=selected_competencies
+        )
+    )
+
+    heatmap_dataframe = (
+        heatmap_dataframe.dropna(
+            how="all"
+        )
+    )
+
+    if heatmap_dataframe.empty:
+        return None
+
+    figure = go.Figure(
+        data=go.Heatmap(
+            z=heatmap_dataframe.values,
+            x=heatmap_dataframe.columns,
+            y=heatmap_dataframe.index,
+            zmin=0,
+            zmax=100,
+            colorscale=[
+                [0.0, "#E8F5F3"],
+                [0.5, "#FDB924"],
+                [1.0, "#C62828"],
+            ],
+            text=np.round(
+                heatmap_dataframe.values,
+                0,
+            ),
+            texttemplate="%{text:.0f}%",
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Competency: %{x}<br>"
+                "Personnel below target: "
+                "%{z:.0f}%"
+                "<extra></extra>"
+            ),
+            colorbar={
+                "title": "Below Target %",
+            },
+        )
+    )
+
+    figure.update_layout(
+        title=(
+            "Department by Competency Gap Rate"
+        ),
+        height=max(
+            420,
+            40
+            * len(
+                heatmap_dataframe.index
+            )
+            + 160,
+        ),
+        xaxis_title="Competency Code",
+        yaxis_title="Department",
+        margin={
+            "l": 20,
+            "r": 20,
+            "t": 70,
+            "b": 40,
+        },
+        paper_bgcolor="#FFFFFF",
+    )
+
+    return figure
+
+def _create_personnel_priority_scatter(
+    summary_dataframe: pd.DataFrame,
+) -> go.Figure | None:
+    """
+    Create the personnel readiness-versus-gap-burden chart.
+
+    X-axis:
+        Weighted readiness percentage
+
+    Y-axis:
+        Total gap burden
+
+    Bubble size:
+        Years in grade, with a minimum size of 1
+
+    Bubble color:
+        Readiness status
+    """
+    required_columns = [
+        "Name",
+        "Weighted Readiness %",
+        "Gap Burden",
+        "Readiness Status",
+    ]
+
+    missing_columns = [
+        column
+        for column in required_columns
+        if column not in summary_dataframe.columns
+    ]
+
+    if missing_columns:
+        return None
+
+    plot_dataframe = (
+        summary_dataframe[
+            summary_dataframe[
+                "Weighted Readiness %"
+            ].notna()
+            & summary_dataframe[
+                "Gap Burden"
+            ].notna()
+        ]
+        .copy()
+    )
+
+    if plot_dataframe.empty:
+        return None
+
+    # Plotly requires positive bubble sizes.
+    if "Years in Grade" in plot_dataframe.columns:
+        years_in_grade = pd.to_numeric(
+            plot_dataframe["Years in Grade"],
+            errors="coerce",
+        )
+    else:
+        years_in_grade = pd.Series(
+            0.0,
+            index=plot_dataframe.index,
+        )
+
+    plot_dataframe["Bubble Size"] = (
+        years_in_grade
+        .fillna(0)
+        .clip(lower=0)
+        .add(1)
+    )
+
+    # Ensure quantitative fields are numeric.
+    plot_dataframe[
+        "Weighted Readiness %"
+    ] = pd.to_numeric(
+        plot_dataframe[
+            "Weighted Readiness %"
+        ],
+        errors="coerce",
+    )
+
+    plot_dataframe[
+        "Gap Burden"
+    ] = pd.to_numeric(
+        plot_dataframe[
+            "Gap Burden"
+        ],
+        errors="coerce",
+    )
+
+    plot_dataframe = plot_dataframe.dropna(
+        subset=[
+            "Weighted Readiness %",
+            "Gap Burden",
+        ]
+    )
+
+    if plot_dataframe.empty:
+        return None
+
+    # Include only hover columns that actually exist.
+    optional_hover_columns = {
+        "Staff ID": True,
+        "Department": True,
+        "Staff Position": True,
+        "Current SG": True,
+        "Career Ruler": True,
+        "Target SG": True,
+        "Assessment Coverage %": ":.0f",
+        "Strict Readiness %": ":.0f",
+        "Major Gaps": True,
+        "Minor Gaps": True,
+        "Recommended Action": True,
+        "Bubble Size": False,
+    }
+
+    hover_data = {
+        column: formatting
+        for column, formatting
+        in optional_hover_columns.items()
+        if column in plot_dataframe.columns
+    }
+
+    figure = px.scatter(
+        plot_dataframe,
+        x="Weighted Readiness %",
+        y="Gap Burden",
+        size="Bubble Size",
+        color="Readiness Status",
+        hover_name="Name",
+        hover_data=hover_data,
+        color_discrete_map=(
+            READINESS_STATUS_COLORS
+        ),
+        category_orders={
+            "Readiness Status":
+                READINESS_STATUS_ORDER,
+        },
+        size_max=36,
+        opacity=0.82,
+    )
+
+    readiness_median = (
+        plot_dataframe[
+            "Weighted Readiness %"
+        ].median()
+    )
+
+    gap_burden_median = (
+        plot_dataframe[
+            "Gap Burden"
+        ].median()
+    )
+
+    if pd.notna(readiness_median):
+        figure.add_vline(
+            x=float(readiness_median),
+            line_dash="dot",
+            line_color="#64748B",
+            annotation_text="Median readiness",
+            annotation_position="top",
+        )
+
+    if pd.notna(gap_burden_median):
+        figure.add_hline(
+            y=float(gap_burden_median),
+            line_dash="dot",
+            line_color="#64748B",
+            annotation_text="Median gap burden",
+            annotation_position="top left",
+        )
+
+    # Add the formal readiness threshold separately.
+    figure.add_vline(
+        x=80,
+        line_dash="dash",
+        line_color="#00A19C",
+        annotation_text="80% readiness threshold",
+        annotation_position="bottom right",
+    )
+
+    figure.update_traces(
+        marker={
+            "line": {
+                "width": 1,
+                "color": "#FFFFFF",
+            },
+        },
+    )
+
+    figure.update_layout(
+        title={
+            "text": (
+                "<b>Personnel Readiness versus Gap Burden</b>"
+                "<br>"
+                "<sup>Bubble size represents years in grade</sup>"
+            ),
+            "x": 0.01,
+            "xanchor": "left",
+        },
+        height=560,
+        xaxis_title="Weighted Readiness (%)",
+        yaxis_title="Gap Burden",
+        legend_title="Readiness Status",
+        margin={
+            "l": 30,
+            "r": 20,
+            "t": 80,
+            "b": 50,
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        hoverlabel={
+            "bgcolor": "#FFFFFF",
+            "font": {
+                "color": "#0F172A",
+            },
+        },
+    )
+
+    figure.update_xaxes(
+        range=[0, 105],
+        showgrid=True,
+        gridcolor="#E8EDF2",
+        zeroline=False,
+    )
+
+    figure.update_yaxes(
+        rangemode="tozero",
+        showgrid=True,
+        gridcolor="#E8EDF2",
+        zeroline=False,
+    )
+
+    # This return must remain inside the function.
+    return figure
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -774,28 +4772,402 @@ def load_ruler_and_mappings():
     st.session_state.setdefault("timings", {})["ruler_map"] = duration
     return r_map, t_labels
 
-def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_assessment_report.pdf"):
-    """Create a PDF report for the selected competency assessment."""
-    from io import BytesIO
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+def export_to_pdf(
+    person_row,
+    target_sg,
+    df_gap,
+    metrics,
+    filename="individual_assessment_report.pdf",
+    selected_ruler=None,
+    summary_score=None,
+    cv_documents=None,
+    chart_images=None,
+    assessment_coverage=None,
+):
+    """
+    Generate a complete Individual Competency Assessment PDF.
 
-    if not isinstance(metrics, (tuple, list)) or len(metrics) < 2:
-        strict_readiness = 0.0
-        weighted_readiness = 0.0
-        category_readiness = {}
-    else:
-        strict_readiness = float(metrics[0]) if metrics[0] is not None else 0.0
-        weighted_readiness = float(metrics[1]) if metrics[1] is not None else 0.0
-        category_readiness = metrics[2] if len(metrics) > 2 else {}
+    Required inputs:
+        person_row:
+            Selected personnel pandas Series or dictionary.
+
+        target_sg:
+            Selected target salary grade.
+
+        df_gap:
+            Detailed competency-gap DataFrame.
+
+        metrics:
+            Tuple/list:
+                (
+                    strict_readiness,
+                    weighted_readiness,
+                    category_readiness,
+                )
+
+            Or dictionary:
+                {
+                    "strict_readiness": ...,
+                    "weighted_readiness": ...,
+                    "category_readiness": ...,
+                    "assessment_coverage": ...,
+                    "overall_status": ...,
+                }
+
+    Optional inputs:
+        selected_ruler:
+            Career Ruler currently selected on the page.
+
+        summary_score:
+            Latest SummaryScore SQLAlchemy record.
+
+        cv_documents:
+            DataFrame returned by db_ops.get_cv_documents().
+
+        chart_images:
+            Dictionary of BytesIO PNG images:
+                {
+                    "actual_vs_target": BytesIO(...),
+                    "competency_radar": BytesIO(...),
+                    "assessment_history": BytesIO(...),
+                }
+    """
+    from datetime import datetime
+    from io import BytesIO
+    from xml.sax.saxutils import escape
+
+    import pandas as pd
+
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import (
+        ParagraphStyle,
+        getSampleStyleSheet,
+    )
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        Image,
+        KeepTogether,
+        PageBreak,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    # =========================================================================
+    # LOCAL FORMATTERS
+    # =========================================================================
+
+    def safe_text(
+        value,
+        fallback="Not Available",
+    ):
+        if value is None:
+            return fallback
+
+        try:
+            if pd.isna(value):
+                return fallback
+        except (TypeError, ValueError):
+            pass
+
+        cleaned = str(value).strip()
+
+        if cleaned.casefold() in {
+            "",
+            "none",
+            "nan",
+            "nat",
+        }:
+            return fallback
+
+        return cleaned
+
+    def safe_html_text(
+        value,
+        fallback="Not Available",
+    ):
+        return escape(
+            safe_text(
+                value,
+                fallback,
+            )
+        )
+
+    def format_number(
+        value,
+        decimal_places=1,
+        fallback="N/A",
+    ):
+        numeric_value = pd.to_numeric(
+            value,
+            errors="coerce",
+        )
+
+        if pd.isna(numeric_value):
+            return fallback
+
+        return f"{float(numeric_value):.{decimal_places}f}"
+
+    def format_percentage(
+        value,
+        decimal_places=0,
+    ):
+        numeric_value = pd.to_numeric(
+            value,
+            errors="coerce",
+        )
+
+        if pd.isna(numeric_value):
+            return "N/A"
+
+        return f"{float(numeric_value):.{decimal_places}f}"
+
+    def format_date(
+        value,
+        fallback="Not Available",
+    ):
+        parsed_date = pd.to_datetime(
+            value,
+            errors="coerce",
+        )
+
+        if pd.isna(parsed_date):
+            return fallback
+
+        return parsed_date.strftime(
+            "%d %b %Y"
+        )
+
+    # =========================================================================
+    # READINESS METRICS
+    # =========================================================================
+
+    strict_readiness = 0.0
+    weighted_readiness = 0.0
+    category_readiness = {}
+    supplied_overall_status = None
+
+    if isinstance(metrics, dict):
+        strict_readiness = float(
+            metrics.get(
+                "strict_readiness",
+                0.0,
+            )
+            or 0.0
+        )
+
+        weighted_readiness = float(
+            metrics.get(
+                "weighted_readiness",
+                0.0,
+            )
+            or 0.0
+        )
+
+        category_readiness = (
+            metrics.get(
+                "category_readiness",
+                {},
+            )
+            or {}
+        )
+
+        supplied_overall_status = (
+            metrics.get(
+                "overall_status"
+            )
+        )
+
+        if assessment_coverage is None:
+            assessment_coverage = (
+                metrics.get(
+                    "assessment_coverage"
+                )
+            )
+
+    elif (
+        isinstance(
+            metrics,
+            (tuple, list),
+        )
+        and len(metrics) >= 2
+    ):
+        strict_readiness = float(
+            metrics[0]
+            if metrics[0] is not None
+            else 0.0
+        )
+
+        weighted_readiness = float(
+            metrics[1]
+            if metrics[1] is not None
+            else 0.0
+        )
+
+        if len(metrics) > 2:
+            category_readiness = (
+                metrics[2]
+                or {}
+            )
 
     if df_gap is None:
-        df_gap = pd.DataFrame(columns=["Status"])
+        df_gap = pd.DataFrame(
+            columns=[
+                "Category",
+                "Competency Code",
+                "Competency Name",
+                "Actual Score",
+                "Target Score",
+                "Gap",
+                "Status",
+            ]
+        )
+    else:
+        df_gap = df_gap.copy()
+
+    if assessment_coverage is None:
+        if (
+            not df_gap.empty
+            and "Actual Score"
+            in df_gap.columns
+        ):
+            assessment_coverage = (
+                df_gap[
+                    "Actual Score"
+                ]
+                .notna()
+                .mean()
+                * 100
+            )
+        else:
+            assessment_coverage = 0.0
+
+    met_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "✅ Met"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    minor_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "🟡 Minor Gap"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    major_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "🔴 Major Gap"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    unassessed_count = (
+        int(
+            (
+                df_gap["Status"]
+                == "Not Assessed"
+            ).sum()
+        )
+        if "Status" in df_gap.columns
+        else 0
+    )
+
+    if supplied_overall_status:
+        overall_status = str(
+            supplied_overall_status
+        )
+
+    elif assessment_coverage < 40:
+        overall_status = "Not Assessed"
+
+    elif (
+        weighted_readiness >= 80
+        and strict_readiness >= 75
+        and assessment_coverage >= 90
+        and major_count == 0
+    ):
+        overall_status = "Ready"
+
+    elif (
+        weighted_readiness >= 65
+        and assessment_coverage >= 75
+        and major_count <= 2
+    ):
+        overall_status = "Near Ready"
+
+    else:
+        overall_status = (
+            "Development Required"
+        )
+
+    # =========================================================================
+    # PERSONNEL DATA
+    # =========================================================================
+
+    employee_name = safe_text(
+        person_row.get("Name")
+    )
+
+    staff_id = safe_text(
+        person_row.get("Staff ID")
+    )
+
+    current_sg = safe_text(
+        person_row.get("SG")
+    )
+
+    staff_position = safe_text(
+        person_row.get(
+            "Staff Position"
+        )
+    )
+
+    department = safe_text(
+        person_row.get("Department")
+    )
+
+    section_name = safe_text(
+        person_row.get(
+            "Section Name"
+        )
+    )
+
+    current_assignment = safe_text(
+        person_row.get(
+            "Current Assignment / Loc:"
+        )
+    )
+
+    ruler_type = safe_text(
+        selected_ruler
+        or person_row.get("Ruler Type")
+        or person_row.get("ruler_type")
+    )
+
+    # =========================================================================
+    # DOCUMENT INITIALIZATION
+    # =========================================================================
 
     pdf_buffer = BytesIO()
+
     document = SimpleDocTemplate(
         pdf_buffer,
         pagesize=landscape(A4),
@@ -803,134 +5175,1739 @@ def export_to_pdf(person_row, target_sg, df_gap, metrics, filename="individual_a
         leftMargin=12 * mm,
         topMargin=12 * mm,
         bottomMargin=12 * mm,
+        title=(
+            "Individual Competency "
+            "Assessment Report"
+        ),
+        author=(
+            "DPE Reservoir Engineering"
+        ),
+        subject=(
+            f"Competency Assessment - "
+            f"{employee_name}"
+        ),
     )
 
     styles = getSampleStyleSheet()
+
+    styles.add(
+        ParagraphStyle(
+            name="ReportTitle",
+            parent=styles["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=20,
+            leading=24,
+            textColor=colors.HexColor(
+                "#003D5C"
+            ),
+            spaceAfter=4 * mm,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="SectionHeading",
+            parent=styles["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=13,
+            leading=16,
+            textColor=colors.HexColor(
+                "#003D5C"
+            ),
+            spaceBefore=3 * mm,
+            spaceAfter=2 * mm,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="CardLabel",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=10,
+            textColor=colors.HexColor(
+                "#20419A"
+            ),
+            spaceAfter=2,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="CardValue",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor(
+                "#17223B"
+            ),
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="SmallBody",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=11,
+            textColor=colors.HexColor(
+                "#17223B"
+            ),
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="TableBody",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=7.5,
+            leading=9.5,
+            alignment=TA_LEFT,
+        )
+    )
+
+    styles.add(
+        ParagraphStyle(
+            name="SmallCenter",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=7,
+            leading=9,
+            alignment=TA_CENTER,
+        )
+    )
+
     elements = []
 
-    employee_name = person_row.get("Name") or "Not Available"
-    staff_id = person_row.get("Staff ID") or "Not Available"
-    current_sg = person_row.get("SG") or "Not Available"
-    staff_position = person_row.get("Staff Position") or "Not Available"
-    department = person_row.get("Department") or "Not Available"
-    ruler_type = person_row.get("Ruler Type") or "Not Available"
+    # =========================================================================
+    # REPORT HEADER
+    # =========================================================================
 
-    elements.append(Paragraph("Individual Competency Assessment Report", styles["Title"]))
-    elements.append(Spacer(1, 8))
+    elements.append(
+        Paragraph(
+            (
+                "DPE Reservoir Engineering "
+                "Talent Profile Dashboard"
+            ),
+            styles["ReportTitle"],
+        )
+    )
 
-    personnel_data = [
-        ["Employee", str(employee_name), "Staff ID", str(staff_id)],
-        ["Position", str(staff_position), "Current Grade", str(current_sg)],
-        ["Department", str(department), "Target Grade", str(target_sg)],
-        ["Career Ruler", str(ruler_type), "Report Date", datetime.now().strftime("%d %b %Y")],
+    elements.append(
+        Paragraph(
+            (
+                "Individual Competency "
+                "Assessment Report"
+            ),
+            styles["SectionHeading"],
+        )
+    )
+
+    elements.append(
+        Spacer(
+            1,
+            2 * mm,
+        )
+    )
+
+    # =========================================================================
+    # PERSONNEL PROFILE CARDS
+    # =========================================================================
+
+    profile_card_data = [
+        [
+            Paragraph(
+                (
+                    "<b>Employee</b><br/>"
+                    f"{safe_html_text(employee_name)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Staff ID</b><br/>"
+                    f"{safe_html_text(staff_id)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Position / Grade</b><br/>"
+                    f"{safe_html_text(staff_position)} "
+                    f"({safe_html_text(current_sg)})"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Career Ruler / Target</b><br/>"
+                    f"{safe_html_text(ruler_type)} / "
+                    f"{safe_html_text(target_sg)}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
+        [
+            Paragraph(
+                (
+                    "<b>Department / Section</b><br/>"
+                    f"{safe_html_text(department)} / "
+                    f"{safe_html_text(section_name)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Current Assignment</b><br/>"
+                    f"{safe_html_text(current_assignment)}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Employment / Years in PETRONAS</b><br/>"
+                    f"{safe_html_text(person_row.get('Employment Category'))} / "
+                    f"{safe_html_text(person_row.get('Years in PET'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Report Date</b><br/>"
+                    f"{datetime.now():%d %b %Y}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
     ]
 
-    personnel_table = Table(personnel_data, colWidths=[32 * mm, 70 * mm, 32 * mm, 70 * mm])
-    personnel_table.setStyle(
+    profile_table = Table(
+        profile_card_data,
+        colWidths=[
+            66 * mm,
+            42 * mm,
+            66 * mm,
+            75 * mm,
+        ],
+    )
+
+    profile_table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#00A19C")),
-                ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#00A19C")),
-                ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-                ("TEXTCOLOR", (2, 0), (2, -1), colors.white),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("PADDING", (0, 0), (-1, -1), 6),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, -1),
+                    colors.HexColor(
+                        "#F7FAFC"
+                    ),
+                ),
+                (
+                    "BOX",
+                    (0, 0),
+                    (-1, -1),
+                    0.6,
+                    colors.HexColor(
+                        "#CBD5E1"
+                    ),
+                ),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.4,
+                    colors.HexColor(
+                        "#E2E8F0"
+                    ),
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE",
+                ),
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
             ]
         )
     )
-    elements.append(personnel_table)
-    elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph("Readiness Summary", styles["Heading2"]))
+    elements.append(profile_table)
+    elements.append(
+        Spacer(
+            1,
+            5 * mm,
+        )
+    )
 
-    met_count = int((df_gap["Status"] == "✅ Met").sum()) if "Status" in df_gap.columns else 0
-    minor_count = int((df_gap["Status"] == "🟡 Minor Gap").sum()) if "Status" in df_gap.columns else 0
-    major_count = int((df_gap["Status"] == "🔴 Major Gap").sum()) if "Status" in df_gap.columns else 0
-    unassessed_count = int((df_gap["Status"] == "Not Assessed").sum()) if "Status" in df_gap.columns else 0
+    # =========================================================================
+    # TALENT PROFILE
+    # =========================================================================
 
-    readiness_data = [
-        ["Weighted Readiness", "Strict Readiness", "Met", "Minor Gaps", "Major Gaps", "Not Assessed"],
-        [f"{weighted_readiness:.1f}%", f"{strict_readiness:.1f}%", str(met_count), str(minor_count), str(major_count), str(unassessed_count)],
+    elements.append(
+        Paragraph(
+            "Talent Profile",
+            styles["SectionHeading"],
+        )
+    )
+
+    talent_profile_data = [
+        [
+            Paragraph(
+                (
+                    "<b>Strength</b><br/>"
+                    f"{safe_html_text(person_row.get('Strength'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Interest</b><br/>"
+                    f"{safe_html_text(person_row.get('Interest'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Background</b><br/>"
+                    f"{safe_html_text(person_row.get('Background') or person_row.get('Sub-Disciplines'))}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
+        [
+            Paragraph(
+                (
+                    "<b>Potential</b><br/>"
+                    f"{safe_html_text(person_row.get('Potential'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Recommendation</b><br/>"
+                    f"{safe_html_text(person_row.get('Recommendation'))}"
+                ),
+                styles["SmallBody"],
+            ),
+            Paragraph(
+                (
+                    "<b>Resource / SME</b><br/>"
+                    f"{safe_html_text(person_row.get('Resource/SME'))}"
+                ),
+                styles["SmallBody"],
+            ),
+        ],
     ]
 
-    readiness_table = Table(readiness_data, repeatRows=1)
+    talent_profile_table = Table(
+        talent_profile_data,
+        colWidths=[
+            83 * mm,
+            83 * mm,
+            83 * mm,
+        ],
+    )
+
+    talent_profile_table.setStyle(
+        TableStyle(
+            [
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, -1),
+                    colors.HexColor(
+                        "#F8FAFC"
+                    ),
+                ),
+                (
+                    "BOX",
+                    (0, 0),
+                    (-1, -1),
+                    0.6,
+                    colors.HexColor(
+                        "#CBD5E1"
+                    ),
+                ),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.4,
+                    colors.HexColor(
+                        "#E2E8F0"
+                    ),
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "TOP",
+                ),
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8,
+                ),
+            ]
+        )
+    )
+
+    elements.append(
+        talent_profile_table
+    )
+
+    elements.append(
+        Spacer(
+            1,
+            5 * mm,
+        )
+    )
+
+    # =========================================================================
+    # READINESS SUMMARY
+    # =========================================================================
+
+    elements.append(
+        Paragraph(
+            "Readiness Summary",
+            styles["SectionHeading"],
+        )
+    )
+
+    readiness_data = [
+        [
+            "Weighted",
+            "Strict",
+            "Coverage",
+            "Status",
+            "Met",
+            "Minor",
+            "Major",
+            "Not Assessed",
+        ],
+        [
+            format_percentage(
+                weighted_readiness
+            ),
+            format_percentage(
+                strict_readiness
+            ),
+            format_percentage(
+                assessment_coverage
+            ),
+            overall_status,
+            str(met_count),
+            str(minor_count),
+            str(major_count),
+            str(unassessed_count),
+        ],
+    ]
+
+    readiness_table = Table(
+        readiness_data,
+        repeatRows=1,
+        colWidths=[
+            29 * mm,
+            29 * mm,
+            29 * mm,
+            38 * mm,
+            22 * mm,
+            22 * mm,
+            22 * mm,
+            30 * mm,
+        ],
+    )
+
     readiness_table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("PADDING", (0, 0), (-1, -1), 6),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.HexColor(
+                        "#20419A"
+                    ),
+                ),
+                (
+                    "TEXTCOLOR",
+                    (0, 0),
+                    (-1, 0),
+                    colors.white,
+                ),
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold",
+                ),
+                (
+                    "FONTNAME",
+                    (0, 1),
+                    (-1, 1),
+                    "Helvetica-Bold",
+                ),
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "CENTER",
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE",
+                ),
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.HexColor(
+                        "#CBD5E1"
+                    ),
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7,
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7,
+                ),
             ]
         )
     )
+
     elements.append(readiness_table)
-    elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph(f"Competency Gap Analysis to {target_sg}", styles["Heading2"]))
+    # =========================================================================
+    # CATEGORY READINESS
+    # =========================================================================
 
-    gap_table_data: list[list[object]] = [["Category", "Code", "Competency", "Actual", "Target", "Gap", "Status"]]
-    for _, row in df_gap.iterrows():
-        actual_value = row.get("Actual Score")
-        target_value = row.get("Target Score")
-        gap_value = row.get("Gap")
+    if category_readiness:
+        elements.append(
+            Spacer(
+                1,
+                4 * mm,
+            )
+        )
 
-        actual_display = str(int(round(float(actual_value)))) if pd.notna(actual_value) else "-"
-        target_display = str(int(round(float(target_value)))) if pd.notna(target_value) else "-"
-        gap_display = str(int(round(float(gap_value)))) if pd.notna(gap_value) else "-"
+        category_headers = []
+        category_values = []
 
+        for category_name in [
+            "Base",
+            "Key",
+            "Pacing",
+            "Emerging",
+        ]:
+            if (
+                category_name
+                in category_readiness
+            ):
+                category_headers.append(
+                    category_name
+                )
+
+                category_values.append(
+                    format_percentage(
+                        category_readiness[
+                            category_name
+                        ]
+                    )
+                )
+
+        if category_headers:
+            category_table = Table(
+                [
+                    category_headers,
+                    category_values,
+                ],
+                colWidths=[
+                    45 * mm
+                    for _ in category_headers
+                ],
+            )
+
+            category_table.setStyle(
+                TableStyle(
+                    [
+                        (
+                            "BACKGROUND",
+                            (0, 0),
+                            (-1, 0),
+                            colors.HexColor(
+                                "#00A19C"
+                            ),
+                        ),
+                        (
+                            "TEXTCOLOR",
+                            (0, 0),
+                            (-1, 0),
+                            colors.white,
+                        ),
+                        (
+                            "FONTNAME",
+                            (0, 0),
+                            (-1, -1),
+                            "Helvetica-Bold",
+                        ),
+                        (
+                            "ALIGN",
+                            (0, 0),
+                            (-1, -1),
+                            "CENTER",
+                        ),
+                        (
+                            "GRID",
+                            (0, 0),
+                            (-1, -1),
+                            0.5,
+                            colors.HexColor(
+                                "#CBD5E1"
+                            ),
+                        ),
+                        (
+                            "TOPPADDING",
+                            (0, 0),
+                            (-1, -1),
+                            6,
+                        ),
+                        (
+                            "BOTTOMPADDING",
+                            (0, 0),
+                            (-1, -1),
+                            6,
+                        ),
+                    ]
+                )
+            )
+
+            elements.append(
+                category_table
+            )
+
+    # =========================================================================
+    # ALL 15 SUMMARY SCORES
+    # =========================================================================
+
+    if summary_score is not None:
+        elements.append(
+            Spacer(
+                1,
+                5 * mm,
+            )
+        )
+
+        elements.append(
+            Paragraph(
+                (
+                    "Staff, Principal and "
+                    "Custodian Summary Scores"
+                ),
+                styles["SectionHeading"],
+            )
+        )
+
+        summary_table_data = [
+            [
+                "Level",
+                "Base",
+                "Keys",
+                "Pacing",
+                "Emerging",
+                "CTI",
+            ],
+            [
+                "Staff",
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_base",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_keys",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_pacing",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_emerging",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "staff_cti",
+                        None,
+                    ),
+                    2,
+                ),
+            ],
+            [
+                "Principal",
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_base",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_keys",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_pacing",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_emerging",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "principal_cti",
+                        None,
+                    ),
+                    2,
+                ),
+            ],
+            [
+                "Custodian",
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_base",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_keys",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_pacing",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_emerging",
+                        None,
+                    ),
+                    2,
+                ),
+                format_number(
+                    getattr(
+                        summary_score,
+                        "custodian_cti",
+                        None,
+                    ),
+                    2,
+                ),
+            ],
+        ]
+
+        summary_table = Table(
+            summary_table_data,
+            repeatRows=1,
+            colWidths=[
+                40 * mm,
+                34 * mm,
+                34 * mm,
+                34 * mm,
+                40 * mm,
+                34 * mm,
+            ],
+        )
+
+        summary_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor(
+                            "#003D5C"
+                        ),
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white,
+                    ),
+                    (
+                        "BACKGROUND",
+                        (0, 1),
+                        (0, -1),
+                        colors.HexColor(
+                            "#E8F5F3"
+                        ),
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 1),
+                        (0, -1),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "ALIGN",
+                        (1, 0),
+                        (-1, -1),
+                        "CENTER",
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "MIDDLE",
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.HexColor(
+                            "#CBD5E1"
+                        ),
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        6,
+                    ),
+                ]
+            )
+        )
+
+        elements.append(
+            summary_table
+        )
+
+    # =========================================================================
+    # CHARTS
+    # =========================================================================
+
+    if chart_images:
+        valid_chart_images = {
+            chart_name: chart_buffer
+            for chart_name, chart_buffer
+            in chart_images.items()
+            if chart_buffer is not None
+        }
+
+        if valid_chart_images:
+            elements.append(
+                PageBreak()
+            )
+
+            elements.append(
+                Paragraph(
+                    "Competency Visualizations",
+                    styles["SectionHeading"],
+                )
+            )
+
+            actual_chart_buffer = (
+                valid_chart_images.get(
+                    "actual_vs_target"
+                )
+            )
+
+            radar_chart_buffer = (
+                valid_chart_images.get(
+                    "competency_radar"
+                )
+            )
+
+            chart_row = []
+
+            if actual_chart_buffer is not None:
+                actual_chart_buffer.seek(0)
+
+                chart_row.append(
+                    Image(
+                        actual_chart_buffer,
+                        width=158 * mm,
+                        height=79 * mm,
+                    )
+                )
+
+            if radar_chart_buffer is not None:
+                radar_chart_buffer.seek(0)
+
+                chart_row.append(
+                    Image(
+                        radar_chart_buffer,
+                        width=92 * mm,
+                        height=79 * mm,
+                    )
+                )
+
+            if chart_row:
+                if len(chart_row) == 1:
+                    chart_widths = [
+                        220 * mm
+                    ]
+                else:
+                    chart_widths = [
+                        160 * mm,
+                        92 * mm,
+                    ]
+
+                chart_table = Table(
+                    [chart_row],
+                    colWidths=chart_widths,
+                )
+
+                chart_table.setStyle(
+                    TableStyle(
+                        [
+                            (
+                                "VALIGN",
+                                (0, 0),
+                                (-1, -1),
+                                "MIDDLE",
+                            ),
+                            (
+                                "ALIGN",
+                                (0, 0),
+                                (-1, -1),
+                                "CENTER",
+                            ),
+                            (
+                                "LEFTPADDING",
+                                (0, 0),
+                                (-1, -1),
+                                2,
+                            ),
+                            (
+                                "RIGHTPADDING",
+                                (0, 0),
+                                (-1, -1),
+                                2,
+                            ),
+                        ]
+                    )
+                )
+
+                elements.append(
+                    chart_table
+                )
+
+            history_chart_buffer = (
+                valid_chart_images.get(
+                    "assessment_history"
+                )
+            )
+
+            if history_chart_buffer is not None:
+                elements.append(
+                    Spacer(
+                        1,
+                        5 * mm,
+                    )
+                )
+
+                elements.append(
+                    Paragraph(
+                        "Assessment History",
+                        styles["SectionHeading"],
+                    )
+                )
+
+                history_chart_buffer.seek(0)
+
+                elements.append(
+                    Image(
+                        history_chart_buffer,
+                        width=230 * mm,
+                        height=105 * mm,
+                    )
+                )
+
+    # =========================================================================
+    # PRIORITY DEVELOPMENT AREAS
+    # =========================================================================
+
+    priority_gap_df = pd.DataFrame()
+
+    if (
+        not df_gap.empty
+        and "Status" in df_gap.columns
+    ):
+        priority_gap_df = (
+            df_gap[
+                df_gap["Status"].isin(
+                    [
+                        "🔴 Major Gap",
+                        "🟡 Minor Gap",
+                    ]
+                )
+            ]
+            .copy()
+        )
+
+    if not priority_gap_df.empty:
+        elements.append(
+            PageBreak()
+        )
+
+        elements.append(
+            Paragraph(
+                "Priority Development Areas",
+                styles["SectionHeading"],
+            )
+        )
+
+        priority_table_data = [
+            [
+                "Category",
+                "Code",
+                "Competency",
+                "Actual",
+                "Target",
+                "Gap",
+                "Status",
+            ]
+        ]
+
+        for _, gap_row in (
+            priority_gap_df.iterrows()
+        ):
+            priority_table_data.append(
+                [
+                    safe_text(
+                        gap_row.get("Category"),
+                        "",
+                    ),
+                    safe_text(
+                        gap_row.get(
+                            "Competency Code"
+                        ),
+                        "",
+                    ),
+                    Paragraph(
+                        safe_html_text(
+                            gap_row.get(
+                                "Competency Name"
+                            ),
+                            "",
+                        ),
+                        styles["TableBody"],
+                    ),
+                    format_number(
+                        gap_row.get(
+                            "Actual Score"
+                        ),
+                        1,
+                        "-",
+                    ),
+                    format_number(
+                        gap_row.get(
+                            "Target Score"
+                        ),
+                        1,
+                        "-",
+                    ),
+                    format_number(
+                        gap_row.get("Gap"),
+                        1,
+                        "-",
+                    ),
+                    safe_text(
+                        gap_row.get("Status"),
+                        "",
+                    ),
+                ]
+            )
+
+        priority_table = Table(
+            priority_table_data,
+            repeatRows=1,
+            colWidths=[
+                24 * mm,
+                14 * mm,
+                102 * mm,
+                18 * mm,
+                18 * mm,
+                18 * mm,
+                34 * mm,
+            ],
+        )
+
+        priority_style = [
+            (
+                "BACKGROUND",
+                (0, 0),
+                (-1, 0),
+                colors.HexColor(
+                    "#763F98"
+                ),
+            ),
+            (
+                "TEXTCOLOR",
+                (0, 0),
+                (-1, 0),
+                colors.white,
+            ),
+            (
+                "FONTNAME",
+                (0, 0),
+                (-1, 0),
+                "Helvetica-Bold",
+            ),
+            (
+                "ALIGN",
+                (0, 0),
+                (1, -1),
+                "CENTER",
+            ),
+            (
+                "ALIGN",
+                (3, 1),
+                (-1, -1),
+                "CENTER",
+            ),
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "MIDDLE",
+            ),
+            (
+                "GRID",
+                (0, 0),
+                (-1, -1),
+                0.4,
+                colors.HexColor(
+                    "#CBD5E1"
+                ),
+            ),
+            (
+                "TOPPADDING",
+                (0, 0),
+                (-1, -1),
+                5,
+            ),
+            (
+                "BOTTOMPADDING",
+                (0, 0),
+                (-1, -1),
+                5,
+            ),
+        ]
+
+        for table_row_number, (
+            _,
+            gap_row,
+        ) in enumerate(
+            priority_gap_df.iterrows(),
+            start=1,
+        ):
+            if (
+                gap_row.get("Status")
+                == "🔴 Major Gap"
+            ):
+                status_background = (
+                    colors.HexColor(
+                        "#FFCDD2"
+                    )
+                )
+            else:
+                status_background = (
+                    colors.HexColor(
+                        "#FFF2CC"
+                    )
+                )
+
+            priority_style.append(
+                (
+                    "BACKGROUND",
+                    (
+                        6,
+                        table_row_number,
+                    ),
+                    (
+                        6,
+                        table_row_number,
+                    ),
+                    status_background,
+                )
+            )
+
+        priority_table.setStyle(
+            TableStyle(
+                priority_style
+            )
+        )
+
+        elements.append(
+            priority_table
+        )
+
+    # =========================================================================
+    # FULL COMPETENCY BREAKDOWN
+    # =========================================================================
+
+    elements.append(
+        PageBreak()
+    )
+
+    elements.append(
+        Paragraph(
+            (
+                f"Full Competency Gap Analysis "
+                f"to {safe_html_text(target_sg)}"
+            ),
+            styles["SectionHeading"],
+        )
+    )
+
+    gap_table_data = [
+        [
+            "Category",
+            "Code",
+            "Competency",
+            "Actual",
+            "Target",
+            "Gap",
+            "Status",
+        ]
+    ]
+
+    for _, gap_row in df_gap.iterrows():
         gap_table_data.append(
             [
-                str(row.get("Category", "")),
-                str(row.get("Competency Code", "")),
-                Paragraph(str(row.get("Competency Name", "")), styles["BodyText"]),
-                actual_display,
-                target_display,
-                gap_display,
-                str(row.get("Status", "")),
+                safe_text(
+                    gap_row.get("Category"),
+                    "",
+                ),
+                safe_text(
+                    gap_row.get(
+                        "Competency Code"
+                    ),
+                    "",
+                ),
+                Paragraph(
+                    safe_html_text(
+                        gap_row.get(
+                            "Competency Name"
+                        ),
+                        "",
+                    ),
+                    styles["TableBody"],
+                ),
+                format_number(
+                    gap_row.get(
+                        "Actual Score"
+                    ),
+                    1,
+                    "-",
+                ),
+                format_number(
+                    gap_row.get(
+                        "Target Score"
+                    ),
+                    1,
+                    "-",
+                ),
+                format_number(
+                    gap_row.get("Gap"),
+                    1,
+                    "-",
+                ),
+                safe_text(
+                    gap_row.get("Status"),
+                    "",
+                ),
             ]
         )
 
-    gap_table = Table(gap_table_data, repeatRows=1, colWidths=[25 * mm, 16 * mm, 90 * mm, 18 * mm, 18 * mm, 18 * mm, 30 * mm])
+    gap_table = Table(
+        gap_table_data,
+        repeatRows=1,
+        colWidths=[
+            24 * mm,
+            14 * mm,
+            102 * mm,
+            18 * mm,
+            18 * mm,
+            18 * mm,
+            34 * mm,
+        ],
+    )
+
     gap_table_style = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003D5C")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN", (0, 0), (1, -1), "CENTER"),
-        ("ALIGN", (3, 1), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
-        ("PADDING", (0, 0), (-1, -1), 4),
+        (
+            "BACKGROUND",
+            (0, 0),
+            (-1, 0),
+            colors.HexColor(
+                "#003D5C"
+            ),
+        ),
+        (
+            "TEXTCOLOR",
+            (0, 0),
+            (-1, 0),
+            colors.white,
+        ),
+        (
+            "FONTNAME",
+            (0, 0),
+            (-1, 0),
+            "Helvetica-Bold",
+        ),
+        (
+            "ALIGN",
+            (0, 0),
+            (1, -1),
+            "CENTER",
+        ),
+        (
+            "ALIGN",
+            (3, 1),
+            (-1, -1),
+            "CENTER",
+        ),
+        (
+            "VALIGN",
+            (0, 0),
+            (-1, -1),
+            "MIDDLE",
+        ),
+        (
+            "GRID",
+            (0, 0),
+            (-1, -1),
+            0.4,
+            colors.HexColor(
+                "#CBD5E1"
+            ),
+        ),
+        (
+            "TOPPADDING",
+            (0, 0),
+            (-1, -1),
+            4,
+        ),
+        (
+            "BOTTOMPADDING",
+            (0, 0),
+            (-1, -1),
+            4,
+        ),
     ]
 
-    for table_row_number, (_, row) in enumerate(df_gap.iterrows(), start=1):
-        status = row.get("Status")
-        if status == "✅ Met":
-            background = colors.HexColor("#C8E6C9")
-        elif status == "🟡 Minor Gap":
-            background = colors.HexColor("#FFF9C4")
-        elif status == "🔴 Major Gap":
-            background = colors.HexColor("#FFCDD2")
-        else:
-            background = colors.HexColor("#E0E0E0")
-        gap_table_style.append(("BACKGROUND", (6, table_row_number), (6, table_row_number), background))
+    for table_row_number, (
+        _,
+        gap_row,
+    ) in enumerate(
+        df_gap.iterrows(),
+        start=1,
+    ):
+        status = gap_row.get(
+            "Status"
+        )
 
-    gap_table.setStyle(TableStyle(gap_table_style))
+        if status == "✅ Met":
+            status_background = (
+                colors.HexColor(
+                    "#C8E6C9"
+                )
+            )
+
+        elif status == "🟡 Minor Gap":
+            status_background = (
+                colors.HexColor(
+                    "#FFF2CC"
+                )
+            )
+
+        elif status == "🔴 Major Gap":
+            status_background = (
+                colors.HexColor(
+                    "#FFCDD2"
+                )
+            )
+
+        else:
+            status_background = (
+                colors.HexColor(
+                    "#E0E0E0"
+                )
+            )
+
+        gap_table_style.append(
+            (
+                "BACKGROUND",
+                (
+                    6,
+                    table_row_number,
+                ),
+                (
+                    6,
+                    table_row_number,
+                ),
+                status_background,
+            )
+        )
+
+    gap_table.setStyle(
+        TableStyle(
+            gap_table_style
+        )
+    )
+
     elements.append(gap_table)
 
-    if category_readiness:
-        elements.append(Spacer(1, 12))
-        elements.append(Paragraph("Category Readiness", styles["Heading2"]))
-        summary_lines = [f"{name}: {value:.1f}%" for name, value in category_readiness.items()]
-        elements.append(Paragraph(", ".join(summary_lines), styles["BodyText"]))
+    # =========================================================================
+    # CV AND SUPPORTING DOCUMENTS
+    # =========================================================================
 
-    document.build(elements)
+    if (
+        cv_documents is not None
+        and not cv_documents.empty
+    ):
+        elements.append(
+            Spacer(
+                1,
+                5 * mm,
+            )
+        )
+
+        elements.append(
+            Paragraph(
+                "CV and Supporting Documents",
+                styles["SectionHeading"],
+            )
+        )
+
+        document_table_data = [
+            [
+                "File Name",
+                "Type",
+                "Modified",
+                "SharePoint Link",
+            ]
+        ]
+
+        for _, document_row in (
+            cv_documents.iterrows()
+        ):
+            sharepoint_url = safe_text(
+                document_row.get(
+                    "SharePoint URL"
+                ),
+                "",
+            )
+
+            if sharepoint_url.lower().startswith(
+                (
+                    "https://",
+                    "http://",
+                )
+            ):
+                link_value = Paragraph(
+                    (
+                        f'{escape(sharepoint_url)}'
+                        "Open in SharePoint"
+                        "</link>"
+                    ),
+                    styles["SmallBody"],
+                )
+            else:
+                link_value = Paragraph(
+                    "No valid link",
+                    styles["SmallBody"],
+                )
+
+            document_table_data.append(
+                [
+                    Paragraph(
+                        safe_html_text(
+                            document_row.get(
+                                "CV File Name"
+                            ),
+                            "Document",
+                        ),
+                        styles["SmallBody"],
+                    ),
+                    safe_text(
+                        document_row.get(
+                            "File Type"
+                        ),
+                        "N/A",
+                    ),
+                    format_date(
+                        document_row.get(
+                            "Modified Date"
+                        )
+                    ),
+                    link_value,
+                ]
+            )
+
+        document_table = Table(
+            document_table_data,
+            repeatRows=1,
+            colWidths=[
+                120 * mm,
+                25 * mm,
+                37 * mm,
+                60 * mm,
+            ],
+        )
+
+        document_table.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor(
+                            "#20419A"
+                        ),
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white,
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "ALIGN",
+                        (1, 0),
+                        (-1, -1),
+                        "CENTER",
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "MIDDLE",
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.4,
+                        colors.HexColor(
+                            "#CBD5E1"
+                        ),
+                    ),
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "LEFTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                    (
+                        "RIGHTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        5,
+                    ),
+                ]
+            )
+        )
+
+        elements.append(
+            document_table
+        )
+
+    # =========================================================================
+    # FOOTER
+    # =========================================================================
+
+    def add_page_footer(
+        canvas,
+        report_document,
+    ):
+        canvas.saveState()
+
+        canvas.setStrokeColor(
+            colors.HexColor(
+                "#CBD5E1"
+            )
+        )
+
+        canvas.line(
+            12 * mm,
+            9 * mm,
+            landscape(A4)[0]
+            - 12 * mm,
+            9 * mm,
+        )
+
+        canvas.setFont(
+            "Helvetica",
+            7,
+        )
+
+        canvas.setFillColor(
+            colors.HexColor(
+                "#64748B"
+            )
+        )
+
+        canvas.drawString(
+            12 * mm,
+            5 * mm,
+            (
+                "DPE Reservoir Engineering "
+                "Talent Profile Dashboard"
+            ),
+        )
+
+        canvas.drawRightString(
+            landscape(A4)[0]
+            - 12 * mm,
+            5 * mm,
+            (
+                f"Page "
+                f"{report_document.page}"
+            ),
+        )
+
+        canvas.restoreState()
+
+    document.build(
+        elements,
+        onFirstPage=add_page_footer,
+        onLaterPages=add_page_footer,
+    )
+
     pdf_buffer.seek(0)
+
     return pdf_buffer
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. INITIALIZE SESSION STATE SAFELY
@@ -1026,45 +7003,54 @@ if page == "🏠 Dashboard Home":
     permanent_count = ( df["Employment Category"] .astype(str) .str.strip() .str.upper() .eq("PERMANENT") .sum() if "Employment Category" in df.columns else 0 )
 
     with c1: st.metric( "Total Personnel", int(total_personnel),)
-    with c2: st.metric( "Male", int(male_count), )
-    with c3: st.metric( "Female", int(female_count), )
-    with c4: st.metric( "CDH Employees", int(cdh_count),)
-    with c5: st.metric( "Permanent Employees", int(permanent_count),)
-
-    st.markdown("---")
-
-    
+    with c3: st.metric( "CDH Employees", int(cdh_count),)
+    with c2: st.metric( "Permanent Employees", int(permanent_count),)
+    with c4: st.metric( "Male", int(male_count), )
+    with c5: st.metric( "Female", int(female_count), )
 
 # =========================================================================
 # NATIONALITY DISTRIBUTION
 # =========================================================================
 
     st.markdown("---")
-    st.subheader("🌏 RE Around The Globe")
-    nationality_map_df, unmatched_nationalities = (prepare_nationality_map_data(df))
+    st.subheader("🌐 RE Nationalities")
+    
+    nationality_map_df, unmatched_nationalities = prepare_nationality_map_data(df)
+
+    # --- TOP 5 NATIONALITIES METRIC CARDS ---
+    if not nationality_map_df.empty:
+        # Get the top 5 sorted by Personnel Count
+        top_nationalities = nationality_map_df.head(5)
+        
+        # Create dynamic columns based on how many top nationalities exist (up to 5)
+        num_cols = min(len(top_nationalities), 5)
+        if num_cols > 0:
+            cols = st.columns(num_cols)
+            for i, (_, row) in enumerate(top_nationalities.iterrows()):
+                with cols[i]:
+                    st.metric(
+                        label=row["Nationality"], 
+                        value=int(row["Personnel Count"]),
+                        delta=row["Representation Display"] # Shows percentage representation as a neat subtitle delta
+                    )
+    # ----------------------------------------
 
     if nationality_map_df.empty:
-        st.info(
-            "No valid nationality data is available "
-            "for the geographical visualization.")
+        st.info("No valid nationality data is available for the geographical visualization.")
     else:
-        nationality_fig = (
-            create_nationality_bubble_map(
-                nationality_map_df))
-
-        st.plotly_chart( nationality_fig, use_container_width=True, config={
-                "displaylogo": False,
+        nationality_fig = create_nationality_bubble_map(nationality_map_df)
+        
+        st.plotly_chart(
+            nationality_fig, 
+            use_container_width=True, 
+            config={
+                "displaylogo": True,
                 "scrollZoom": True,
                 "responsive": True,
-                "modeBarButtonsToRemove": [
-                    "lasso2d",
-                    "select2d",
-                ],
+                "modeBarButtonsToRemove": ["lasso2d", "select2d"],
                 "toImageButtonOptions": {
                     "format": "png",
-                    "filename": (
-                        "RE_personnel_nationality_map"
-                    ),
+                    "filename": "RE_personnel_nationality_map",
                     "height": 800,
                     "width": 1400,
                     "scale": 2,
@@ -1073,90 +7059,233 @@ if page == "🏠 Dashboard Home":
         )
 
         st.caption(
-            "Bubble size and color represent the number of "
-            "personnel associated with each nationality. "
+            "Bubble size and color represent the number of personnel associated with each nationality. "
             "Markers use approximate country-centroid coordinates."
         )
 
     if unmatched_nationalities:
-        with st.expander(
-            "⚠️ Nationality values requiring mapping"
-        ):
-            st.write(
-                unmatched_nationalities
-            )
+        with st.expander("⚠️ Nationality values requiring mapping"):
+            st.write(unmatched_nationalities)
     
     # =========================================================================
     # ROW 1: POSITION & DEPARTMENT DISTRIBUTIONS
     # =========================================================================
-    col1, col2 = st.columns(2)
+    col1, col2,= st.columns(2)
+
     with col1:
-        st.subheader("📊 Position Distribution")
-        pos = df["Staff Position"].value_counts().reset_index()
-        pos.columns = ["Staff Position", "Count"]
-        fig = px.bar(pos, x="Staff Position", y="Count", color="Staff Position",
-                     color_discrete_sequence=px.colors.sequential.Teal,
-                     labels={"Count": "Number of Personnel"})
-        fig.update_layout(showlegend=False, height=400, margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Staff Position", yaxis_title="Number of Personnel")
-        fig.update_traces(textposition="inside", texttemplate="%{y}",)
-        st.plotly_chart(fig, use_container_width=True)
- 
-    with col2:
-        st.subheader("🏢 Department Distribution")
+        st.subheader("📊 Position Breakdown")
         
-        # 1. Count occurrences
-        dept = df["Department"].value_counts().reset_index()
-        dept.columns = ["Department", "Count"]
-        
-        # 2. Combine departments < 3% into "Others"
-        total_count = dept["Count"].sum()
-        threshold = 0.03  # 3% threshold
-        
-        dept["Department"] = dept.apply(
-            lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "Others",
-            axis=1
-        )
-        
-        # Regroup and sum the counts for "Others"
-        dept_grouped = dept.groupby("Department", as_index=False)["Count"].sum()
-        # use list for 'by' to satisfy type checkers that expect Sequence[str]
-        dept_grouped = dept_grouped.sort_values(by=["Count"], ascending=False)
-        
-        # 3. Create Donut Chart
-        fig = px.pie(
-            dept_grouped, 
-            names="Department", 
-            values="Count", 
-            hole=0.2,
-            color_discrete_sequence=px.colors.sequential.RdBu
-        )
-        
-        # 4. Format labels inside slices
-        fig.update_traces(
-            textposition="inside",
-            textinfo="percent+label",
-            hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Share: %{percent}"
-        )
-        
-        # 5. Clean layout & margins
-        fig.update_layout(
-            height=400,
-            margin=dict(t=20, b=20, l=10, r=10),
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.1,
-                xanchor="center",
-                x=0.5,
-                title_text=""
+        if "SG" in df.columns and "Employment Category" in df.columns:
+            df_chart = df.copy()
+            
+            # Map SG to Position Bracket using your config dictionary
+            df_chart["Position_Bracket"] = df_chart["SG"].map(config.SG_TO_POSITION_BRACKET).fillna("Other")
+            
+            # Clean employment category
+            df_chart["Clean_Emp_Category"] = (
+                df_chart["Employment Category"]
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .map({"PERMANENT": "Permanent", "CDH": "CDH"})
+                .fillna("Other")
             )
-        )
+            
+            # Group by Position Bracket and Employment Category
+            pos_emp = (
+                df_chart.groupby(["Position_Bracket", "Clean_Emp_Category"])
+                .size()
+                .unstack(fill_value=0)
+            )
+            
+            # Reindex using the official hierarchy order from config
+            present_pos = [p for p in config.POSITION_HIERARCHY_ORDER if p in pos_emp.index]
+            pos_emp = pos_emp.reindex(present_pos)
+
+            for col_name in ["Permanent", "CDH"]:
+                if col_name not in pos_emp.columns:
+                    pos_emp[col_name] = 0
+
+            # Calculate total sum per position bracket for the top label
+            pos_emp["Total"] = pos_emp["Permanent"] + pos_emp["CDH"]
+
+            plot_df = pos_emp.reset_index()
+
+            fig = px.bar(
+                plot_df, 
+                x="Position_Bracket", 
+                y=["Permanent", "CDH"],
+                barmode="stack", 
+                title="", 
+                labels={"Position_Bracket": "Position", "value": "Personnel Count", "variable": "Type"},
+                category_orders={"Position_Bracket": present_pos},
+                color_discrete_map={"Permanent": "#20419A", "CDH": "#00A19C"}
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df["Position_Bracket"],
+                    y=plot_df["Total"],
+                    text=plot_df["Total"],
+                    mode="text",
+                    textposition="top center",
+                    textfont=dict(size=12, color="black", family="sans-serif"),
+                    showlegend=False,
+                    hoverinfo="skip"
+                )
+            )
+            
+            fig.update_layout(
+                height=380, 
+                margin=dict(l=10, r=10, t=30, b=20), 
+                xaxis_title="", 
+                yaxis_title="Count",
+                legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center", title_text="")
+            )
+            # Show individual segment counts inside the bars
+            fig.update_traces(textposition="inside", texttemplate="%{y}", selector=dict(type="bar"))
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Required data columns missing.")
+
+    with col2:
+        st.subheader("📊 Salary Grade Distribution by Employment Type")
         
-        st.plotly_chart(fig, use_container_width=True)
+        if "SG" in df.columns and "Employment Category" in df.columns:
+            # 1. Clean and normalize the employment category column
+            df_chart = df.copy()
+            df_chart["Clean_Emp_Category"] = (
+                df_chart["Employment Category"]
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .map({"PERMANENT": "Permanent", "CDH": "CDH"})
+                .fillna("Other")
+            )
+            
+            # 2. Use groupby and unstack to guarantee "SG" is kept explicitly as a column name
+            sg_emp = (
+                df_chart.groupby(["SG", "Clean_Emp_Category"])
+                .size()
+                .unstack(fill_value=0)
+            )
+            
+            # 3. Sort using your official SG hierarchy from config
+            official_sg_order = config.SG_HIERARCHY
+            present_sgs = [g for g in official_sg_order if g in sg_emp.index]
+            
+            sg_emp = sg_emp.reindex(present_sgs)
+
+            # Ensure both Permanent and CDH columns exist FIRST to prevent crashes
+            for col_name in ["Permanent", "CDH"]:
+                if col_name not in sg_emp.columns:
+                    sg_emp[col_name] = 0
+
+            # Calculate total sum per salary grade AFTER columns are guaranteed to exist
+            sg_emp["Total"] = sg_emp["Permanent"] + sg_emp["CDH"]
+
+            # Reset index safely so "SG" is guaranteed to be a column name
+            plot_df = sg_emp.reset_index()
+
+            # 4. Build stacked bar chart
+            fig = px.bar(
+                plot_df, 
+                x="SG", 
+                y=["Permanent", "CDH"],
+                barmode="stack", 
+                title="", 
+                labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Employment Type"},
+                category_orders={"SG": present_sgs},
+                color_discrete_map={"Permanent": "#20419A", "CDH": "#00A19C"}
+            )
+
+            # Fixed: Changed "Position_Bracket" to "SG" to match the x-axis column
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df["SG"],
+                    y=plot_df["Total"],
+                    text=plot_df["Total"],
+                    mode="text",
+                    textposition="top center",
+                    textfont=dict(size=12, color="black", family="sans-serif"),
+                    showlegend=False,
+                    hoverinfo="skip"
+                )
+            )
+            
+            fig.update_layout(
+                height=400, 
+                margin=dict(l=10, r=20, t=40, b=20), 
+                xaxis_title="Salary Grade", 
+                yaxis_title="Number of Personnel",
+                legend=dict(title="Employment Type", yanchor="top", y=0.99, xanchor="right", x=0.99),
+                yaxis=dict(range=[0, plot_df["Total"].max() * 1.15] if not plot_df.empty else [0, 10]) # Adds headroom for top totals
+            )
+            
+            # Show stacked counts inside the bars
+            fig.update_traces(textposition="inside", texttemplate="%{y}", selector=dict(type="bar")) 
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Salary Grade or Employment Category data not available for this visualization.")
     #=====================================================
     # SECTION NAME DISTRIBUTION
     # =====================================================
-    col3, col4 = st.columns(2)
+    col3, col4, col5 = st.columns(3)
+
+    with col5:
+            st.subheader("🏢 Department Distribution")
+            
+            # 1. Count occurrences
+            dept = df["Department"].value_counts().reset_index()
+            dept.columns = ["Department", "Count"]
+            
+            # 2. Combine departments < threshold into "Others"
+            total_count = dept["Count"].sum()
+            threshold = 0.027  # 2% threshold
+            
+            dept["Department"] = dept.apply(
+                lambda row: row["Department"] if (row["Count"] / total_count) >= threshold else "International",
+                axis=1
+            )
+            
+            # Regroup and sum the counts for "Others"
+            dept_grouped = dept.groupby("Department", as_index=False)["Count"].sum()
+            dept_grouped = dept_grouped.sort_values(by=["Count"], ascending=False)
+            
+            # 3. Create Donut Chart
+            fig = px.pie(
+                dept_grouped, 
+                names="Department", 
+                values="Count", 
+                hole=0.2,
+                color_discrete_sequence=px.colors.sequential.Plasma
+            )
+            
+            # 4. Format labels inside slices
+            fig.update_traces(
+                textposition="inside",
+                textinfo="percent+label",
+                hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Share: %{percent}"
+            )
+            
+            # 5. Clean layout & margins
+            fig.update_layout(
+                height=500,
+                margin=dict(t=20, b=20, l=10, r=10),
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.1,
+                    xanchor="center",
+                    x=0.5,
+                    title_text=""
+                )
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+
     with col3:
         st.subheader("🌏 Section Distribution")
         
@@ -1182,14 +7311,8 @@ if page == "🏠 Dashboard Home":
         
         fig = px.scatter(
             section_final,
-            x="Count",
-            y="y_position",
-            size="Count",
-            color="Count",
-            hover_name="Section Name",
-            color_continuous_scale="Viridis",
-            size_max=80
-        )
+            x="Count", y="y_position", size="Count", color="Count",
+            hover_name="Section Name", color_discrete_sequence=px.colors.qualitative.G10, size_max=75)
         
         fig.update_traces(
             hovertemplate="<b>%{hovertext}</b><br>Personnel: %{x}<extra></extra>"
@@ -1197,20 +7320,8 @@ if page == "🏠 Dashboard Home":
         
         fig.update_layout(
             height=500,
-            showlegend=False,
-            coloraxis_showscale=False,
-            margin=dict(l=10, r=20, t=40, b=20),
-            xaxis_title="Number of Personnel",
-            yaxis_title="",
-            yaxis=dict(
-                tickmode="array",
-                tickvals=list(range(len(section_final))),  # ✅ Fixed
-                ticktext=section_final["Section Name"].tolist(),  # ✅ Fixed
-                showgrid=False
-            ),
-            hovermode="closest",
-            
-        )
+            showlegend=False, coloraxis_showscale=False, margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Number of Personnel", yaxis_title="",
+            yaxis=dict( tickmode="array", tickvals=list(range(len(section_final))), ticktext=section_final["Section Name"].tolist(), showgrid=False),hovermode="closest",)
         
         st.plotly_chart(fig, use_container_width=True)
 
@@ -1218,30 +7329,34 @@ if page == "🏠 Dashboard Home":
     # CURRENT ASSIGNMENT DISTRIBUTION
     # =====================================================
     with col4:
-        st.subheader("🌏 Current Assignment Distribution")
+        st.subheader("🏢 Office Location Distribution")
 
-        assignment = df["Current Assignment / Loc:"].value_counts()
+        # 1. Count all values and reset index directly
+        assignment_df = df["Current Location:"].value_counts().reset_index()
 
-        top10 = assignment.head(10)
-        others = assignment.iloc[10:].sum()
+        # 2. Rename columns and sort (ascending puts the largest bar at the top)
+        assignment_df.columns = ["Current Assignment", "Count"]
+        assignment_df = assignment_df.sort_values("Count", ascending=True)
 
-        assignment = pd.concat([ top10,  pd.Series({"Others": others}) ]).reset_index()
-        assignment.columns = ["Current Assignment", "Count"]
+        # 3. Dynamic height to prevent squishing (Minimum 500px, adds 25px per row)
+        chart_height = max(500, len(assignment_df) * 25)
 
-        assignment = assignment.sort_values("Count", ascending=True)
-
-        fig = px.bar( assignment, x="Count", y="Current Assignment", orientation="h",
-            text="Count", color="Count", color_continuous_scale="Viridis",)
+        # 4. Build the chart
+        fig = px.bar(
+            assignment_df, 
+            x="Count", 
+            y="Current Assignment", orientation="h", text="Count",  color="Count", color_continuous_scale="Emrld")
 
         fig.update_traces(
             textposition="outside",
             hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>"
         )
 
-        fig.update_layout( height=500, showlegend=False, coloraxis_showscale=False,
-                          margin=dict(l=10, r=20, t=40, b=20), xaxis_title="Number of Personnel", yaxis_title="",)
+        fig.update_layout(
+            height=chart_height,  # Applied dynamic height here
+            showlegend=False, coloraxis_showscale=False, margin=dict(l=10, r=30, t=40, b=20), xaxis_title="Number of Personnel",  yaxis_title="")
+        
         st.plotly_chart(fig, use_container_width=True)
-   
  
     # =========================================================================
     # ROW 2: GENDER DISTRIBUTION & GRADE DISTRIBUTION
@@ -1268,7 +7383,7 @@ if page == "🏠 Dashboard Home":
                 names="Gender",
                 values="Count",
                 hole=0.35,
-                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"},  # Blue for Male, Orange for Female
+                color_discrete_map={"Male": "#20419a", "Female": "#763f98"},  # Blue for Male, Orange for Female
                 labels={"Count": "Number"}
             )
             fig.update_traces(
@@ -1290,8 +7405,13 @@ if page == "🏠 Dashboard Home":
             # Create pivot table: grades × gender
             sg_gender = pd.crosstab(df["SG"], df["Gender"])
             
-            # Rename columns to readable labels
-            sg_gender.columns = sg_gender.columns.map({"M": "Male", "F": "Female"})
+            # Rename columns to readable labels if they exist
+            rename_dict = {}
+            if "M" in sg_gender.columns:
+                rename_dict["M"] = "Male"
+            if "F" in sg_gender.columns:
+                rename_dict["F"] = "Female"
+            sg_gender = sg_gender.rename(columns=rename_dict)
             
             # Sort by numeric grade including UPTREX then P1..P10
             order = ["UPTREX"] + [f"P{i}" for i in range(1, 11)]
@@ -1303,11 +7423,18 @@ if page == "🏠 Dashboard Home":
             age_by_grade = age_by_grade[age_by_grade["SG"].isin(present)]
             age_by_grade = age_by_grade.set_index("SG").reindex(present).reset_index()
 
+            # Identify which gender columns actually exist to prevent errors in px.bar
+            available_gender_cols = [col for col in ["Male", "Female"] if col in sg_gender.columns]
+
             # Create stacked bar chart
             fig = px.bar(
-                sg_gender.reset_index(), x="SG", y=["Male", "Female"],
-                barmode="stack", title="", labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
-                color_discrete_map={"Male": "#1f77b4", "Female": "#ff7f0e"}
+                sg_gender.reset_index(), 
+                x="SG", 
+                y=available_gender_cols,
+                barmode="stack", 
+                title="", 
+                labels={"SG": "Salary Grade", "value": "Number of Personnel", "variable": "Gender"},
+                color_discrete_map={"Male": "#20419a", "Female": "#763f98"}
             )
 
             # Add average age as a line on secondary y-axis
@@ -1317,7 +7444,7 @@ if page == "🏠 Dashboard Home":
                     y=age_by_grade["avg_age"],
                     name="Average Age",
                     mode="lines+markers",
-                    marker=dict(color="#2ca02c", size=8),
+                    marker=dict(color="#bfd730", size=8),
                     yaxis="y2",
                 )
             )
@@ -1327,20 +7454,16 @@ if page == "🏠 Dashboard Home":
                 yaxis_title="Number of Personnel",
                 height=400,
                 hovermode="x unified",
-                legend=dict(title="Gender", yanchor="top", y=0.99, xanchor="right", x=0.99),
-                yaxis2=dict(
-                    title="Average Age",
-                    overlaying="y",
-                    side="right",
-                ),
+                legend=dict( orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.1, title_text=""),
+                yaxis2=dict( title="Average Age", overlaying="y", side="right", showgrid=False),
             )
 
             # Show stacked counts inside bars
             fig.update_traces(textposition="auto", texttemplate="%{y}", selector=dict(type="bar"))
+            
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Grade or Gender data not available")
- 
         
     # =========================================================================
     # ROW 3: ADDITIONAL INSIGHTS (Optional)
@@ -1348,109 +7471,238 @@ if page == "🏠 Dashboard Home":
 
     st.subheader("📈 Age vs Salary Grade Analysis")
 
+    # 1. Custom Hover Card Generator (No Overall_avg)
+    def create_hover_text(row):
+        html = f"<b>{row.get('Name', 'Unknown')}</b><br>"
+        html += f"<i>{row.get('Staff Position', 'N/A')}</i><br>"
+        html += (
+            f"<span style='color: gray;'>{row.get('Department', 'N/A')}</span><br>"
+        )
+
+        # Age formatting (whole number)
+        age = row.get("Age", "N/A")
+        try:
+            age_display = f"{float(age):.0f}" if pd.notna(age) else "N/A"
+        except (ValueError, TypeError):
+            age_display = age
+
+        html += f"<b>Age:</b> {age_display} | <b>Salary Grade:</b> {row.get('SG', 'N/A')}<br>"
+
+        # Experience formatting (2 decimal places)
+        if pd.notna(row.get("Years in RE Experience")):
+            html += f"<b>RE Experience:</b> {float(row['Years in RE Experience']):.2f} Years<br>"
+        if pd.notna(row.get("Years in PET")):
+            html += f"<b>PET Experience:</b> {float(row['Years in PET']):.2f} Years<br>"
+
+        return html
+
+    # --- STREAMLIT UI ---
+
+    #draggble ui 
+
+    min_pet = float(df["Years in PET"].fillna(0).min())
+    max_pet = float(df["Years in PET"].fillna(0).max())
+    min_re = float(df["Years of RE Experience"].fillna(0).min())
+    max_re = float(df["Years of RE Experience"].fillna(0).max())
+
+    # Filter Section
     c1, c2, c3 = st.columns(3)
-    with c1: f_name = st.multiselect("Filter by Personnel", sorted(df["Name"].dropna().unique()), key="dash_name")
-    with c2: f_unit = st.multiselect("Filter by Unit Name", sorted(df["Unit Name"].dropna().unique()), key="dash_unit1")
-    with c3: f_pos = st.multiselect("Filter by Position", sorted(df["Staff Position"].dropna().unique()), key="dash_pos1")
-    
-    tab2d, tab3d = st.tabs([ "📊 Career Distribution (2D)", "🌐 Career Progression (3D)" ])
-    
+    with c1:
+        f_name = st.multiselect(
+            "Filter by Personnel",
+            sorted(df["Name"].dropna().unique()),
+            key="dash_name",
+        )
+    with c2:
+        f_unit = st.multiselect(
+            "Filter by Unit Name",
+            sorted(df["Unit Name"].dropna().unique()),
+            key="dash_unit1",
+        )
+    with c3:
+        f_pos = st.multiselect(
+            "Filter by Position",
+            sorted(df["Staff Position"].dropna().unique()),
+            key="dash_pos1",
+        )
+
+    c4, c5 = st.columns(2)
+
+    with c4 : 
+            f_pet_range = st.slider("Filter by Years in PETRONAS: ", 
+                                    min_value=min_pet,max_value=max_pet, 
+                                    value =(min_pet, max_pet), 
+                                    step=1.0, 
+                                    key="dash_pet_range")
+    with c5: 
+            f_re_range = st.slider("Filter by Years in RE Experience", 
+                                   min_value=min_re, 
+                                   max_value=max_re, 
+                                   value=(min_re, max_re), 
+                                   step = 1.0, 
+                                   key="dash_re_range")
+
+    tab2d, tab3d = st.tabs(
+        ["📊 Career Distribution (2D)", "🌐 Career Progression (3D)"]
+    )
+
+    # Apply Filters
     fdf1 = df.copy()
-    if f_name: fdf1 = fdf1[fdf1["Name"].isin(f_name)]
-    if f_unit: fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
-    if f_pos: fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
-        
-    sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8","P9", "P10" ]
-                
+    if f_name:
+        fdf1 = fdf1[fdf1["Name"].isin(f_name)]
+    if f_unit:
+        fdf1 = fdf1[fdf1["Unit Name"].isin(f_unit)]
+    if f_pos:
+        fdf1 = fdf1[fdf1["Staff Position"].isin(f_pos)]
+
+    fdf1 = fdf1[
+        (fdf1["Years in PET"].fillna(0) >= f_pet_range[0]) & 
+        (fdf1["Years in PET"].fillna(0) <= f_pet_range[1])]
+
+    fdf1 = fdf1[
+        (fdf1["Years of RE Experience"].fillna(0) >= f_re_range[0]) & 
+        (fdf1["Years of RE Experience"].fillna(0) <= f_re_range[1])]
+
+    sg_order = [ "UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
     scatter_df2 = an.scatter_age_vs_grade(fdf1)
-        
+
+    # ============================================================
+    # RE EXPERIENCE — COLOR + BUBBLE SIZE
+    # ============================================================
+
+    # Use the ACTUAL column name from your dataframe
+    re_exp_col = "Years of RE Experience"
+
+    color_col = None
+    size_col = None
+
+    if re_exp_col in scatter_df2.columns:
+
+        # Ensure numeric
+        scatter_df2[re_exp_col] = pd.to_numeric(
+            scatter_df2[re_exp_col],
+            errors="coerce"
+        )
+
+        # --------------------------------------------------------
+        # 1. Create RE Experience Tier for COLOR
+        # --------------------------------------------------------
+
+        bins = [-float("inf"), 2, 5, 10, 15, float("inf")]
+
+        labels = [
+            "< 2 Yrs",
+            "2 - 5 Yrs",
+            "5 - 10 Yrs",
+            "10 - 15 Yrs",
+            "15+ Yrs"
+        ]
+
+        scatter_df2["RE Experience Tier"] = pd.cut(
+            scatter_df2[re_exp_col],
+            bins=bins,
+            labels=labels,
+            right=False
+        )
+
+        # Handle missing values
+        scatter_df2["RE Experience Tier"] = ( scatter_df2["RE Experience Tier"] .astype(object) .where(scatter_df2[re_exp_col].notna(), "Unknown / Unspecified"))
+        color_col = "RE Experience Tier"
+
+        # --------------------------------------------------------
+        # 2. Use EXACT RE Experience for BUBBLE SIZE
+        # --------------------------------------------------------
+
+        scatter_df2["RE Experience Bubble Size"] = ( scatter_df2[re_exp_col] .fillna(0).clip(lower=0))
+        size_col = "RE Experience Bubble Size"
+
+    else:
+
+        st.warning(f"'{re_exp_col}' is not available in the scatter dataset. "
+            "RE Experience cannot be used for colour or bubble size.")
+
+    # Attach HTML Hover String
+    scatter_df2["Beautiful_Hover"] = scatter_df2.apply(create_hover_text, axis=1)
+
+    # --- 2D TAB ---
     with tab2d:
         st.info(
             """
             **Purpose**
-            This chart compares **Age** against **Salary Grade (SG)**.
+            This chart compares **Age** against **Salary Grade (SG)**. 
+            Each color in the legend represents **Years in RE Experience**.
             """
         )
-
-        scatter_df2 = scatter_age_vs_grade(df)
-        
-        # Determine size column
-        size_col = None
-        if "Years in RE Experience" in scatter_df2.columns:
-            size_col = "Years in RE Experience"
-        elif "Years in PET" in scatter_df2.columns:
-            size_col = "Years in PET"
-        
-        # Build hover data with existing columns only
-        hover_cols = ["Name", "Staff Position", "Department"]
-        if "Years in PET" in scatter_df2.columns:
-            hover_cols.append("Years in PET")
-        hover_cols = [c for c in hover_cols if c in scatter_df2.columns]
 
         fig = px.scatter(
             scatter_df2,
             x="Age",
             y="SG",
-            color="Overall_avg" if "Overall_avg" in scatter_df2.columns else None,
+            color=color_col,
             size=size_col,
-            hover_data=hover_cols,
-            category_orders={"SG": ["UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]},
-            color_continuous_scale="Viridis",
+            size_max=40,
+            custom_data=["Beautiful_Hover"],  # Custom HTML injection
+            category_orders={
+            "SG": sg_order,
+            "RE Experience Tier": ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs", "Unknown / Unspecified"]},
+            color_discrete_sequence=px.colors.qualitative.Bold,  # High-contrast colorful legend palette
             title="Age vs Salary Grade",
         )
 
-        fig.update_traces(marker=dict(opacity=0.8, line=dict(width=1, color="white")))
-        fig.update_layout(height=700, xaxis_title="Age", yaxis_title="Salary Grade", plot_bgcolor="white")
+        fig.update_traces(
+            hovertemplate="%{customdata[0]}<extra></extra>",  # Replaces messy hover with formatted HTML card
+            marker=dict(opacity=0.85, line=dict(width=1, color="white")),
+        )
+        fig.update_layout(
+            height=700,
+            xaxis_title="Age",
+            yaxis_title="Salary Grade",
+            plot_bgcolor="#FFFFFF",
+            legend_title_text="RE Experience",
+        )
         st.plotly_chart(fig, use_container_width=True, key="scatter_2d_age_sg")
 
-    with tab3d:
-        scatter_df2 = scatter_age_vs_grade(df)
-        
-        # Determine size column
-        size_col_3d = None
-        if "Years in RE Experience" in scatter_df2.columns:
-            size_col_3d = "Years in RE Experience"
-        elif "Years in PET" in scatter_df2.columns:
-            size_col_3d = "Years in PET"
-        
-        # Build hover data with existing columns only
-        hover_cols = ["Name", "Staff Position", "Department"]
-        if "Years in PET" in scatter_df2.columns:
-            hover_cols.append("Years in PET")
-        if "Overall_avg" in scatter_df2.columns:
-            hover_cols.append("Overall_avg")
-        hover_cols = [c for c in hover_cols if c in scatter_df2.columns]
 
-        fig = px.scatter_3d(
+    # --- 3D TAB ---
+    with tab3d:
+        fig_3d = px.scatter_3d(
             scatter_df2,
             x="Age",
             y="SG",
-            z="Years in PET",
-            color="Overall_avg" if "Overall_avg" in scatter_df2.columns else None,
-            size=size_col_3d,
-            hover_data=hover_cols,
-            category_orders={"SG": ["UPTREX", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]},
-            color_continuous_scale="Viridis",
+            z="Years of RE Experience",
+            color=color_col,
+            size=size_col,
+            custom_data=["Beautiful_Hover"],  # Custom HTML injection
+            category_orders={
+                        "SG": sg_order,
+                        "RE Experience Tier": ["< 2 Yrs", "2 - 5 Yrs", "5 - 10 Yrs", "10 - 15 Yrs", "15+ Yrs", "Unknown / Unspecified"]},
+            color_discrete_sequence=px.colors.qualitative.Bold,
             title="Career Progression Landscape",
         )
-        
-        fig.update_traces(marker=dict(opacity=0.8, line=dict(width=1, color="white")))
-        fig.update_layout(
+
+        fig_3d.update_traces(
+            hovertemplate="%{customdata[0]}<extra></extra>",
+            marker=dict(opacity=0.85, line=dict(width=1, color="white")),
+        )
+        fig_3d.update_layout(
             height=800,
+            legend_title_text="RE Experience",
             scene=dict(
                 xaxis=dict(title="Age"),
                 yaxis=dict(
                     title="Salary Grade",
                     tickmode="array",
-                    tickvals=list(range(1, 11)),
-                    ticktext=[f"P{i}" for i in range(1, 11)]
+                    tickvals=list(range(len(sg_order))),
+                    ticktext=sg_order,
                 ),
-                zaxis=dict(title="Years in PET")
-            )
+                zaxis=dict(title="Years in PET"),
+            ),
         )
 
-        st.plotly_chart(fig, use_container_width=True, key="scatter_3d_career_landscape")
-        st.markdown("---")
+        st.plotly_chart(
+            fig_3d, use_container_width=True, key="scatter_3d_career_landscape"
+        )
+    st.markdown("---")
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: PERSONNEL DIRECTORY
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1485,7 +7737,10 @@ elif page == "👥 Personnel Directory":
     st.caption(f"Showing {len(fdf)} of {len(df)} personnel")
     display_cols = ["Name", "Staff ID", "Staff Position", "SG", "Department",
                     "Age", "Chat Status", "Years in RE Experience"]
+
     display_cols = [c for c in display_cols if c in fdf.columns]
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
+    show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     show = fdf[display_cols].rename(columns={"Years in RE Experience": "Avg Score"})
     if "Avg Score" in show.columns:
         show["Avg Score"] = show["Avg Score"].round(2)
@@ -1923,7 +8178,7 @@ elif page == "🌡️ Competency Heatmap":
 
     metric5.metric(
         "Assessment Coverage",
-        f"{coverage_pct:.1f}%",
+        f"{coverage_pct:.0f}%",
         help=(
             "Populated competency-score cells divided "
             "by all possible cells in the displayed matrix."
@@ -2194,7 +8449,7 @@ elif page == "🌡️ Competency Heatmap":
                         "Assessment Coverage",
                         min_value=0,
                         max_value=100,
-                        format="%.1f%%",
+                        format="%.0f%%",
                     ),
                 "Assessed Competencies":
                     st.column_config.NumberColumn(
@@ -2353,7 +8608,7 @@ elif page == "🌡️ Competency Heatmap":
                         "Assessment Coverage",
                         min_value=0,
                         max_value=100,
-                        format="%.1f%%",
+                        format="%.0f%%",
                     ),
             },
         )
@@ -2481,872 +8736,2871 @@ elif page == "🌡️ Competency Heatmap":
                             "Assessment Coverage",
                             min_value=0,
                             max_value=100,
-                            format="%.1f%%",
+                            format="%.0f%%",
                         ),
                 },
             )
 
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE: INDIVIDUAL ASSESSMENT
-# ═════════════════════════════════════════════════════════════════════════════
 elif page == "👤 Individual Assessment & Talent Profile":
-    
-    st.title("👤 Individual Assessment & Talent Profile")
-    st.markdown("---")
-
-    # Assume these backend modules exist in your environment
-    # import analysis_engine as an
-    # import db_operations as db_ops
-    # from database import get_session, engine
 
     # =========================================================================
-    # HELPER FUNCTIONS (From Code #1 & #2)
+    # PAGE HEADER
     # =========================================================================
 
-    def _grade_rank(sg_value):
-        """Parse SG to get numeric rank (P1→1, P2→2, etc.)."""
-        if not sg_value or pd.isna(sg_value):
-            return None
-        match = re.match(r"^P(\d+)$", str(sg_value).strip().upper())
-        return int(match.group(1)) if match else None
-
-    def get_assessment_status(gap_value):
-        """Determine assessment status based on gap."""
-        if pd.isna(gap_value):
-            return "Not Assessed"
-        if gap_value >= 0:
-            return "✅ Met"
-        if gap_value >= -1:
-            return "🟡 Minor Gap"
-        return "🔴 Major Gap"
-
-    # --- Code #1 Engine Functions ---
-    def _build_target_gap_dataframe(person_row, target_sg, selected_ruler_requirements, tech_labels):
-        """Builds the gap analysis dataframe matching actual scores against a specific Target SG."""
-        target_reqs = selected_ruler_requirements.get(target_sg, {})
-        
-        data = []
-        # Base Competencies (B1-B12)
-        for i in range(1, 13):
-            comp_code = f"B{i}"
-            if comp_code in target_reqs:
-                actual = pd.to_numeric(person_row.get(comp_code), errors='coerce')
-                target = target_reqs[comp_code]
-                data.append({
-                    "Category": "Base",
-                    "Competency Code": comp_code,
-                    "Competency Name": tech_labels.get(comp_code, comp_code),
-                    "Actual Score": actual,
-                    "Target Score": target,
-                    "Gap": actual - target if pd.notna(actual) else np.nan
-                })
-                
-        # Key Competencies (K1-K5)
-        for i in range(1, 6):
-            comp_code = f"K{i}"
-            if comp_code in target_reqs:
-                actual = pd.to_numeric(person_row.get(comp_code), errors='coerce')
-                target = target_reqs[comp_code]
-                data.append({
-                    "Category": "Key",
-                    "Competency Code": comp_code,
-                    "Competency Name": tech_labels.get(comp_code, comp_code),
-                    "Actual Score": actual,
-                    "Target Score": target,
-                    "Gap": actual - target if pd.notna(actual) else np.nan
-                })
-
-        # Pacing Competencies (P1-P5)
-        for i in range(1, 6):
-            comp_code = f"P{i}"
-            if comp_code in target_reqs:
-                actual = pd.to_numeric(person_row.get(comp_code), errors='coerce')
-                target = target_reqs[comp_code]
-                data.append({
-                    "Category": "Pacing",
-                    "Competency Code": comp_code,
-                    "Competency Name": tech_labels.get(comp_code, comp_code),
-                    "Actual Score": actual,
-                    "Target Score": target,
-                    "Gap": actual - target if pd.notna(actual) else np.nan
-                })
-
-        # Emerging Competencies (E1-E2)
-        for i in range(1, 3):
-            comp_code = f"E{i}"
-            if comp_code in target_reqs:
-                actual = pd.to_numeric(person_row.get(comp_code), errors='coerce')
-                target = target_reqs[comp_code]
-                data.append({
-                    "Category": "Emerging",
-                    "Competency Code": comp_code,
-                    "Competency Name": tech_labels.get(comp_code, comp_code),
-                    "Actual Score": actual,
-                    "Target Score": target,
-                    "Gap": actual - target if pd.notna(actual) else np.nan
-                })
-                
-        df_gap = pd.DataFrame(data)
-        if not df_gap.empty:
-            df_gap["Status"] = df_gap["Gap"].apply(get_assessment_status)
-        return df_gap
-
-    def _calculate_readiness_metrics(df_gap):
-        """Calculates both strict (pass/fail) and weighted metrics from Code #1."""
-        if df_gap.empty:
-            return 0, 0, {}
-            
-        total_reqs = len(df_gap)
-        met_strict = len(df_gap[df_gap["Gap"] >= 0])
-        strict_readiness = (met_strict / total_reqs) * 100 if total_reqs > 0 else 0
-        
-        total_possible_score = df_gap["Target Score"].sum()
-        actual_capped = df_gap.apply(lambda row: min(row["Actual Score"], row["Target Score"]) if pd.notna(row["Actual Score"]) else 0, axis=1)
-        total_achieved_score = actual_capped.sum()
-        weighted_readiness = (total_achieved_score / total_possible_score) * 100 if total_possible_score > 0 else 0
-        
-        # Calculate readiness by category
-        cat_readiness = {}
-        for cat in ["Base", "Key", "Pacing", "Emerging"]:
-            cat_df = df_gap[df_gap["Category"] == cat]
-            if not cat_df.empty:
-                cat_total = cat_df["Target Score"].sum()
-                cat_achieved = cat_df.apply(lambda row: min(row["Actual Score"], row["Target Score"]) if pd.notna(row["Actual Score"]) else 0, axis=1).sum()
-                cat_readiness[cat] = (cat_achieved / cat_total) * 100 if cat_total > 0 else 0
-                
-        return strict_readiness, weighted_readiness, cat_readiness
-
-    # =========================================================================
-    # PAGE SETUP (Code #2 Layout)
-    # =========================================================================
-
-    # Personnel Selection (Code #2 Layout)
-    if df.empty:
-        st.error("No personnel data available.")
-        st.stop()
-
-    names = sorted(df["Name"].dropna().unique())
-    col_select = st.columns(1)[0]
-    with col_select:
-        selected_name = st.selectbox("Select Personnel", names, key="personnel_select")
-        person_row = df[df["Name"] == selected_name].iloc[0]
-
-    col_refresh = st.columns(1)[0]
-    with col_refresh:
-            if st.button("🔄 Refresh", type="secondary"):
-                st.rerun()
-    # =========================================================================
-    # SECTION 1: PERSONNEL PROFILE HEADER (Code #2 Card Style)
-    # =========================================================================
-    with st.container():
-        st.markdown("### 📋 Personnel Profile")
-        
-        profile_col1, profile_col2, profile_col3, profile_col4 = st.columns(4)
-        with profile_col1:
-            st.metric("Position / Grade", f"{person_row.get('Staff Position')} ({person_row.get('SG')})")
-        with profile_col2:
-            st.metric("Department / Unit", f"{person_row.get('Department')} ({person_row.get('Section Name')})")
-        with profile_col3:
-            st.metric("Current Assignment", person_row.get("Current Assignment / Loc:"))
-        with profile_col4:
-            st.metric("Years in PETRONAS", int(person_row.get("Years in PET", 0)) if pd.notna(person_row.get("Years in PET")) else "Not Applicable")
-
-        stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
-        with stats_col1:
-            st.metric("Age", int(person_row.get("Age", 0)) if pd.notna(person_row.get("Age")) else "N/A")
-        with stats_col2:
-            st.metric("Employment Type", person_row.get("Employment Category"))
-        with stats_col3:
-            contract_expiry = person_row.get("Contract Expire Date")
-            st.metric( "Contract Expiry Date", pd.to_datetime(contract_expiry).strftime("%d %b %Y") if contract_expiry is not None and pd.notna(contract_expiry) else "Not Applicable",)
-        with stats_col4:
-            st.metric("Length in Grade", int(person_row.get("Years in Salary Grade", 0)) if pd.notna(person_row.get("Years in Salary Grade")) else "Not Applicable")
-
-        st.markdown("### 💪🏼 Talent Profile")
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.markdown("#### 💪 Strength")
-            st.success(person_row.get("Strength"))
-
-        with col2:
-            st.markdown("#### ❤️ Interest")
-            st.info(person_row.get("Interest"))
-
-        with col3:
-            st.markdown("#### 🎓 Background")
-            st.warning(person_row.get("Background"))
-    # =========================================================================
-    # CURRICULUM VITAE AND SUPPORTING DOCUMENTS
-    # =========================================================================
-
-    st.markdown("---")
-    st.subheader(
-        "📄 Curriculum Vitae & Supporting Documents"
+    st.title(
+        "👤 Individual Assessment & Talent Profile"
     )
 
-    session = None
-    cv_documents = pd.DataFrame()
-    personnel_id = None
+    st.caption(
+        "Review personnel information, CV documents, "
+        "career progression targets, competency readiness, "
+        "and development gaps."
+    )
 
-    try:
-        session = get_session(engine)
+    st.markdown("---")
 
-        personnel_id = db_ops.resolve_personnel_id(
-            session=session,
-            database_id=person_row.get("id"),
-            staff_id=person_row.get("Staff ID"),
-            name=person_row.get("Name"),
+    # =========================================================================
+    # DATA VALIDATION
+    # =========================================================================
+
+    if df is None or df.empty:
+        st.error(
+            "No personnel data is available."
         )
 
-        if personnel_id is not None:
-            cv_documents = (
-                db_ops.get_cv_documents(
-                    session,
-                    personnel_id,
+        st.stop()
+
+    if "Name" not in df.columns:
+        st.error(
+            "The personnel dataset does not contain "
+            "the required Name column."
+        )
+
+        st.stop()
+
+    personnel_names = sorted(
+        df["Name"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .loc[
+            lambda series: series.ne("")
+        ]
+        .unique()
+        .tolist()
+    )
+
+    if not personnel_names:
+        st.error(
+            "No valid personnel names are available."
+        )
+
+        st.stop()
+
+    # =========================================================================
+    # PERSONNEL SELECTION
+    # =========================================================================
+
+    selection_column, refresh_column = (
+        st.columns(
+            [5, 1],
+            vertical_alignment="bottom",
+        )
+    )
+
+    with selection_column:
+        selected_name = st.selectbox(
+            "Select Personnel",
+            options=personnel_names,
+            key="personnel_select",
+        )
+
+    with refresh_column:
+        if st.button(
+            "🔄 Refresh",
+            type="secondary",
+            width="stretch",
+        ):
+            st.cache_data.clear()
+            st.rerun()
+
+    selected_personnel_rows = df[
+        df["Name"].astype(str).str.strip()
+        == str(selected_name).strip()
+    ]
+
+    if selected_personnel_rows.empty:
+        st.error(
+            "The selected personnel record "
+            "could not be found."
+        )
+
+        st.stop()
+
+    if len(selected_personnel_rows) > 1:
+        st.warning(
+            "More than one record has the selected name. "
+            "The first record is being displayed. "
+            "Use Staff ID as the selector in a future update "
+            "to eliminate name ambiguity."
+        )
+
+    person_row = (
+        selected_personnel_rows.iloc[0]
+    )
+
+    # =========================================================================
+    # DATABASE DETAILS
+    # =========================================================================
+
+    (
+        personnel_id,
+        cv_documents,
+        summary_score,
+        profile_retrieval_error,
+    ) = _load_personnel_database_details(
+        person_row=person_row,
+        engine=engine,
+    )
+
+    # =========================================================================
+    # PROFILE AND CV TABS
+    # =========================================================================
+
+    overview_tab, documents_tab = st.tabs(
+        [
+            "👤 Personnel Overview",
+            "📄 CV & Documents",
+        ]
+    )
+
+    # -------------------------------------------------------------------------
+    # PERSONNEL OVERVIEW
+    # -------------------------------------------------------------------------
+
+    with overview_tab:
+        st.subheader(
+            "📋 Personnel Profile"
+        )
+
+        (
+            profile_position_col,
+            profile_department_col,
+            profile_assignment_col,
+            profile_service_col,
+            profile_re_experience_col,
+        ) = st.columns(5)
+
+        with profile_position_col:
+            staff_position = (
+                _safe_display_value(
+                    person_row.get(
+                        "Staff Position"
+                    ),
+                    "Position unavailable",
                 )
             )
 
-    except Exception as exc:
-        st.error(
-            f" ❌Unable to retrieve document records: {exc}"
-        )
-
-    finally:
-        if session is not None:
-            session.close()
-
-
-    if personnel_id is None:
-        st.warning(
-            "⚠️ The selected personnel could not be matched to a "
-            "database record. Check the Staff ID and personnel name."
-        )
-
-        with st.expander(
-            "Personnel matching diagnostics"
-        ):
-            st.write(
-                {
-                    "Name": person_row.get("Name"),
-                    "Staff ID": person_row.get("Staff ID"),
-                    "DataFrame ID": person_row.get("id"),
-                    "DataFrame has ID column":
-                        "id" in df.columns,
-                }
+            salary_grade = (
+                _safe_display_value(
+                    person_row.get("SG"),
+                    "SG unavailable",
+                )
             )
 
-    elif cv_documents.empty:
-        st.info(
-            " ❌ No CV or supporting document is registered "
-            "for this personnel."
+            st.metric(
+                "Position / Grade",
+                (
+                    f"{staff_position} "
+                    f"({salary_grade})"
+                ),
+            )
+
+        with profile_department_col:
+            department = (
+                _safe_display_value(
+                    person_row.get(
+                        "Department"
+                    ),
+                    "Department unavailable",
+                )
+            )
+
+            section_name = (
+                _safe_display_value(
+                    person_row.get(
+                        "Section Name"
+                    ),
+                    "Section unavailable",
+                )
+            )
+
+            st.metric(
+                "Department / Section",
+                (
+                    f"{department} "
+                    f"({section_name})"
+                ),
+            )
+
+        with profile_assignment_col:
+            st.metric(
+                "Current Assignment",
+                _safe_display_value(
+                    person_row.get(
+                        "Current Location:"
+                    ),
+                    "Not available",
+                ),
+            )
+
+        with profile_service_col:
+            st.metric(
+                "Years in PETRONAS",
+                _safe_integer_display(
+                    person_row.get(
+                        "Years in PET"
+                    )
+                ),
+            )
+
+        with profile_re_experience_col:
+            st.metric(
+                            "Years of RE Experiences",
+                            _safe_integer_display(
+                                person_row.get(
+                                    "Years of RE Experience"
+                                )
+                            ),
+                        )
+
+        (
+            profile_age_col,
+            profile_employment_col,
+            profile_expiry_col,
+            profile_grade_length_col,
+            profile_assessement_col,
+        ) = st.columns(5)
+
+        with profile_age_col:
+            st.metric(
+                "Age",
+                _safe_integer_display(
+                    person_row.get("Age"),
+                    "N/A",
+                ),
+            )
+
+        with profile_employment_col:
+            st.metric(
+                "Employment Type",
+                _safe_display_value(
+                    person_row.get(
+                        "Employment Category"
+                    )
+                ),
+            )
+
+        with profile_expiry_col:
+            st.metric(
+                "Contract Expiry Date",
+                _safe_date_display(
+                    person_row.get(
+                        "Contract Expire Date"
+                    )
+                ),
+            )
+
+        with profile_assessement_col:
+            st.metric(
+                        "Length in Grade",
+                         _safe_integer_display(
+                            person_row.get("Years in Salary Grade")),
+                    )
+
+        with profile_grade_length_col:
+                    st.metric(
+                        "Assessment Type",
+                        _safe_display_value(
+                            person_row.get(
+                                "Assessment Level")),)
+                    
+        st.markdown(
+            "### 💪 Talent Profile"
+        )
+
+        (
+            talent_strength_col,
+            talent_interest_col,
+            talent_background_col,
+        ) = st.columns(3)
+
+        with talent_strength_col:
+            st.markdown(
+                "#### 💪 Strength"
+            )
+
+            st.markdown(
+                _safe_display_value(
+                    person_row.get(
+                        "Strength"
+                    ),
+                    "No strength information available.",
+                )
+            )
+
+        with talent_interest_col:
+            st.markdown(
+                "#### ❤️ Interest"
+            )
+
+            st.markdown(
+                _safe_display_value(
+                    person_row.get(
+                        "Interest"
+                    ),
+                    "No interest information available.",
+                )
+            )
+
+        with talent_background_col:
+            st.markdown(
+                "#### 🎓 Background"
+            )
+
+            st.markdown(
+                _safe_display_value(
+                    person_row.get(
+                        "Background"
+                    )
+                    or person_row.get(
+                        "Sub-Disciplines"
+                    ),
+                    "No background information available.",
+                )
+            )
+
+        # ============================================================================
+        # ASSESSMENT-BASED COMPETENCY STRENGTH
+        # ============================================================================
+
+        st.markdown("---")
+
+        st.markdown(
+            "### 📊 Assessment-Based Competency Strength"
         )
 
         st.caption(
-            "⚠️ The personnel record exists in the database, "
-            "but no CV document has been linked to its database ID."
+            "Automatically derived from the selected personnel's "
+            "assessed competency scores. The strongest competencies "
+            "are ranked within each competency class."
         )
 
-    else:
-        # Get CV documents from database
-        session = get_session(engine)
-        try:
-            cv_documents = db_ops.get_cv_documents(session, int(personnel_id))  # ✅ Fixed
-        finally:
-            session.close()
-        
-        # Check if any documents exist
-        if cv_documents.empty:
-            st.info("No CV or supporting document is registered for this personnel.")
+
+        # ============================================================================
+        # FOUR COMPETENCY CLASS TABS
+        # ============================================================================
+
+        base_tab, key_tab, pace_tab, emerging_tab = st.tabs(
+            [
+                "🟢 Base",
+                "🔵 Key",
+                "🟠 Pace",
+                "🟣 Emerging",
+            ]
+        )
+
+        # ============================================================================
+        # BASE
+        # ============================================================================
+
+        with base_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="B",
+                class_config=COMP_TYPES["B"],
+            )
+
+        # ============================================================================
+        # KEY / KNOWLEDGE
+        # ============================================================================
+
+        with key_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="K",
+                class_config=COMP_TYPES["K"],
+            )
+
+        # ============================================================================
+        # PACE
+        # ============================================================================
+
+        with pace_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="P",
+                class_config=COMP_TYPES["P"],
+            )
+
+        # ============================================================================
+        # EMERGING
+        # ============================================================================
+
+        with emerging_tab:
+
+            _render_competency_strength_class(
+                person_row=person_row,
+                class_code="E",
+                class_config=COMP_TYPES["E"],
+            )
+    # -------------------------------------------------------------------------
+    # CV DOCUMENTS
+    # -------------------------------------------------------------------------
+
+    with documents_tab:
+        st.subheader(
+            "📄 Curriculum Vitae & Supporting Documents"
+        )
+
+        if profile_retrieval_error:
+            st.error(
+                "Unable to retrieve document records: "
+                f"{profile_retrieval_error}"
+            )
+
+        elif personnel_id is None:
+            st.warning(
+                "The selected personnel could not be matched "
+                "to a database record."
+            )
+
+            with st.expander(
+                "Personnel matching diagnostics"
+            ):
+                st.write(
+                    {
+                        "Name":
+                            person_row.get(
+                                "Name"
+                            ),
+                        "Staff ID":
+                            person_row.get(
+                                "Staff ID"
+                            ),
+                        "DataFrame ID":
+                            person_row.get(
+                                "id"
+                            ),
+                        "DataFrame has ID column":
+                            "id" in df.columns,
+                    }
+                )
+
+        elif (
+            cv_documents is None
+            or cv_documents.empty
+        ):
+            st.info(
+                "No CV or supporting document is registered "
+                "for this personnel."
+            )
+
+            st.caption(
+                f"Database personnel ID: {personnel_id}"
+            )
+
+        elif (
+            "SharePoint URL"
+            not in cv_documents.columns
+        ):
+            st.error(
+                "The CV query did not return a "
+                "SharePoint URL column."
+            )
 
         else:
-            # ─────────────────────────────────────────────────────────────────
-            # VALIDATE URLS
-            # ─────────────────────────────────────────────────────────────────
-            
-            cv_documents["SharePoint URL"] = (
-                cv_documents["SharePoint URL"]
+            cv_documents = (
+                cv_documents.copy()
+            )
+
+            cv_documents[
+                "SharePoint URL"
+            ] = (
+                cv_documents[
+                    "SharePoint URL"
+                ]
                 .fillna("")
                 .astype(str)
                 .str.strip()
             )
-            
-            cv_documents["Valid SharePoint URL"] = (
-                cv_documents["SharePoint URL"]
-                .str.startswith(("https://", "http://"))
+
+            cv_documents[
+                "Valid SharePoint URL"
+            ] = (
+                cv_documents[
+                    "SharePoint URL"
+                ]
+                .str.lower()
+                .str.startswith(
+                    (
+                        "https://",
+                        "http://",
+                    )
+                )
             )
-            
-            valid_documents = cv_documents[cv_documents["Valid SharePoint URL"]].copy()
-            invalid_documents = cv_documents[~cv_documents["Valid SharePoint URL"]].copy()
-            
-            # ─────────────────────────────────────────────────────────────────
-            # CHECK IF ANY VALID DOCUMENTS EXIST
-            # ─────────────────────────────────────────────────────────────────
-            
+
+            valid_documents = (
+                cv_documents[
+                    cv_documents[
+                        "Valid SharePoint URL"
+                    ]
+                ]
+                .copy()
+            )
+
+            invalid_documents = (
+                cv_documents[
+                    ~cv_documents[
+                        "Valid SharePoint URL"
+                    ]
+                ]
+                .copy()
+            )
+
             if valid_documents.empty:
                 st.warning(
-                    "⚠️ Documents are registered, but none has a valid SharePoint HTTPS link. "
-                    "Please verify the Excel file contains valid URLs."
+                    "Document records exist, but none has "
+                    "a valid SharePoint HTTPS link."
                 )
-                with st.expander("Document import diagnostics"):
+
+                diagnostic_columns = [
+                    column
+                    for column in [
+                        "CV File Name",
+                        "File Type",
+                        "SharePoint URL",
+                        "Match Method",
+                        "Notes",
+                    ]
+                    if column
+                    in cv_documents.columns
+                ]
+
+                with st.expander(
+                    "Document import diagnostics",
+                    expanded=True,
+                ):
                     st.dataframe(
-                        cv_documents[["CV File Name", "File Type", "SharePoint URL"]],
-                        use_container_width=True,
+                        cv_documents[
+                            diagnostic_columns
+                        ],
+                        width="stretch",
                         hide_index=True,
                     )
+
             else:
-                # ─────────────────────────────────────────────────────────────
-                # SORT BY MODIFIED DATE
-                # ─────────────────────────────────────────────────────────────
-                
-                valid_documents["Modified Date"] = pd.to_datetime(
-                    valid_documents["Modified Date"], errors="coerce"
+                valid_documents[
+                    "Modified Date"
+                ] = pd.to_datetime(
+                    valid_documents.get(
+                        "Modified Date"
+                    ),
+                    errors="coerce",
                 )
-                valid_documents = valid_documents.sort_values(
-                    by=["Modified Date", "id"],
-                    ascending=[False, False],
-                    na_position="last",
+
+                sort_columns = [
+                    column
+                    for column in [
+                        "Modified Date",
+                        "id",
+                    ]
+                    if column
+                    in valid_documents.columns
+                ]
+
+                if sort_columns:
+                    valid_documents = (
+                        valid_documents.sort_values(
+                            by=sort_columns,
+                            ascending=[
+                                False
+                                for _
+                                in sort_columns
+                            ],
+                            na_position="last",
+                        )
+                    )
+
+                primary_document = (
+                    valid_documents.iloc[0]
                 )
-                
-                # ─────────────────────────────────────────────────────────────
-                # GET PRIMARY DOCUMENT (Most Recent)
-                # ─────────────────────────────────────────────────────────────
-                
-                primary_document = valid_documents.iloc[0]
-                primary_file = primary_document.get("CV File Name") or "CV document"
-                primary_type = primary_document.get("File Type") or "N/A"
-                primary_url = str(primary_document.get("SharePoint URL")).strip()
-                primary_modified = primary_document.get("Modified Date")
-                
-                modified_display = (
-                    primary_modified.strftime("%d %b %Y")
-                    if pd.notna(primary_modified)
+
+                primary_file = (
+                    primary_document.get(
+                        "CV File Name"
+                    )
+                    or "CV document"
+                )
+
+                primary_file_type = (
+                    primary_document.get(
+                        "File Type"
+                    )
+                    or "N/A"
+                )
+
+                primary_url = str(
+                    primary_document.get(
+                        "SharePoint URL"
+                    )
+                ).strip()
+
+                primary_modified = (
+                    primary_document.get(
+                        "Modified Date"
+                    )
+                )
+
+                primary_modified_display = (
+                    primary_modified.strftime(
+                        "%d %b %Y"
+                    )
+                    if pd.notna(
+                        primary_modified
+                    )
                     else "Date unavailable"
                 )
-                
-                # ─────────────────────────────────────────────────────────────
-                # DISPLAY PRIMARY DOCUMENT
-                # ─────────────────────────────────────────────────────────────
-                
-                col1, col2, col3 = st.columns([2, 1, 1])
-                
-                with col1:
-                    st.metric("🗒️ Latest Document", primary_file)
-                with col2:
-                    st.metric("🗂️ File Type", primary_type)
-                with col3:
-                    st.metric("📂 Last Modified", modified_display)
-                
+
+                (
+                    cv_latest_col,
+                    cv_type_col,
+                    cv_modified_col,
+                ) = st.columns(
+                    [2, 1, 1]
+                )
+
+                with cv_latest_col:
+                    st.metric(
+                        "Latest Document",
+                        primary_file,
+                    )
+
+                with cv_type_col:
+                    st.metric(
+                        "File Type",
+                        primary_file_type,
+                    )
+
+                with cv_modified_col:
+                    st.metric(
+                        "Last Modified",
+                        primary_modified_display,
+                    )
+
                 st.link_button(
                     "📄 Open Latest Document in SharePoint",
                     primary_url,
-                    use_container_width=True,
+                    width="stretch",
                 )
-                
-                st.caption(f"{len(valid_documents)} document link(s) available for this personnel.")
-                
-                # ─────────────────────────────────────────────────────────────
-                # LOOP: DISPLAY ALL DOCUMENTS
-                # ─────────────────────────────────────────────────────────────
-                
+
+                st.caption(
+                    f"{len(valid_documents)} valid document "
+                    "link(s) available."
+                )
+
                 with st.expander(
-                    f" 🗂️ View all documents ({len(valid_documents)})",
-                    expanded=(len(valid_documents) <= 3),
+                    f"🗂️ View all documents "
+                    f"({len(valid_documents)})",
+                    expanded=(
+                        len(valid_documents)
+                        <= 3
+                    ),
                 ):
-                    # 🔄 LOOP STARTS HERE
-                    for _, document in valid_documents.iterrows():
-                        
-                        # Extract document details
-                        document_id = document.get("id")
-                        document_name = document.get("CV File Name") or "Document"
-                        document_type = document.get("File Type") or "Unknown"
-                        document_url = str(document.get("SharePoint URL")).strip()
-                        document_modified = document.get("Modified Date")
-                        
-                        # Format the modified date
-                        modified_display = (
-                            document_modified.strftime("%d %b %Y")
-                            if pd.notna(document_modified)
+                    for _, document in (
+                        valid_documents.iterrows()
+                    ):
+                        document_name = (
+                            document.get(
+                                "CV File Name"
+                            )
+                            or "Document"
+                        )
+
+                        document_type = (
+                            document.get(
+                                "File Type"
+                            )
+                            or "Unknown"
+                        )
+
+                        document_url = str(
+                            document.get(
+                                "SharePoint URL"
+                            )
+                        ).strip()
+
+                        document_modified = (
+                            document.get(
+                                "Modified Date"
+                            )
+                        )
+
+                        document_date_display = (
+                            document_modified.strftime(
+                                "%d %b %Y"
+                            )
+                            if pd.notna(
+                                document_modified
+                            )
                             else "Date unavailable"
                         )
-                        
-                        # Create two-column layout
-                        doc_col, action_col = st.columns([4, 1])
-                        
-                        # Left column: Document info
-                        with doc_col:
+
+                        (
+                            document_info_col,
+                            document_action_col,
+                        ) = st.columns(
+                            [4, 1],
+                            vertical_alignment=(
+                                "center"
+                            ),
+                        )
+
+                        with document_info_col:
                             st.markdown(
                                 f"**{document_name}**  \n"
-                                f"`{document_type}` • Modified {modified_display}"
+                                f"`{document_type}` • "
+                                f"Modified "
+                                f"{document_date_display}"
                             )
-                        
-                        # Right column: Open button
-                        with action_col:
+
+                        with document_action_col:
                             st.link_button(
                                 "Open",
                                 document_url,
+                                width="stretch",
                             )
-                        
-                        # Separator line
+
                         st.divider()
-                    
-                    # 🔄 LOOP ENDS HERE
-                
-                # ─────────────────────────────────────────────────────────────
-                # SHOW INVALID DOCUMENTS (If any)
-                # ─────────────────────────────────────────────────────────────
-                
+
                 if not invalid_documents.empty:
+                    diagnostic_columns = [
+                        column
+                        for column in [
+                            "CV File Name",
+                            "File Type",
+                            "SharePoint URL",
+                            "Match Method",
+                            "Notes",
+                        ]
+                        if column
+                        in invalid_documents.columns
+                    ]
+
                     with st.expander(
-                        f"⚠️ Documents without valid web links ({len(invalid_documents)})"
+                        "⚠️ Documents without valid links "
+                        f"({len(invalid_documents)})"
                     ):
                         st.dataframe(
                             invalid_documents[
-                                ["CV File Name", "File Type", "SharePoint URL", "Notes"]
+                                diagnostic_columns
                             ],
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                         )
+
     # =========================================================================
-    # SECTION 2: TARGET SELECTION & ENGINE (Code #1 Logic)
+    # TARGET DEFINITION
     # =========================================================================
-    st.markdown("### 🎯 Target Definition & Career Progression")
 
-    col_ruler, col_target = st.columns(2)
+    st.markdown("---")
 
-    with col_ruler:
-        ruler_options = list(ruler_map.keys())
-        default_ruler = person_row.get("ruler_type", "BASE")
-        default_idx = ruler_options.index(default_ruler) if default_ruler in ruler_options else 0
-        selected_ruler = st.selectbox("Career Ruler", ruler_options, index=default_idx)
+    st.subheader(
+        "🎯 Target Definition & Career Progression"
+    )
 
-    # Target SG Logic (Filter future grades based on current rank)
-    selected_ruler_reqs = ruler_map.get(selected_ruler, {})
-    available_sgs = list(selected_ruler_reqs.keys())
+    (
+        selected_ruler,
+        target_sg,
+        selected_ruler_requirements,
+    ) = _render_ruler_target_filters(
+        person_row=person_row,
+        ruler_map=ruler_map,
+        suffix="main",
+    )
 
-    current_sg = str(person_row.get("sg", "")).strip()
-    current_rank = _grade_rank(current_sg)
+    # =========================================================================
+    # BUILD GAP ANALYSIS ONCE
+    # =========================================================================
 
-    target_sg_options = []
-    if current_rank is not None:
-        for sg in available_sgs:
-            rank = _grade_rank(sg)
-            if rank and rank >= current_rank:
-                target_sg_options.append(sg)
-    else:
-        target_sg_options = available_sgs
-
-    with col_target:
-        if target_sg_options:
-            # Default the selector to the person's current SG when available
-            try:
-                default_idx = target_sg_options.index(current_sg) if current_sg in target_sg_options else 0
-            except Exception:
-                default_idx = 0
-            target_sg = st.selectbox("Target Salary Grade", target_sg_options, index=default_idx)
-        else:
-            st.warning("No future grades found in ruler.")
-            target_sg = None
-
-    df_gap = pd.DataFrame()
+    gap_dataframe = pd.DataFrame()
     strict_readiness = 0.0
     weighted_readiness = 0.0
-    cat_readiness = {}
+    category_readiness = {}
 
-    # Build Gap Dataframe (Code #1 Engine)
-    if target_sg:
-        df_gap = _build_target_gap_dataframe(person_row, target_sg, selected_ruler_reqs, tech_labels)
-        strict_readiness, weighted_readiness, cat_readiness = _calculate_readiness_metrics(df_gap)
-
-    # =========================================================================
-    # SECTION 3: TECH CLASS REFERENCE (Code #2 Expander)
-    # =========================================================================
-    with st.expander("📚 Tech Class Reference - Competency Definitions", expanded=False):
-        st.markdown("**Understanding Competency Codes and Their Meanings**")
-        st.markdown("Reference this table to understand what each competency code (e.g., B1, K1, P1, E1) represents in the assessment.")
-        st.markdown("")
-        
-        # Build reference data from config.COMP_TYPES and COMPETENCY_FULLNAMES
-        # Sorted numerically: B1-B12, K1-K5, P1-P5, E1-E2
-        
-        ref_data = []
-        
-        # Process by category in order: B, K, P, E
-        for category_key in ["B", "K", "P", "E"]:
-            category_info = COMP_TYPES.get(category_key, {})
-            category_name = category_info.get("label", "Unknown")
-            codes = category_info.get("cols", [])
-            
-            for code in codes:
-                full_name = COMPETENCY_FULLNAMES.get(code, f"Unknown - {code}")
-                ref_data.append({
-                    'Category': category_name,
-                    'Code': code,
-                    'Competency Name': full_name,
-                })
-        
-        ref_df = pd.DataFrame(ref_data)
-        
-        # Display using Streamlit dataframe with custom column config
-        st.dataframe(
-            ref_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Category": st.column_config.TextColumn(
-                    "Category",
-                    width=140,
-                    help="Type of competency"
+    if target_sg is not None:
+        gap_dataframe = (
+            _build_target_gap_dataframe(
+                person_row=person_row,
+                target_sg=target_sg,
+                selected_ruler_requirements=(
+                    selected_ruler_requirements
                 ),
-                "Code": st.column_config.TextColumn(
-                    "Code",
-                    width=60,
-                    help="Competency identifier (e.g., B1, K3, P2)"
-                ),
-                "Competency Name": st.column_config.TextColumn(
-                    "Competency Name",
-                    width=400,
-                    help="Full name and description of the competency"
-                ),
-            }
-        )
-        
-        # Add helpful notes
-        st.markdown("---")
-        st.markdown("**Category Definitions:**")
-        category_defs = {
-            "🔹 Base Competency (B1-B12)": "Core technical competencies required for reservoir engineering work",
-            "🔹 Knowledge (K1-K5)": "Specialized knowledge areas in reservoir engineering and management",
-            "🔹 Pacing (P1-P5)": "Professional competencies related to advanced complex systems",
-            "🔹 Emerging (E1-E2)": "Emerging technologies and future-focused competencies",
-        }
-        
-        for category, description in category_defs.items():
-            st.markdown(f"**{category}:** {description}")
-    
-    st.markdown("---")
-    # =========================================================================
-    # SECTION 4: ASSESSMENT SUMMARY (Code #1 Metrics + Code #2 Layout)
-    # =========================================================================
-    if not df_gap.empty:
-        st.markdown(f"### 📊 Assessment Summary vs Target ({target_sg})")
-        
-        # Gap counts
-        n_met = len(df_gap[df_gap["Status"] == "✅ Met"])
-        n_minor = len(df_gap[df_gap["Status"] == "🟡 Minor Gap"])
-        n_major = len(df_gap[df_gap["Status"] == "🔴 Major Gap"])
-        n_unassessed = len(df_gap[df_gap["Status"] == "Not Assessed"])
-        
-        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-        with metric_col1:
-            st.metric("Total Competencies", len(df_gap))
-        with metric_col2:
-            st.metric("Weighted Readiness", f"{weighted_readiness:.0f}%")
-        with metric_col3:
-            st.metric("Strict Readiness", f"{strict_readiness:.0f}%")
-        with metric_col4:
-            status = "Ready ✅" if weighted_readiness >= 80 else "On Track 🟡" if weighted_readiness >= 60 else "Needs Work 🔴"
-            st.metric("Overall Status", status)
-
-        # -----------------------------------------------------------------
-        # Show stored summary scores from the database (if available)
-        # -----------------------------------------------------------------
-        try:
-            session = get_session(engine)
-            personnel_id = db_ops.resolve_personnel_id(
-                session=session,
-                database_id=person_row.get("id"),
-                staff_id=person_row.get("Staff ID"),
-                name=person_row.get("Name"),
+                tech_labels=tech_labels,
             )
-            summary = None
-            if personnel_id:
-                from models import SummaryScore
-                summary = session.query(SummaryScore).filter_by(personnel_id=personnel_id).order_by(SummaryScore.updated_at.desc()).first()
-        except Exception:
-            summary = None
-        finally:
-            try:
-                session.close()
-            except Exception:
-                pass
+        )
 
-        if summary is not None:
-            s_col1, s_col2, s_col3, s_col4, s_col5 = st.columns(5)
-            with s_col1:
-                st.metric("Staff Base", getattr(summary, "staff_base", "N/A"))
-            with s_col2:
-                st.metric("Staff Keys", getattr(summary, "staff_keys", "N/A"))
-            with s_col3:
-                st.metric("Principal Base", getattr(summary, "principal_base", "N/A"))
-            with s_col4:
-                st.metric("Custodian Base", getattr(summary, "custodian_base", "N/A"))
-            with s_col5:
-                st.metric("Custodian Keys", getattr(summary, "custodian_keys", "N/A"))
-            
-        # Category readiness breakdown (Code #1)
-        if cat_readiness:
-            st.markdown("**Category Completion Summary**")
-            cat_cols = st.columns(len(cat_readiness))
-            for i, (cat, val) in enumerate(cat_readiness.items()):
-                cat_cols[i].metric(f"{cat} Competencies", f"{val:.0f}%")
+        (
+            strict_readiness,
+            weighted_readiness,
+            category_readiness,
+        ) = _calculate_readiness_metrics(
+            gap_dataframe
+        )
 
+    
+
+    # =========================================================================
+    # ASSESSMENT RESULTS
+    # =========================================================================
+
+    if gap_dataframe.empty:
+        st.info(
+            "No competency requirements are available "
+            "for the selected Career Ruler and Target SG."
+        )
+
+    else:
         st.markdown("---")
-        # =========================================================================
-        # SECTION 5: VISUALIZATIONS (Code #2 Side-by-Side + Code #1 Dynamic Data)
-        # =========================================================================
-        st.markdown("### 📈 Gap Analysis Visualizations")
-        chart_col1, chart_col2 = st.columns([0.6, 0.4])
-        
-        with chart_col1:
-            # Actual vs Target Bar Chart
-            fig_bar = go.Figure()
-            fig_bar.add_trace(go.Bar(
-                x=df_gap["Competency Code"],
-                y=df_gap["Actual Score"],
-                    name="Actual",
-                marker_color="#1f77b4"
-            ))
-            fig_bar.add_trace(go.Scatter(
-                x=df_gap["Competency Code"],
-                y=df_gap["Target Score"],
-                name="Target",
-                mode="markers+lines",
-                marker=dict(color="red", size=10, symbol="diamond"),
-                line=dict(dash="dash")
-            ))
-            fig_bar.update_layout(title=f"Actual vs Target ({target_sg})", hovermode="x unified", height=400)
-            st.plotly_chart(fig_bar, use_container_width=True)
 
-        with chart_col2:
-            radar_df = df_gap[df_gap["Actual Score"].notna()].copy()
-            if not radar_df.empty:
-                radar_actual = radar_df["Actual Score"].tolist()
-                radar_target = radar_df["Target Score"].tolist()
-                radar_names = radar_df["Competency Code"].tolist()
-        
-                # Get theme-based colors from config
-                from config import PRIMARY, SECONDARY, LIGHT_BG
-                
-                # Determine font color based on background brightness
-                # If background is light, use dark font; if dark, use light font
-                # For PETRONAS theme (#003D5C is dark), use white or light gray
-                axis_font_color = "#20419a"  # Or use: "#F0F4F8" for light gray on dark
-                
-                fig_radar = go.Figure()
-                
-                # Actual Profile
-                fig_radar.add_trace(
-                    go.Scatterpolar(
-                        r=radar_actual + [radar_actual[0]], 
-                        theta=radar_names + [radar_names[0]], 
-                        fill="toself", 
-                        name="Actual", 
-                        line=dict(color="#20419A", width=2),  # ← Use config color
-                        fillcolor=f"rgba(0, 161, 156, 0.35)"  # ← PETRONAS blue with transparency
-                    )
+        st.subheader(
+            f"📊 Assessment Summary vs Target "
+            f"({target_sg})"
+        )
+
+        number_met = int(
+            (
+                gap_dataframe["Status"]
+                == "✅ Met"
+            ).sum()
+        )
+
+        number_minor = int(
+            (
+                gap_dataframe["Status"]
+                == "🟡 Minor Gap"
+            ).sum()
+        )
+
+        number_major = int(
+            (
+                gap_dataframe["Status"]
+                == "🔴 Major Gap"
+            ).sum()
+        )
+
+        number_unassessed = int(
+            (
+                gap_dataframe["Status"]
+                == "Not Assessed"
+            ).sum()
+        )
+
+        if weighted_readiness >= 80:
+            overall_status = "Ready ✅"
+        elif weighted_readiness >= 60:
+            overall_status = "On Track 🟡"
+        else:
+            overall_status = "Needs Work 🔴"
+
+        (
+            assessment_total_col,
+            assessment_weighted_col,
+            assessment_strict_col,
+            assessment_status_col,
+        ) = st.columns(4)
+
+        assessment_total_col.metric(
+            "Total Competencies",
+            len(gap_dataframe),
+        )
+
+        assessment_weighted_col.metric(
+            "Weighted Readiness",
+            f"{weighted_readiness:.0f}%",
+        )
+
+        assessment_strict_col.metric(
+            "Strict Readiness",
+            f"{strict_readiness:.0f}%",
+        )
+
+        assessment_status_col.metric(
+            "Overall Status",
+            overall_status,
+        )
+
+        (
+            status_met_col,
+            status_minor_col,
+            status_major_col,
+            status_unassessed_col,
+        ) = st.columns(4)
+
+        status_met_col.metric(
+            "Met",
+            number_met,
+        )
+
+        status_minor_col.metric(
+            "Minor Gaps",
+            number_minor,
+        )
+
+        status_major_col.metric(
+            "Major Gaps",
+            number_major,
+        )
+
+        status_unassessed_col.metric(
+            "Not Assessed",
+            number_unassessed,
+        )
+
+
+
+        # ---------------------------------------------------------------------
+        # STORED SUMMARY SCORE, ONCE
+        # ---------------------------------------------------------------------
+
+        # ---------------------------------------------------------------------
+        # STORED SUMMARY SCORE
+        # ---------------------------------------------------------------------
+
+        if summary_score is not None:
+
+            with st.expander(
+                "📊 Summary Personnel Scores and Competencies",
+                expanded=True,
+            ):
+
+                summary_groups = {
+                    "Next Grade": {
+                        "Base": "next_grade_base",
+                        "Keys": "next_grade_keys",
+                        "Pacing": "next_grade_pacing",
+                        "Emerging": "next_grade_emerging",
+                        "CTI": "next_grade_cti",
+                    },
+
+                    "Staff": {
+                        "Base": "staff_base",
+                        "Keys": "staff_keys",
+                        "Pacing": "staff_pacing",
+                        "Emerging": "staff_emerging",
+                        "CTI": "staff_cti",
+                    },
+
+                    "Principal": {
+                        "Base": "principal_base",
+                        "Keys": "principal_keys",
+                        "Pacing": "principal_pacing",
+                        "Emerging": "principal_emerging",
+                        "CTI": "principal_cti",
+                    },
+
+                    "Custodian": {
+                        "Base": "custodian_base",
+                        "Keys": "custodian_keys",
+                        "Pacing": "custodian_pacing",
+                        "Emerging": "custodian_emerging",
+                        "CTI": "custodian_cti",
+                    },
+                }
+
+                (
+                    next_grade_tab,
+                    staff_tab,
+                    principal_tab,
+                    custodian_tab,
+                ) = st.tabs(
+                    [
+                        "🎯 Next Grade",
+                        "👤 Staff",
+                        "⭐ Principal",
+                        "🏆 Custodian",
+                    ]
                 )
-                
-                # Target Profile (Dashed)
-                fig_radar.add_trace(
-                    go.Scatterpolar(
-                        r=radar_target + [radar_target[0]],
-                        theta=radar_names + [radar_names[0]],
-                        fill="none", 
-                        name=f"Target ({target_sg})", 
-                        line=dict(color="#FF0000", width=2),  # ← Red for contrast
-                    )
-                )
-                
-                # UPDATED: Automated font color
-                fig_radar.update_layout(
-                    title="Competency Profile", 
-                    height=400, 
-                    showlegend=True, 
-                    polar=dict(
-                        radialaxis=dict( visible=True, range=[0, 5],dtick=1, # ← AUTOMATED: Font adapts to background
-                            tickfont=dict( size=11, color=axis_font_color, family="Arial",  # Dynamic color family="Arial"
-                            ),
-                            gridcolor="#2A2C2B",
-                            gridwidth=1,
-                            showline=True,
-                            linecolor=axis_font_color,
-                            linewidth=1,
-                        ),
-                        angularaxis=dict(
-                            tickfont=dict( size=10, color="#008564",family="Arial")
-                        ),
-                        bgcolor="rgba(240, 240, 240, 0.5)"
+
+                group_tabs = {
+                    "Next Grade": next_grade_tab,
+                    "Staff": staff_tab,
+                    "Principal": principal_tab,
+                    "Custodian": custodian_tab,
+                }
+
+                for group_name, score_fields in summary_groups.items():
+
+                    with group_tabs[group_name]:
+
+                        st.markdown(
+                            f"### ✨ {group_name} — Talent Summary Scores"
+                        )
+
+                        metric_columns = st.columns(5)
+
+                        for (
+                            metric_column,
+                            (metric_name, field_name),
+                        ) in zip(
+                            metric_columns,
+                            score_fields.items(),
+                        ):
+
+                            raw_value = getattr(
+                                summary_score,
+                                field_name,
+                                None,
+                            )
+
+                            with metric_column:
+
+                                st.metric(
+                                    metric_name,
+                                    _format_summary_metric(
+                                        raw_value
+                                    ),
+                                )
+
+        else:
+
+            st.caption(
+                "No stored competency summary scores are "
+                "available for this personnel."
+            )
+        # ---------------------------------------------------------------------
+        # CATEGORY READINESS
+        # ---------------------------------------------------------------------
+
+        if category_readiness:
+            st.markdown(
+                "#### Category Readiness"
+            )
+
+            ordered_categories = [
+                category
+                for category in [
+                    "Base",
+                    "Key",
+                    "Pacing",
+                    "Emerging",
+                ]
+                if category
+                in category_readiness
+            ]
+
+            category_columns = st.columns(
+                len(ordered_categories)
+            )
+
+            for column, category in zip(
+                category_columns,
+                ordered_categories,
+            ):
+                column.metric(
+                    f"{category} Competencies",
+                    (
+                        f"{category_readiness[category]:.0f}%"
                     ),
                 )
-                st.plotly_chart(fig_radar, use_container_width=True)
+            with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
+                    render_readiness_methodology()
+            
+        # =========================================================================
+        # VISUALIZATIONS
+        # =========================================================================
 
         st.markdown("---")
-        # =========================================================================
-        # SECTION 6: GAP ANALYSIS TABLES (Code #1 Sorting + Code #2 UI configs)
-        # =========================================================================
-        st.markdown("### 📋 Detailed Gap Analysis")
-        
-        # Custom sort logic (Code #1)
-        status_order = {"🔴 Major Gap": 0, "🟡 Minor Gap": 1, "Not Assessed": 2, "✅ Met": 3}
-        df_gap["sort_order"] = df_gap["Status"].map(status_order)
-        df_sorted = df_gap.sort_values(by=["sort_order", "Competency Code"]).drop(columns=["sort_order"])
 
-        for col in ["Actual Score", "Target Score", "Gap"]:
-            if col in df_sorted.columns:
-                df_sorted[col] = df_sorted[col].round().astype("Int64")
-
-        # UI Coloring config
-        def _color_status(val):
-            if val == "✅ Met": return "background-color: #90EE90"
-            elif val == "🟡 Minor Gap": return "background-color: #FFE4B5"
-            elif val == "🔴 Major Gap": return "background-color: #FFB6C6"
-            return ""
-
-        # Priority Areas (Code #1 logic)
-        df_priority = df_sorted[df_sorted["Status"].isin(["🔴 Major Gap", "🟡 Minor Gap"])]
-        
-        if not df_priority.empty:
-            st.subheader("🔥 Priority Development Areas")
-            st.caption("Focus on resolving these gaps to meet target requirements.")
-            st.dataframe(
-                df_priority.style.map(_color_status, subset=["Status"]),
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "Competency Code": st.column_config.TextColumn("Code", width=80),
-                    "Competency Name": st.column_config.TextColumn("Competency", width=300),
-                    "Gap": st.column_config.NumberColumn("Gap", width=80)
-                }, 
-            )
-        else:
-            st.success("🎉 No competency gaps identified for this Target SG!")
-
-        st.subheader("Full Competency Breakdown")
-        st.dataframe(
-            df_sorted.style.map(_color_status, subset=["Status"]),
-            use_container_width=True, hide_index=True,
-            column_config={
-                "Competency Code": st.column_config.TextColumn("Code", width=80),
-                "Competency Name": st.column_config.TextColumn("Competency", width=300),
-                "Actual Score": st.column_config.NumberColumn("Actual", width=80),
-                "Target Score": st.column_config.NumberColumn("Target", width=80),
-                "Gap": st.column_config.NumberColumn("Gap", width=80),
-                "Status": st.column_config.TextColumn("Status", width=120),
-            }
+        st.subheader(
+            "📈 Gap Analysis Visualizations"
         )
 
-        st.markdown("---")
+        (
+            actual_target_figure,
+            radar_figure,
+        ) = _build_gap_charts(
+            gap_dataframe=gap_dataframe,
+            target_sg=target_sg,
+        )
 
-    # =========================================================================
-    # SECTION 7 & 8: HISTORY & EXPORT (Code #2 Layout)
-    # =========================================================================
-    
-    st.markdown("### 📅 Assessment History & Export")
-    col_hist, col_export = st.columns([0.8, 0.2])
+        chart_left_col, chart_right_col = (
+            st.columns(
+                [3, 2]
+            )
+        )
 
-    with col_hist:
-        st.info("Trend visualization will appear here if historical data exists.")
-        # fig_trend = px.line(...) # Restore DB call for history here
-        fig_trend = px.line(title="Assessment Trend (Placeholder)")
-        st.plotly_chart(fig_trend, use_container_width=True)
+        with chart_left_col:
+            st.plotly_chart(
+                actual_target_figure,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            )
 
-    with col_export:
-        with col_export:
-            if target_sg is None:
-                st.info("Select a target salary grade before exporting.")
-
-            elif df_gap.empty:
-                st.info("No assessment results are available to export.")
-
+        with chart_right_col:
+            if radar_figure is not None:
+                st.plotly_chart(
+                    radar_figure,
+                    width="stretch",
+                    config={
+                        "displaylogo": False,
+                        "responsive": True,
+                    },
+                )
             else:
-                # Make the employee name safe for use in file names and widget keys.
-                safe_name = re.sub(
-                    r"[^A-Za-z0-9_-]+",
-                    "_",
-                    str(selected_name).strip(),
-                ).strip("_")
-
-                metrics = (
-                    strict_readiness,
-                    weighted_readiness,
-                    cat_readiness,
+                st.info(
+                    "No assessed competency scores "
+                    "are available for the radar chart."
                 )
 
-                try:
-                    pdf_buffer = export_to_pdf(
-                        person_row=person_row,
-                        target_sg=target_sg,
-                        df_gap=df_gap,
-                        metrics=metrics,
-                    )
-                    pdf_bytes = pdf_buffer.getvalue()
-                except Exception as exc:
-                    st.error(f"❌ PDF export failed: {exc}")
-                    pdf_bytes = None
+        _render_tech_class_reference()
+        # =========================================================================
+        # DETAILED GAP ANALYSIS
+        # =========================================================================
 
-                if pdf_bytes is not None:
-                    st.download_button(
-                        label="📥 Download PDF Report",
-                        data=pdf_bytes,
-                        file_name=(
-                            f"Assessment_{safe_name}_{target_sg}_"
-                            f"{datetime.now():%Y%m%d}.pdf"
+        st.markdown("---")
+
+        st.subheader(
+            "📋 Detailed Gap Analysis"
+        )
+
+        status_order = {
+            "🔴 Major Gap": 0,
+            "🟡 Minor Gap": 1,
+            "Not Assessed": 2,
+            "✅ Met": 3,
+        }
+
+        sorted_gap_dataframe = (
+            gap_dataframe.copy()
+        )
+
+        sorted_gap_dataframe[
+            "_status_order"
+        ] = (
+            sorted_gap_dataframe[
+                "Status"
+            ]
+            .map(status_order)
+            .fillna(99)
+        )
+
+        sorted_gap_dataframe = (
+            sorted_gap_dataframe.sort_values(
+                by=[
+                    "_status_order",
+                    "Category",
+                    "Competency Code",
+                ],
+                ascending=True,
+            )
+            .drop(
+                columns=[
+                    "_status_order"
+                ]
+            )
+        )
+
+        for numeric_column in [
+            "Actual Score",
+            "Target Score",
+            "Gap",
+        ]:
+            if (
+                numeric_column
+                in sorted_gap_dataframe.columns
+            ):
+                sorted_gap_dataframe[
+                    numeric_column
+                ] = (
+                    sorted_gap_dataframe[
+                        numeric_column
+                    ]
+                    .round(2)
+                )
+
+        priority_dataframe = (
+            sorted_gap_dataframe[
+                sorted_gap_dataframe[
+                    "Status"
+                ].isin(
+                    [
+                        "🔴 Major Gap",
+                        "🟡 Minor Gap",
+                    ]
+                )
+            ]
+            .copy()
+        )
+
+        if priority_dataframe.empty:
+            st.success(
+                "🎉 No competency gaps were identified "
+                "for the selected Target SG."
+            )
+
+        else:
+            st.markdown(
+                "#### 🔥 Priority Development Areas"
+            )
+
+            st.caption(
+                "Focus on the following competencies "
+                "to close the largest gaps first."
+            )
+
+            priority_styler = (
+                priority_dataframe.style.map(
+                    _gap_status_style,
+                    subset=["Status"],
+                )
+            )
+
+            st.dataframe(
+                priority_styler,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Category":
+                        st.column_config.TextColumn(
+                            "Category",
+                            width="small",
                         ),
-                        mime="application/pdf",
-                        key=f"download_pdf_{safe_name}_{target_sg}",
-                        use_container_width=True,
+                    "Competency Code":
+                        st.column_config.TextColumn(
+                            "Code",
+                            width="small",
+                        ),
+                    "Competency Name":
+                        st.column_config.TextColumn(
+                            "Competency",
+                            width="large",
+                        ),
+                    "Actual Score":
+                        st.column_config.NumberColumn(
+                            "Actual",
+                            format="%.0f",
+                        ),
+                    "Target Score":
+                        st.column_config.NumberColumn(
+                            "Target",
+                            format="%.0f",
+                        ),
+                    "Gap":
+                        st.column_config.NumberColumn(
+                            "Gap",
+                            format="%.0f",
+                        ),
+                },
+            )
+
+        st.markdown(
+            "#### Full Competency Breakdown"
+        )
+
+        full_styler = (
+            sorted_gap_dataframe.style.map(
+                _gap_status_style,
+                subset=["Status"],
+            )
+        )
+
+        st.dataframe(
+            full_styler,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Category":
+                    st.column_config.TextColumn(
+                        "Category",
+                        width="small",
+                    ),
+                "Competency Code":
+                    st.column_config.TextColumn(
+                        "Code",
+                        width="small",
+                    ),
+                "Competency Name":
+                    st.column_config.TextColumn(
+                        "Competency",
+                        width="large",
+                    ),
+                "Actual Score":
+                    st.column_config.NumberColumn(
+                        "Actual",
+                        format="%.0f",
+                    ),
+                "Target Score":
+                    st.column_config.NumberColumn(
+                        "Target",
+                        format="%.0f",
+                    ),
+                "Gap":
+                    st.column_config.NumberColumn(
+                        "Gap",
+                        format="%.0f",
+                    ),
+                "Status":
+                    st.column_config.TextColumn(
+                        "Status",
+                        width="medium",
+                    ),
+            },
+        )
+
+    # =========================================================================
+    # HISTORY AND EXPORT
+    # =========================================================================
+
+    st.markdown("---")
+
+    st.subheader(
+        "📅 Assessment History & Export"
+    )
+
+    history_column, export_column = (
+        st.columns(
+            [3, 1],
+            vertical_alignment="top",
+        )
+    )
+    with history_column:
+        history_dataframe = pd.DataFrame()
+
+        if personnel_id is not None:
+            history_session = None
+
+            try:
+                history_session = (
+                    get_session(engine)
+                )
+
+                history_dataframe = (
+                    db_ops.get_assessment_history(
+                        history_session,
+                        personnel_id,
                     )
+                )
+
+            except Exception as exc:
+                st.warning(
+                    "Unable to retrieve assessment "
+                    f"history: {exc}"
+                )
+
+            finally:
+                if (
+                    history_session
+                    is not None
+                ):
+                    history_session.close()
+
+        if (
+            history_dataframe is None
+            or history_dataframe.empty
+        ):
+            st.info(
+                "No historical assessment records "
+                "are available for this personnel."
+            )
+
+        else:
+            history_dataframe = (
+                history_dataframe.copy()
+            )
+
+            history_dataframe["date"] = (
+                pd.to_datetime(
+                    history_dataframe[
+                        "date"
+                    ],
+                    errors="coerce",
+                )
+            )
+
+            history_summary = (
+                history_dataframe
+                .groupby(
+                    [
+                        "date",
+                        "competency_type",
+                    ],
+                    as_index=False,
+                )[
+                    "actual_score"
+                ]
+                .mean()
+            )
+
+            history_figure = go.Figure()
+
+            for competency_type in (
+                history_summary[
+                    "competency_type"
+                ]
+                .dropna()
+                .unique()
+            ):
+                type_dataframe = (
+                    history_summary[
+                        history_summary[
+                            "competency_type"
+                        ]
+                        == competency_type
+                    ]
+                )
+
+                history_figure.add_trace(
+                    go.Scatter(
+                        x=type_dataframe[
+                            "date"
+                        ],
+                        y=type_dataframe[
+                            "actual_score"
+                        ],
+                        mode="lines+markers",
+                        name=str(
+                            competency_type
+                        ),
+                    )
+                )
+
+            history_figure.update_layout(
+                title=(
+                    "Average Competency Score "
+                    "by Assessment Date"
+                ),
+                height=350,
+                xaxis_title=(
+                    "Assessment Date"
+                ),
+                yaxis_title=(
+                    "Average Score"
+                ),
+                yaxis={
+                    "range": [0, 5],
+                    "dtick": 1,
+                },
+                margin={
+                    "l": 30,
+                    "r": 20,
+                    "t": 60,
+                    "b": 40,
+                },
+            )
+
+            st.plotly_chart(
+                history_figure,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            )
+
+        chart_images = {}
+
+    if actual_target_figure is not None:
+        chart_images[
+            "actual_vs_target"
+        ] = plotly_figure_to_png(
+            actual_target_figure,
+            width=1400,
+            height=700,
+            scale=2,
+        )
+
+    if radar_figure is not None:
+        chart_images[
+            "competency_radar"
+        ] = plotly_figure_to_png(
+            radar_figure,
+            width=1000,
+            height=850,
+            scale=2,
+        )
+
+    if history_figure is not None:
+        chart_images[
+            "assessment_history"
+        ] = plotly_figure_to_png(
+            history_figure,
+            width=1400,
+            height=650,
+            scale=2,
+        )
+
+    with export_column:
+        st.markdown(
+            "#### Export"
+        )
+
+        if target_sg is None:
+            st.info(
+                "Select a target salary grade "
+                "before exporting."
+            )
+
+        elif gap_dataframe.empty:
+            st.info(
+                "No assessment results are "
+                "available to export."
+            )
+
+        else:
+            safe_person_name = (
+                _make_widget_safe_text(
+                    selected_name
+                )
+                or "personnel"
+            )
+
+            export_metrics = (
+                strict_readiness,
+                weighted_readiness,
+                category_readiness,
+            )
+
+            try:
+                pdf_buffer = export_to_pdf(
+                    person_row=person_row,
+                    target_sg=target_sg,
+                    df_gap=gap_dataframe,
+                    metrics=export_metrics,
+                )
+
+                pdf_bytes = (
+                    pdf_buffer.getvalue()
+                )
+
+            except Exception as exc:
+                st.error(
+                    f"PDF export failed: {exc}"
+                )
+
+                pdf_bytes = None
+
+            if pdf_bytes is not None:
+                st.download_button(
+                    label=(
+                        "📥 Download PDF Report"
+                    ),
+                    data=pdf_bytes,
+                    file_name=(
+                        f"Assessment_"
+                        f"{safe_person_name}_"
+                        f"{target_sg}_"
+                        f"{datetime.now():%Y%m%d}"
+                        f".pdf"
+                    ),
+                    mime="application/pdf",
+                    key=(
+                        f"download_pdf_"
+                        f"{safe_person_name}_"
+                        f"{target_sg}"
+                    ),
+                    width="stretch",
+                )
+
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: READINESS & GAPS
 # ═════════════════════════════════════════════════════════════════════════════
-elif page == "🎯 Readiness & Gaps":
-    st.title("🎯 Readiness & Gaps Analysis")
 
-    if df.empty:
+elif page == "🎯 Readiness & Gaps":
+
+    # =========================================================================
+    # PAGE HEADER
+    # =========================================================================
+
+    st.title(
+        "🎯 Readiness & Gaps Deep Dive"
+    )
+
+    st.caption(
+        "Understand competency readiness, capability constraints, "
+        "assessment coverage, and personnel development priorities."
+    )
+
+    if df is None or df.empty:
+        st.warning(
+            "No personnel data is available."
+        )
         st.stop()
 
-    tab1, tab2 = st.tabs(["Readiness Tiers", "Gap Status"])
+    required_columns = [
+        "Name",
+        "Department",
+        "Staff Position",
+        "SG",
+    ]
 
-    with tab1:
-        ready_df = an.readiness_table(df)
+    missing_columns = [
+        column
+        for column in required_columns
+        if column not in df.columns
+    ]
 
-        c1, c2, c3, c4 = st.columns(4)
-        for col, tier in zip([c1, c2, c3, c4],
-                             ["Tier 1 (<50%)", "Tier 2 (50-80%)", "Tier 3 (80-99%)", "Tier 4 (≥100%)"]):
-            col.metric(tier, int((ready_df["Readiness Tier"] == tier).sum()))
+    if missing_columns:
+        st.error(
+            "The personnel dataset is missing required columns: "
+            f"{missing_columns}"
+        )
+        st.stop()
 
-        st.markdown("---")
+    if not ruler_map:
+        st.error(
+            "No Career Ruler requirements are available."
+        )
+        st.stop()
 
-        fig = px.histogram(ready_df.dropna(subset=["Achievement %"]),
-                           x="SG", color="Readiness Tier", barmode="stack",
-                           category_orders={"SG": sorted(ready_df["SG"].dropna().unique())},
-                           color_discrete_sequence=px.colors.sequential.Greens)
-        fig.update_layout(title="Readiness Tier by Grade (SG)")
-        st.plotly_chart(fig, use_container_width=True)
+    # =========================================================================
+    # GLOBAL FILTER OPTIONS
+    # =========================================================================
 
-        st.subheader("Personnel Ready for Next Assessment")
-        ready_only = ready_df[ready_df["Ready for Assessment"] == "Ready"]
-        st.dataframe(ready_only.sort_values("Achievement %", ascending=False),
-                     use_container_width=True, hide_index=True)
+    department_options = _build_filter_options(
+        df,
+        "Department",
+    )
 
-        st.subheader("Full Readiness Table")
-        st.dataframe(ready_df, use_container_width=True, hide_index=True)
+    position_options = _build_filter_options(
+        df,
+        "Staff Position",
+    )
 
-    with tab2:
-        gap_df = an.gap_summary(df)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("No Gap", int((gap_df["Gap Status"] == "No Gap").sum()))
-        c2.metric("1 Gap", int((gap_df["Gap Status"] == "1 Gap").sum()))
-        c3.metric(">1 Gap", int((gap_df["Gap Status"] == ">1 Gap").sum()))
-        c4.metric("Not Assessed", int((gap_df["Gap Status"] == "Not Assessed").sum()))
+    salary_grade_options = _rg_sort_salary_grades(
+        _build_filter_options(
+            df,
+            "SG",
+        )
+    )
 
-        fig = px.pie(gap_df, names="Gap Status", hole=0.4,
-                     color="Gap Status",
-                     color_discrete_map={"No Gap": "#2E7D32", "1 Gap": "#FDD835",
-                                        ">1 Gap": "#C62828", "Not Assessed": "#9E9E9E"})
-        st.plotly_chart(fig, use_container_width=True)
+    employment_options = _build_filter_options(
+        df,
+        "Employment Category",
+    )
 
-        st.dataframe(gap_df, use_container_width=True, hide_index=True)
+    ruler_options = sorted(
+        [
+            str(ruler).strip()
+            for ruler in ruler_map.keys()
+        ]
+    )
+
+    all_target_grades = _rg_sort_salary_grades(
+        [
+            grade
+            for ruler_requirements in ruler_map.values()
+            for grade in ruler_requirements.keys()
+        ]
+    )
+
+    # =========================================================================
+    # GLOBAL FILTERS
+    # =========================================================================
+
+    st.subheader(
+        "🔎 Global Filters"
+    )
+
+    (
+        search_filter_col,
+        department_filter_col,
+        position_filter_col,
+        sg_filter_col,
+        ruler_filter_col,
+    ) = st.columns(
+        [2.2, 1.2, 1.2, 1, 1.1]
+    )
+
+    with search_filter_col:
+        search_text = st.text_input(
+            "Search Personnel",
+            placeholder="Search by name or Staff ID",
+            key="rg_search",
+        )
+
+    with department_filter_col:
+        selected_departments = st.multiselect(
+            "Department",
+            options=department_options,
+            key="rg_department",
+        )
+
+    with position_filter_col:
+        selected_positions = st.multiselect(
+            "Staff Position",
+            options=position_options,
+            key="rg_position",
+        )
+
+    with sg_filter_col:
+        selected_salary_grades = st.multiselect(
+            "Current SG",
+            options=salary_grade_options,
+            key="rg_sg",
+        )
+
+    with ruler_filter_col:
+        selected_rulers = st.multiselect(
+            "Career Ruler",
+            options=ruler_options,
+            key="rg_ruler",
+        )
+
+    (
+        employment_filter_col,
+        target_mode_filter_col,
+        target_sg_filter_col,
+        reset_filter_col,
+    ) = st.columns(
+        [1.4, 1.6, 1.4, 0.8],
+        vertical_alignment="bottom",
+    )
+
+    with employment_filter_col:
+        selected_employment_categories = st.multiselect(
+            "Employment Category",
+            options=employment_options,
+            key="rg_employment",
+        )
+
+    with target_mode_filter_col:
+        target_mode = st.selectbox(
+            "Target Requirement",
+            options=[
+                "Next salary grade",
+                "Current requirement",
+                "Selected target grade",
+            ],
+            index=0,
+            key="rg_target_mode",
+            help=(
+                "Next salary grade compares each personnel member "
+                "against the next available grade in the assigned "
+                "Career Ruler."
+            ),
+        )
+
+    with target_sg_filter_col:
+        if target_mode == "Selected target grade":
+            selected_target_sg = st.selectbox(
+                "Selected Target SG",
+                options=all_target_grades,
+                key="rg_selected_target_sg",
+            )
+        else:
+            selected_target_sg = None
+
+            st.text_input(
+                "Selected Target SG",
+                value="Automatically determined",
+                disabled=True,
+                key="rg_target_sg_disabled",
+            )
+
+    with reset_filter_col:
+        if st.button(
+            "Reset",
+            type="secondary",
+            width="stretch",
+            key="rg_reset_filters",
+        ):
+            _reset_readiness_filters()
+
+            if "rg_ruler" in st.session_state:
+                del st.session_state["rg_ruler"]
+
+            if "rg_ranking_metric" in st.session_state:
+                del st.session_state[
+                    "rg_ranking_metric"
+                ]
+
+            if "rg_heatmap_scope" in st.session_state:
+                del st.session_state[
+                    "rg_heatmap_scope"
+                ]
+
+            if "rg_priority_person" in st.session_state:
+                del st.session_state[
+                    "rg_priority_person"
+                ]
+
+            st.rerun()
+
+    # =========================================================================
+    # APPLY PRE-CALCULATION FILTERS
+    # =========================================================================
+
+    filtered_personnel_df = (
+        _apply_readiness_personnel_filters(
+            personnel_dataframe=df,
+            search_text=search_text,
+            departments=selected_departments,
+            positions=selected_positions,
+            salary_grades=selected_salary_grades,
+            employment_categories=(
+                selected_employment_categories
+            ),
+        )
+    )
+
+    if selected_rulers:
+        ruler_series = filtered_personnel_df.apply(
+            lambda person_row: str(
+                _rg_get_person_ruler(
+                    person_row=person_row,
+                    ruler_map=ruler_map,
+                )
+            ),
+            axis=1,
+        )
+
+        filtered_personnel_df = (
+            filtered_personnel_df[
+                ruler_series.isin(
+                    selected_rulers
+                )
+            ]
+        )
+
+    if filtered_personnel_df.empty:
+        st.warning(
+            "No personnel match the selected filters."
+        )
+        st.stop()
+
+    # =========================================================================
+    # BUILD ANALYTICAL DATASETS
+    # =========================================================================
+
+    with st.spinner(
+        "Calculating readiness and competency gaps..."
+    ):
+        readiness_detail_df = (
+            _build_readiness_detail_dataframe(
+                personnel_dataframe=(
+                    filtered_personnel_df
+                ),
+                ruler_map=ruler_map,
+                target_mode=target_mode,
+                selected_target_sg=(
+                    selected_target_sg
+                ),
+            )
+        )
+
+        readiness_summary_df = (
+            _build_personnel_readiness_summary(
+                readiness_detail_df
+            )
+        )
+
+    if readiness_detail_df is None or readiness_detail_df.empty:
+        st.warning(
+            "No target requirements could be matched to the "
+            "selected personnel and target mode."
+        )
+
+        with st.expander(
+            "Readiness calculation diagnostics"
+        ):
+            st.write(
+                {
+                    "Filtered personnel":
+                        len(filtered_personnel_df),
+                    "Target mode":
+                        target_mode,
+                    "Selected target SG":
+                        selected_target_sg,
+                    "Available rulers":
+                        list(ruler_map.keys()),
+                }
+            )
+
+        st.stop()
+
+    if readiness_summary_df is None or readiness_summary_df.empty:
+        st.warning(
+            "The competency data was loaded, but personnel-level "
+            "readiness could not be summarized."
+        )
+        st.stop()
+
+    # =========================================================================
+    # RESULT FILTERS
+    # =========================================================================
+
+    st.markdown(
+        "#### Readiness Result Filters"
+    )
+
+    (
+        coverage_filter_col,
+        readiness_status_filter_col,
+        result_count_col,
+    ) = st.columns(
+        [2, 2, 1],
+        vertical_alignment="bottom",
+    )
+
+    with coverage_filter_col:
+        coverage_range = st.slider(
+            "Assessment Coverage (%)",
+            min_value=0,
+            max_value=100,
+            value=(0, 100),
+            step=5,
+            key="rg_coverage",
+        )
+
+    with readiness_status_filter_col:
+        selected_readiness_statuses = (
+            st.multiselect(
+                "Readiness Status",
+                options=READINESS_STATUS_ORDER,
+                key="rg_status",
+            )
+        )
+
+    filtered_summary_df = (
+        readiness_summary_df[
+            readiness_summary_df[
+                "Assessment Coverage %"
+            ].between(
+                coverage_range[0],
+                coverage_range[1],
+                inclusive="both",
+            )
+        ]
+        .copy()
+    )
+
+    if selected_readiness_statuses:
+        filtered_summary_df = (
+            filtered_summary_df[
+                filtered_summary_df[
+                    "Readiness Status"
+                ].isin(
+                    selected_readiness_statuses
+                )
+            ]
+        )
+
+    with result_count_col:
+        st.metric(
+            "Filtered Personnel",
+            len(filtered_summary_df),
+        )
+
+    if filtered_summary_df.empty:
+        st.info(
+            "No readiness results match the selected coverage "
+            "and readiness-status filters."
+        )
+        st.stop()
+
+    selected_dataframe_indices = (
+        filtered_summary_df[
+            "DataFrame Index"
+        ]
+        .dropna()
+        .tolist()
+    )
+
+    filtered_detail_df = (
+        readiness_detail_df[
+            readiness_detail_df[
+                "DataFrame Index"
+            ].isin(
+                selected_dataframe_indices
+            )
+        ]
+        .copy()
+    )
+
+    # =========================================================================
+    # KPI SUMMARY
+    # =========================================================================
+
+    total_personnel = len(
+        filtered_summary_df
+    )
+
+    fully_assessed_count = int(
+        (
+            filtered_summary_df[
+                "Assessment Coverage %"
+            ] >= 90
+        ).sum()
+    )
+
+    ready_count = int(
+        (
+            filtered_summary_df[
+                "Readiness Status"
+            ] == "Ready"
+        ).sum()
+    )
+
+    near_ready_count = int(
+        (
+            filtered_summary_df[
+                "Readiness Status"
+            ] == "Near Ready"
+        ).sum()
+    )
+
+    major_gap_personnel_count = int(
+        (
+            filtered_summary_df[
+                "Major Gaps"
+            ] > 0
+        ).sum()
+    )
+
+    median_readiness = (
+        filtered_summary_df[
+            "Weighted Readiness %"
+        ]
+        .median()
+    )
+
+    (
+        total_kpi_col,
+        assessed_kpi_col,
+        ready_kpi_col,
+        near_ready_kpi_col,
+        major_gap_kpi_col,
+        median_kpi_col,
+    ) = st.columns(6)
+
+    total_kpi_col.metric(
+        "Personnel",
+        total_personnel,
+    )
+
+    assessed_kpi_col.metric(
+        "Fully Assessed",
+        fully_assessed_count,
+        (
+            f"{fully_assessed_count / total_personnel * 100:.0f}%"
+            if total_personnel > 0
+            else None
+        ),
+    )
+
+    ready_kpi_col.metric(
+        "Ready",
+        ready_count,
+    )
+
+    near_ready_kpi_col.metric(
+        "Near Ready",
+        near_ready_count,
+    )
+
+    major_gap_kpi_col.metric(
+        "With Major Gaps",
+        major_gap_personnel_count,
+    )
+
+    median_kpi_col.metric(
+        "Median Readiness",
+        (
+            f"{median_readiness:.0f}%"
+            if pd.notna(
+                median_readiness
+            )
+            else "N/A"
+        ),
+    )
+
+    with st.expander( "📐 Metric Methodology — How are these metrics calculated?", expanded=False):
+                        render_readiness_methodology()
+
+    st.info( "ℹ️: "
+        "Competency readiness is a decision-support indicator. "
+        "Assessment and progression decisions should also consider "
+        "experience, performance evidence, assignment exposure, "
+        "business needs, and leadership judgment."
+    )
+
+    # =========================================================================
+    # ANALYTICAL TABS
+    # =========================================================================
+    
+    (
+        overview_tab,
+        distribution_tab,
+        gap_deep_dive_tab,
+        personnel_priority_tab,
+    ) = st.tabs(
+        [
+            "📊 Overview",
+            "📈 Readiness Distribution",
+            "🔍 Gap Deep Dive",
+            "🎯 Personnel Prioritization",
+        ]
+    )
+
+    # =========================================================================
+    # TAB 1: OVERVIEW
+    # =========================================================================
+
+    with overview_tab:
+        st.subheader(
+            "Fraternity Readiness Overview"
+        )
+
+        overview_left_col, overview_right_col = (
+            st.columns(2)
+        )
+
+        with overview_left_col:
+            readiness_status_figure = (
+                _create_readiness_status_chart(
+                    filtered_summary_df
+                )
+            )
+
+            st.plotly_chart(
+                readiness_status_figure,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            )
+
+        with overview_right_col:
+            department_readiness_figure = (
+                _create_department_readiness_chart(
+                    filtered_summary_df
+                )
+            )
+
+            st.plotly_chart(
+                department_readiness_figure,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            )
+
+        st.subheader(
+            "Personnel Ready for Assessment"
+        )
+
+        ready_personnel_df = (
+            filtered_summary_df[
+                filtered_summary_df[
+                    "Readiness Status"
+                ] == "Ready"
+            ]
+            .sort_values(
+                by=[
+                    "Weighted Readiness %",
+                    "Strict Readiness %",
+                ],
+                ascending=[
+                    False,
+                    False,
+                ],
+            )
+        )
+
+        if ready_personnel_df.empty:
+            st.info(
+                "No personnel currently satisfy all competency "
+                "readiness requirements."
+            )
+
+        else:
+            ready_display_columns = [
+                "Name",
+                "Staff ID",
+                "Department",
+                "Staff Position",
+                "Current SG",
+                "Career Ruler",
+                "Target SG",
+                "Next Grade Base",
+                "Next Grade Keys",
+                "Next Grade Pacing",
+                "Next Grade Emerging",
+                "Next Grade CTI",
+                "Assessment Coverage %",
+                "Weighted Readiness %",
+                "Strict Readiness %",
+                "Major Gaps",
+                "Recommended Action",
+            ]
+
+            ready_display_columns = [
+                column
+                for column in ready_display_columns
+                if column in ready_personnel_df.columns
+            ]
+
+            st.dataframe(
+                ready_personnel_df[
+                    ready_display_columns
+                ],
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Assessment Coverage %":
+                        st.column_config.ProgressColumn(
+                            "Coverage",
+                            min_value=0,
+                            max_value=100,
+                            format="%.0f%%",
+                        ),
+                    "Weighted Readiness %":
+                        st.column_config.ProgressColumn(
+                            "Weighted Readiness",
+                            min_value=0,
+                            max_value=100,
+                            format="%.0f%%",
+                        ),
+                    "Strict Readiness %":
+                        st.column_config.ProgressColumn(
+                            "Strict Readiness",
+                            min_value=0,
+                            max_value=100,
+                            format="%.0f%%",
+                        ),
+                },
+            )
+
+        with st.expander(
+            "Full Personnel Readiness Table"
+        ):
+            overview_table_columns = [
+                "Name",
+                "Staff ID",
+                "Department",
+                "Staff Position",
+                "Employment Category",
+                "Current SG",
+                "Career Ruler",
+                "Target SG",
+                "Required Competencies",
+                "Assessed Competencies",
+                "Next Grade Base",
+                "Next Grade Keys",
+                "Next Grade Pacing",
+                "Next Grade Emerging",
+                "Next Grade CTI",
+                "Assessment Coverage %",
+                "Weighted Readiness %",
+                "Strict Readiness %",
+                "Met Competencies",
+                "Minor Gaps",
+                "Major Gaps",
+                "Gap Burden",
+                "Readiness Status",
+                "Recommended Action",
+            ]
+
+            overview_table_columns = [
+                column
+                for column in overview_table_columns
+                if column in filtered_summary_df.columns
+            ]
+
+            st.dataframe(
+                filtered_summary_df[
+                    overview_table_columns
+                ].sort_values(
+                    "Weighted Readiness %",
+                    ascending=False,
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+    
+    # =========================================================================
+    # TAB 2: READINESS DISTRIBUTION
+    # =========================================================================
+
+    with distribution_tab:
+        st.subheader(
+            "Readiness Distribution and Assessment Coverage"
+        )
+
+        readiness_box_figure = (
+            _create_readiness_box_plot(
+                filtered_summary_df
+            )
+        )
+
+        st.plotly_chart(
+            readiness_box_figure,
+            width="stretch",
+            config={
+                "displaylogo": False,
+                "responsive": True,
+            },
+        )
+
+        (
+            distribution_heatmap_col,
+            distribution_scatter_col,
+        ) = st.columns(2)
+
+        with distribution_heatmap_col:
+            category_heatmap_figure = (
+                _create_category_readiness_heatmap(
+                    filtered_summary_df
+                )
+            )
+
+            st.plotly_chart(
+                category_heatmap_figure,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            )
+
+        with distribution_scatter_col:
+            coverage_scatter_figure = (
+                _create_readiness_coverage_scatter(
+                    filtered_summary_df
+                )
+            )
+
+            st.plotly_chart(
+                coverage_scatter_figure,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            )
+
+        with st.expander(
+            "How to interpret the coverage quadrant"
+        ):
+            st.markdown(
+                """
+                - **Upper right:** High measured readiness and sufficient assessment coverage.
+                - **Lower right:** Sufficiently assessed, but competency development is required.
+                - **Upper left:** Strong measured results, but insufficient assessment evidence.
+                - **Lower left:** Both under-assessed and below readiness expectations.
+                """
+            )
+
+    # =========================================================================
+    # TAB 3: GAP DEEP DIVE
+    # =========================================================================
+
+    with gap_deep_dive_tab:
+        st.subheader(
+            "Competency Gap Deep Dive"
+        )
+
+        category_gap_figure = (
+            _create_category_gap_distribution(
+                filtered_detail_df
+            )
+        )
+
+        st.plotly_chart(
+            category_gap_figure,
+            width="stretch",
+            config={
+                "displaylogo": False,
+                "responsive": True,
+            },
+        )
+
+        competency_risk_df = (
+            _build_competency_risk_summary(
+                filtered_detail_df
+            )
+        )
+
+        if competency_risk_df.empty:
+            st.info(
+                "No assessed competency gaps are available "
+                "for risk analysis."
+            )
+
+        else:
+            risk_matrix_col, ranking_chart_col = (
+                st.columns(2)
+            )
+
+            with risk_matrix_col:
+                competency_risk_figure = (
+                    _create_competency_risk_matrix(
+                        competency_risk_df
+                    )
+                )
+
+                st.plotly_chart(
+                    competency_risk_figure,
+                    width="stretch",
+                    config={
+                        "displaylogo": False,
+                        "responsive": True,
+                    },
+                )
+
+            with ranking_chart_col:
+                ranking_metric = st.selectbox(
+                    "Rank competency gaps by",
+                    options=[
+                        "Affected personnel",
+                        "Average gap severity",
+                        "Total gap burden",
+                        "Major-gap count",
+                    ],
+                    key="rg_ranking_metric",
+                )
+
+                top_gap_figure = (
+                    _create_top_competency_gap_chart(
+                        risk_dataframe=(
+                            competency_risk_df
+                        ),
+                        ranking_metric=(
+                            ranking_metric
+                        ),
+                    )
+                )
+
+                st.plotly_chart(
+                    top_gap_figure,
+                    width="stretch",
+                    config={
+                        "displaylogo": False,
+                        "responsive": True,
+                    },
+                )
+
+            st.subheader(
+                "Department by Competency Gap Rate"
+            )
+
+            heatmap_scope = st.radio(
+                "Competencies shown",
+                options=[
+                    "Top 10",
+                    "Top 15",
+                    "All",
+                ],
+                horizontal=True,
+                key="rg_heatmap_scope",
+            )
+
+            heatmap_top_n = {
+                "Top 10": 10,
+                "Top 15": 15,
+                "All": "All",
+            }[heatmap_scope]
+
+            department_heatmap_figure = (
+                _create_department_competency_heatmap(
+                    detail_dataframe=(
+                        filtered_detail_df
+                    ),
+                    top_n=heatmap_top_n,
+                )
+            )
+
+            if department_heatmap_figure is None:
+                st.info(
+                    "No assessed competency data is available "
+                    "for the department heatmap."
+                )
+
+            else:
+                st.plotly_chart(
+                    department_heatmap_figure,
+                    width="stretch",
+                    config={
+                        "displaylogo": False,
+                        "responsive": True,
+                    },
+                )
+
+            with st.expander(
+                "Competency Risk Detail"
+            ):
+                risk_display_df = (
+                    competency_risk_df.sort_values(
+                        by=[
+                            "Gap Burden",
+                            "Affected Personnel",
+                        ],
+                        ascending=[
+                            False,
+                            False,
+                        ],
+                    )
+                )
+
+                st.dataframe(
+                    risk_display_df,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Gap Prevalence %":
+                            st.column_config.ProgressColumn(
+                                "Gap Prevalence",
+                                min_value=0,
+                                max_value=100,
+                                format="%.0f%%",
+                            ),
+                        "Average Gap Severity":
+                            st.column_config.NumberColumn(
+                                "Average Severity",
+                                format="%.2f",
+                            ),
+                        "Gap Burden":
+                            st.column_config.NumberColumn(
+                                "Gap Burden",
+                                format="%.0f",
+                            ),
+                    },
+                )
+
+    # =========================================================================
+    # TAB 4: PERSONNEL PRIORITIZATION
+    # =========================================================================
+
+    with personnel_priority_tab:
+        st.subheader("Personnel Development Prioritization")
+
+        personnel_priority_figure = (_create_personnel_priority_scatter(filtered_summary_df))
+
+        if isinstance(
+            personnel_priority_figure,
+            go.Figure,
+        ):
+            st.plotly_chart(
+                personnel_priority_figure,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                },
+            )
+
+        else:
+            st.info(
+                "The personnel prioritization chart cannot be displayed "
+                "because no valid readiness and gap-burden data is")
+
+            st.subheader("Priority Personnel Table")
+
+        priority_order = {
+            "Leadership Review Required": 0,
+            "Targeted Technical Development": 1,
+            "Focused Development Plan": 2,
+            "Close 1-2 Minor Gaps": 3,
+            "Complete Assessment": 4,
+            "Ready for Assessment": 5,
+        }
+
+        priority_dataframe = (
+            filtered_summary_df.copy()
+        )
+
+        priority_dataframe[
+            "_Priority Order"
+        ] = (
+            priority_dataframe[
+                "Recommended Action"
+            ]
+            .map(priority_order)
+            .fillna(99)
+        )
+
+        priority_dataframe = (
+            priority_dataframe.sort_values(
+                by=[
+                    "_Priority Order",
+                    "Major Gaps",
+                    "Gap Burden",
+                ],
+                ascending=[
+                    True,
+                    False,
+                    False,
+                ],
+            )
+            .drop(
+                columns=[
+                    "_Priority Order"
+                ]
+            )
+        )
+
+        priority_display_columns = [
+            "Name",
+            "Staff ID",
+            "Department",
+            "Staff Position",
+            "Current SG",
+            "Career Ruler",
+            "Target SG",
+            "Assessment Coverage %",
+            "Weighted Readiness %",
+            "Strict Readiness %",
+            "Major Gaps",
+            "Minor Gaps",
+            "Gap Burden",
+            "Top Gap",
+            "Years in Grade",
+            "Readiness Status",
+            "Recommended Action",
+        ]
+
+        priority_display_columns = [
+            column
+            for column in priority_display_columns
+            if column in priority_dataframe.columns
+        ]
+
+        st.dataframe(
+            priority_dataframe[
+                priority_display_columns
+            ],
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Assessment Coverage %":
+                    st.column_config.ProgressColumn(
+                        "Coverage",
+                        min_value=0,
+                        max_value=100,
+                        format="%.0f%%",
+                    ),
+                "Weighted Readiness %":
+                    st.column_config.ProgressColumn(
+                        "Weighted Readiness",
+                        min_value=0,
+                        max_value=100,
+                        format="%.0f%%",
+                    ),
+                "Strict Readiness %":
+                    st.column_config.ProgressColumn(
+                        "Strict Readiness",
+                        min_value=0,
+                        max_value=100,
+                        format="%.0f%%",
+                    ),
+                "Gap Burden":
+                    st.column_config.NumberColumn(
+                        "Gap Burden",
+                        format="%.0f",
+                    ),
+                "Years in Grade":
+                    st.column_config.NumberColumn(
+                        "Years in Grade",
+                        format="%.0f",
+                    ),
+            },
+        )
+
+        st.markdown(
+            "#### Selected Personnel Detail"
+        )
+
+        priority_person_options = (
+            priority_dataframe[
+                "Name"
+            ]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+
+        if not priority_person_options:
+            st.info(
+                "No personnel are available for detailed review."
+            )
+
+        else:
+            selected_priority_person = st.selectbox(
+                "Select personnel for gap detail",
+                options=priority_person_options,
+                key="rg_priority_person",
+            )
+
+            selected_person_rows = (
+                priority_dataframe[
+                    priority_dataframe[
+                        "Name"
+                    ] == selected_priority_person
+                ]
+            )
+
+            if selected_person_rows.empty:
+                st.info(
+                    "The selected personnel summary "
+                    "could not be found."
+                )
+
+            else:
+                selected_person_summary = (
+                    selected_person_rows.iloc[0]
+                )
+
+                selected_dataframe_index = (
+                    selected_person_summary[
+                        "DataFrame Index"
+                    ]
+                )
+
+                person_detail_dataframe = (
+                    filtered_detail_df[
+                        filtered_detail_df[
+                            "DataFrame Index"
+                        ] == selected_dataframe_index
+                    ]
+                    .copy()
+                )
+
+                severity_order = {
+                    "Major Gap": 0,
+                    "Minor Gap": 1,
+                    "Not Assessed": 2,
+                    "Met": 3,
+                }
+
+                person_detail_dataframe[
+                    "_Severity Order"
+                ] = (
+                    person_detail_dataframe[
+                        "Gap Severity"
+                    ]
+                    .map(severity_order)
+                    .fillna(99)
+                )
+
+                person_detail_dataframe = (
+                    person_detail_dataframe.sort_values(
+                        by=[
+                            "_Severity Order",
+                            "Gap",
+                            "Competency Code",
+                        ],
+                        ascending=[
+                            True,
+                            True,
+                            True,
+                        ],
+                        na_position="last",
+                    )
+                    .drop(
+                        columns=[
+                            "_Severity Order"
+                        ]
+                    )
+                )
+
+                (
+                    person_readiness_col,
+                    person_coverage_col,
+                    person_major_gap_col,
+                    person_action_col,
+                ) = st.columns(4)
+
+                person_readiness_col.metric(
+                    "Weighted Readiness",
+                    (
+                        f"{selected_person_summary['Weighted Readiness %']:.0f}%"
+                    ),
+                )
+
+                person_coverage_col.metric(
+                    "Assessment Coverage",
+                    (
+                        f"{selected_person_summary['Assessment Coverage %']:.0f}%"
+                    ),
+                )
+
+                person_major_gap_col.metric(
+                    "Major Gaps",
+                    int(
+                        selected_person_summary[
+                            "Major Gaps"
+                        ]
+                    ),
+                )
+
+                person_action_col.metric(
+                    "Recommended Action",
+                    selected_person_summary[
+                        "Recommended Action"
+                    ],
+                )
+
+                person_detail_columns = [
+                    "Category",
+                    "Competency Code",
+                    "Competency Name",
+                    "Actual Score",
+                    "Target Score",
+                    "Gap",
+                    "Gap Severity",
+                ]
+
+                person_detail_columns = [
+                    column
+                    for column in person_detail_columns
+                    if column
+                    in person_detail_dataframe.columns
+                ]
+
+                st.dataframe(
+                    person_detail_dataframe[
+                        person_detail_columns
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Actual Score":
+                            st.column_config.NumberColumn(
+                                "Actual",
+                                format="%.2f",
+                            ),
+                        "Target Score":
+                            st.column_config.NumberColumn(
+                                "Target",
+                                format="%.2f",
+                            ),
+                        "Gap":
+                            st.column_config.NumberColumn(
+                                "Gap",
+                                format="%.2f",
+                            ),
+                    },
+                )
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: CHART BUILDER - DYNAMIC CHART CREATION WITH DATA ELEMENT SELECTION
@@ -3797,6 +12051,38 @@ elif page == "⚙️ Admin: Import Data":
                 tmp_path
             )
 
+            st.dataframe(
+                    (
+                        df[
+                            [
+                                "Staff Position",
+                                "SG",
+                                "Canonical Position",
+                                "Canonical SG",
+                            ]
+                        ]
+                        .value_counts()
+                        .reset_index(name="Count")
+                        .sort_values(["Canonical SG", "Canonical Position"])
+                    )
+                )
+            
+            st.dataframe(
+                    (
+                        df[
+                            [
+                                "Staff Position",
+                                "SG",
+                                "Canonical Position",
+                                "Canonical SG",
+                            ]
+                        ]
+                        .value_counts()
+                        .reset_index(name="Count")
+                        .sort_values(["Canonical SG", "Canonical Position"])
+                    )
+                )
+
             ruler_map_import, tech_labels_import = (
                 load_ruler_and_tech_mapping(
                     tmp_path
@@ -3999,159 +12285,46 @@ elif page == "⚙️ Admin: Import Data":
                 except OSError:
                     pass
 # ═════════════════════════════════════════════════════════════════════════════
-# PAGE: ADMIN - PERSONNEL CRUD
 # ═════════════════════════════════════════════════════════════════════════════
-elif page == "⚙️ Admin: Personnel CRUD":
-    st.title("⚙️ Admin: Personnel CRUD")
-
-    tab1, tab2, tab3 = st.tabs(["➕ Add", "✏️ Edit", "🗑️ Delete"])
-
-    with tab1:
-        with st.form("add_form"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                name = st.text_input("Name *")
-                staff_id = st.text_input("Staff ID *")
-                email = st.text_input("Email")
-            with c2:
-                gender = st.selectbox("Gender", ["M", "F"])
-                age = st.number_input("Age", 18, 70, 30)
-                nationality = st.text_input("Nationality", "Malaysia")
-            with c3:
-                department = st.selectbox("Department", DEPARTMENTS[:-1])
-                position = st.selectbox("Staff Position", POSITIONS[:-1])
-                chat_status = st.selectbox("Chat Status", CHAT_STATUS_OPTIONS)
-
-            if st.form_submit_button("Add Personnel", type="primary"):
-                if not name or not staff_id:
-                    st.error("Name and Staff ID are required.")
-                else:
-                    session = get_session(engine)
-                    ok, msg, pid = db_ops.add_personnel(session, {
-                        "name": name, "staff_id": staff_id, "email": email,
-                        "gender": gender, "age": age, "nationality": nationality,
-                        "department": department, "staff_position": position,
-                        "chat_status": chat_status,
-                    })
-                    session.close()
-                    if ok:
-                        st.success(msg)
-                        bump_version()
-                        st.cache_data.clear()
-                    else:
-                        st.error(msg)
-
-    with tab2:
-        if df.empty:
-            st.info("No personnel to edit.")
-        else:
-            names = sorted(df["Name"].dropna().unique())
-            sel = st.selectbox("Select person", names, key="edit_sel")
-            row = df[df["Name"] == sel].iloc[0]
-            pid = None
-            if "id" in row.index and pd.notna(row["id"]):
-                pid = int(row["id"])
-            else:
-                session = get_session(engine)
-                try:
-                    person = None
-                    staff_id = row.get("Staff ID")
-                    if staff_id is not None and not pd.isna(staff_id):
-                        person = session.query(Personnel).filter(Personnel.staff_id == str(staff_id)).first()
-                    if person is None:
-                        person = session.query(Personnel).filter(Personnel.name == row.get("Name")).first()
-                    if person:
-                        pid = person.id
-                finally:
-                    session.close()
-
-            if pid is None:
-                st.info("No database personnel ID for this person. Import data to enable editing.")
-                st.stop()
-
-            with st.form("edit_form"):
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    name = st.text_input("Name", row["Name"])
-                    age = st.number_input("Age", 18, 70, int(row["Age"]) if pd.notna(row["Age"]) else 30)
-                with c2:
-                    department = st.text_input("Department", row.get("Department") or "")
-                    position = st.text_input("Staff Position", row.get("Staff Position") or "")
-                with c3:
-                    sg = st.text_input("SG (Grade)", row.get("SG") or "")
-                    chat_status = st.selectbox("Chat Status", CHAT_STATUS_OPTIONS,
-                                              index=CHAT_STATUS_OPTIONS.index(row["Chat Status"])
-                                              if row["Chat Status"] in CHAT_STATUS_OPTIONS else 2)
-
-                if st.form_submit_button("Update", type="primary"):
-                    session = get_session(engine)
-                    ok, msg = db_ops.update_personnel(session, pid, {
-                        "name": name, "age": age, "department": department,
-                        "staff_position": position, "sg": sg, "chat_status": chat_status,
-                    })
-                    session.close()
-                    if ok:
-                        st.success(msg)
-                        bump_version()
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-    with tab3:
-        if df.empty:
-            st.info("No personnel to delete.")
-        else:
-            names = sorted(df["Name"].dropna().unique())
-            sel = st.selectbox("Select person to delete", names, key="del_sel")
-            row = df[df["Name"] == sel].iloc[0]
-            pid = None
-            if "id" in row.index and pd.notna(row["id"]):
-                pid = int(row["id"])
-            else:
-                session = get_session(engine)
-                try:
-                    person = None
-                    staff_id = row.get("Staff ID")
-                    if staff_id is not None and not pd.isna(staff_id):
-                        person = session.query(Personnel).filter(Personnel.staff_id == str(staff_id)).first()
-                    if person is None:
-                        person = session.query(Personnel).filter(Personnel.name == row.get("Name")).first()
-                    if person:
-                        pid = person.id
-                finally:
-                    session.close()
-
-            if pid is None:
-                st.info("No database personnel ID for this person. Import data to enable deletion.")
-                st.stop()
-
-            st.warning(f"⚠️ This will soft-delete **{sel}** (Staff ID: {row['Staff ID']})")
-            if st.button("Confirm Delete", type="primary"):
-                session = get_session(engine)
-                ok, msg = db_ops.delete_personnel(session, pid)
-                session.close()
-                if ok:
-                    st.success(msg)
-                    bump_version()
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error(msg)
-
+# PAGE: ADMIN - PERSONNEL DATABASE SETTINGS
 # ═════════════════════════════════════════════════════════════════════════════
-# PAGE: ADMIN - ASSESSMENT ENTRY
-# ═════════════════════════════════════════════════════════════════════════════
-elif page == "⚙️ Admin: Assessment Entry":
-    st.title("⚙️ Admin: New Assessment Entry")
+elif page == "⚙️ Admin: Personnel Database Settings":
+    st.title("⚙️ Admin: Personnel Database Settings")
+
+    def validate_numeric_range(value, default, min_value, max_value):
+        """Return a validated numeric value within a safe range, else fallback."""
+        try:
+            numeric = pd.to_numeric(value, errors="coerce")
+            if pd.isna(numeric):
+                return default
+            val = float(numeric)
+            if min_value <= val <= max_value:
+                return val
+            return default
+        except Exception:
+            return default
+
+    def validate_date_value(value, default=None):
+        """Return a valid date or fallback to today."""
+        default = date.today() if default is None else default
+        try:
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return default
+            dt = pd.to_datetime(value, errors="coerce")
+            if pd.notna(dt):
+                return dt.date()
+        except Exception:
+            pass
+        return default
 
     if df.empty:
         st.info("No personnel available. Import data first.")
         st.stop()
 
     names = sorted(df["Name"].dropna().unique())
-    sel = st.selectbox("Select Personnel", names)
-    row = df[df["Name"] == sel].iloc[0]
+    selected_name = st.selectbox("Select Personnel", names, key="personnel_db_selector")
+    row = df[df["Name"] == selected_name].iloc[0]
+
     pid = None
     if "id" in row.index and pd.notna(row["id"]):
         pid = int(row["id"])
@@ -4170,64 +12343,426 @@ elif page == "⚙️ Admin: Assessment Entry":
             session.close()
 
     if pid is None:
-        st.info("No database personnel ID for this person. Import data to enable assessment entry.")
+        st.info("No database personnel ID found for this person. Import data to enable editing.")
         st.stop()
 
-    st.markdown(f"**{sel}** — {row.get('Staff Position')} ({row.get('SG')}) — {row.get('Department')}")
+    st.caption(f"Editing: **{selected_name}**")
+    form_key_prefix = f"personnel_db_{pid}"
+    personnel_tab, assessment_tab, delete_tab = st.tabs(
+        ["✏️ Edit Personnel Info", "🧾 Assessment Entry", "🗑️ Delete Personnel"]
+    )
 
-    with st.form("assessment_form"):
-        c1, c2 = st.columns(2)
-        with c1:
-            adate = st.date_input("Assessment Date", value=date.today())
-            level = st.selectbox("Assessment Level", ASSESSMENT_LEVELS)
-        with c2:
-            assessor1 = st.text_input("Assessor 1")
-            supervisor = st.text_input("Supervisor")
+    with personnel_tab:
+        with st.form("personnel_database_form"):
+            st.markdown("### Personal")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                name = st.text_input(
+                    "Name",
+                    value=str(row.get("Name") or ""),
+                    key=f"{form_key_prefix}_db_person_name",
+                )
+                staff_id = st.text_input(
+                    "Staff ID",
+                    value=str(row.get("Staff ID") or ""),
+                    key=f"{form_key_prefix}_db_staff_id",
+                )
+                email = st.text_input(
+                    "Email",
+                    value=str(row.get("Email Address") or ""),
+                    key=f"{form_key_prefix}_db_email",
+                )
 
-        st.markdown("### Competency Scores (Actual / Target — leave Target as previous if unsure)")
+            with col2:
+                gender_options = ["M", "F", "Other"]
+                gender_value = str(row.get("Gender") or "M")
+                gender_index = gender_options.index(gender_value) if gender_value in gender_options else 0
+                gender = st.selectbox("Gender", gender_options, index=gender_index, key=f"{form_key_prefix}_db_gender")
 
-        score_inputs = {}
-        for ctype, info in COMP_TYPES.items():
-            with st.expander(f"{info['label']} ({ctype})", expanded=(ctype == "B")):
-                for code in info["cols"]:
-                    prev_actual = row.get(code)
-                    prev_req = row.get(f"R-{code}")
-                    cc1, cc2 = st.columns(2)
-                    with cc1:
-                        actual = st.number_input(
-                            f"{code} Actual", 0.0, 5.0,
-                            float(prev_actual) if pd.notna(prev_actual) else 0.0,
-                            step=0.5, key=f"act_{code}"
-                        )
-                    with cc2:
-                        req = st.number_input(
-                            f"{code} Target", 0.0, 5.0,
-                            float(prev_req) if pd.notna(prev_req) else 3.0,
-                            step=0.5, key=f"req_{code}"
-                        )
-                    score_inputs[code] = {"actual": actual, "req": req, "gap": round(max(req - actual, 0), 2)}
+                age_value = validate_numeric_range(row.get("Age"), 30, 18, 100)
+                age = st.number_input(
+                    "Age",
+                    min_value=18,
+                    max_value=100,
+                    value=int(age_value),
+                    step=1,
+                    key=f"{form_key_prefix}_db_age",
+                )
 
-        submitted = st.form_submit_button("💾 Save Assessment", type="primary")
+                birth_year_value = validate_numeric_range(row.get("Birth Year"), 1980, 1950, 2010)
+                birth_year = st.number_input(
+                    "Birth Year",
+                    min_value=1950,
+                    max_value=2010,
+                    value=int(birth_year_value),
+                    step=1,
+                    key=f"{form_key_prefix}_db_birth_year",
+                )
 
-        if submitted:
+                nationality = st.text_input(
+                    "Nationality",
+                    value=str(row.get("Nationality") or "Malaysia"),
+                    key=f"{form_key_prefix}_db_nationality",
+                )
+
+            with col3:
+                employment_category = st.text_input(
+                    "Employment Category",
+                    value=str(row.get("Employment Category") or ""),
+                    key=f"{form_key_prefix}_db_employment_category",
+                )
+                department = st.selectbox(
+                    "Department",
+                    DEPARTMENTS[:-1],
+                    index=DEPARTMENTS[:-1].index(str(row.get("Department") or "DPE")) if str(row.get("Department") or "DPE") in DEPARTMENTS[:-1] else 0,
+                    key=f"{form_key_prefix}_db_department",
+                )
+                staff_position = st.selectbox(
+                    "Staff Position",
+                    POSITIONS[:-1],
+                    index=POSITIONS[:-1].index(str(row.get("Staff Position") or "Executive")) if str(row.get("Staff Position") or "Executive") in POSITIONS[:-1] else 0,
+                    key=f"{form_key_prefix}_db_staff_position",
+                )
+                sg = st.text_input(
+                    "SG",
+                    value=str(row.get("SG") or (POSITION_TO_SG.get(str(row.get("Staff Position") or ""), ""))),
+                    key=f"{form_key_prefix}_db_sg",
+                )
+
+            st.markdown("### Employment")
+            emp1, emp2, emp3 = st.columns(3)
+
+            with emp1:
+                section_name = st.text_input(
+                    "Section Name",
+                    value=str(row.get("Section Name") or ""),
+                    key=f"{form_key_prefix}_db_section_name",
+                )
+                unit_name = st.text_input(
+                    "Unit Name",
+                    value=str(row.get("Unit Name") or ""),
+                    key=f"{form_key_prefix}_db_unit_name",
+                )
+                sub_unit = st.text_input(
+                    "Sub Unit",
+                    value=str(row.get("Sub Unit") or ""),
+                    key=f"{form_key_prefix}_db_sub_unit",
+                )
+                current_assignment = st.text_input(
+                    "Current Assignment",
+                    value=str(row.get("Current Assignment") or ""),
+                    key=f"{form_key_prefix}_db_current_assignment",
+                )
+
+            with emp2:
+                joining_date = st.date_input(
+                    "Joining Date",
+                    value=validate_date_value(row.get("Joining Date")),
+                    key=f"{form_key_prefix}_db_joining_date",
+                )
+                contract_expire_date = st.date_input(
+                    "Contract Expire Date",
+                    value=validate_date_value(row.get("Contract Expire Date")),
+                    key=f"{form_key_prefix}_db_contract_expire_date",
+                )
+                assignment_date = st.date_input(
+                    "Assignment Date",
+                    value=validate_date_value(row.get("Assignment Date") or row.get("Date of Appointment to Current Grade")),
+                    key=f"{form_key_prefix}_db_assignment_date",
+                )
+                sg_start_date = st.date_input(
+                    "SG Start Date",
+                    value=validate_date_value(row.get("SG Start Date") or row.get("Date of Appointment to Current Grade")),
+                    key=f"{form_key_prefix}_db_sg_start_date",
+                )
+
+            with emp3:
+                years_in_pet = st.number_input(
+                    "Years in PET",
+                    min_value=0.0,
+                    max_value=60.0,
+                    value=float(validate_numeric_range(row.get("Years in PET"), 0, 0, 60)),
+                    step=0.5,
+                    key=f"{form_key_prefix}_db_years_in_pet",
+                )
+                years_re_experience = st.number_input(
+                    "Years of RE Experience",
+                    min_value=0.0,
+                    max_value=60.0,
+                    value=float(validate_numeric_range(row.get("Years of RE Experience"), 0, 0, 60)),
+                    step=0.5,
+                    key=f"{form_key_prefix}_db_years_re_experience",
+                )
+                sg_years = st.number_input(
+                    "Years in Salary Grade",
+                    min_value=0.0,
+                    max_value=60.0,
+                    value=float(validate_numeric_range(row.get("Years in Salary Grade"), 0, 0, 60)),
+                    step=0.5,
+                    key=f"{form_key_prefix}_db_sg_years",
+                )
+                age_promoted = st.number_input(
+                    "Age Promoted",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(validate_numeric_range(row.get("Age Promoted to Staff or Principal"), 0, 18, 100)),
+                    step=1.0,
+                    key=f"{form_key_prefix}_db_age_promoted",
+                )
+                assignment_length = st.number_input(
+                    "Length in Current Assignment",
+                    min_value=0.0,
+                    max_value=600.0,
+                    value=float(validate_numeric_range(row.get("Length in Current Assignment"), 0, 0, 600)),
+                    step=1.0,
+                    key=f"{form_key_prefix}_db_assignment_length",
+                )
+
+            st.markdown("### Tenure")
+            tenure1, tenure2 = st.columns(2)
+            with tenure1:
+                chat_status = st.selectbox(
+                    "Chat Status",
+                    CHAT_STATUS_OPTIONS,
+                    index=CHAT_STATUS_OPTIONS.index(str(row.get("Chat Status") or "No Need")) if str(row.get("Chat Status") or "No Need") in CHAT_STATUS_OPTIONS else 0,
+                    key=f"{form_key_prefix}_db_chat_status",
+                )
+                chat_date = st.date_input(
+                    "Chat Date",
+                    value=validate_date_value(row.get("Chat Date")),
+                    key=f"{form_key_prefix}_db_chat_date",
+                )
+                assessment_level = st.selectbox(
+                    "Assessment Level",
+                    ASSESSMENT_LEVELS,
+                    index=ASSESSMENT_LEVELS.index(str(row.get("Assessment Level") or ASSESSMENT_LEVELS[0])) if str(row.get("Assessment Level") or ASSESSMENT_LEVELS[0]) in ASSESSMENT_LEVELS else 0,
+                    key=f"{form_key_prefix}_db_assessment_level",
+                )
+                last_assessment_date = st.date_input(
+                    "Last Assessment Date",
+                    value=validate_date_value(row.get("Last Assessment Date") or row.get("Last Assesment Date")),
+                    key=f"{form_key_prefix}_db_last_assessment_date",
+                )
+
+            with tenure2:
+                sub_disciplines = st.text_input(
+                    "Sub-disciplines",
+                    value=str(row.get("Sub-Disciplines") or ""),
+                    key=f"{form_key_prefix}_db_sub_disciplines",
+                )
+                potential = st.text_input(
+                    "Potential",
+                    value=str(row.get("Potential") or ""),
+                    key=f"{form_key_prefix}_db_potential",
+                )
+                resource_sme = st.text_input(
+                    "Resource / SME",
+                    value=str(row.get("Resource/SME") or ""),
+                    key=f"{form_key_prefix}_db_resource_sme",
+                )
+                interest = st.text_input(
+                    "Interest",
+                    value=str(row.get("Interest") or ""),
+                    key=f"{form_key_prefix}_db_interest",
+                )
+
+            st.markdown("### Assessment")
+            assess1, assess2 = st.columns(2)
+            with assess1:
+                strength = st.text_area(
+                    "Strength",
+                    value=str(row.get("Strength") or ""),
+                    key=f"{form_key_prefix}_db_strength",
+                    height=140,
+                )
+                recommendation = st.text_area(
+                    "Recommendation",
+                    value=str(row.get("Recommendation") or ""),
+                    key=f"{form_key_prefix}_db_recommendation",
+                    height=140,
+                )
+            with assess2:
+                preference = st.text_input(
+                    "Preference",
+                    value=str(row.get("Preference") or ""),
+                    key=f"{form_key_prefix}_db_preference",
+                )
+                comment = st.text_area(
+                    "Comment / Suggestion",
+                    value=str(row.get("Comment/Suggestion") or row.get("Comment") or ""),
+                    key=f"{form_key_prefix}_db_comment",
+                    height=140,
+                )
+                assessor1 = st.text_input(
+                    "Assessor 1",
+                    value=str(row.get("Assesor1") or row.get("Assessor1") or ""),
+                    key=f"{form_key_prefix}_db_assessor1",
+                )
+                assessor2 = st.text_input(
+                    "Assessor 2",
+                    value=str(row.get("Assessor2") or ""),
+                    key=f"{form_key_prefix}_db_assessor2",
+                )
+                supervisor = st.text_input(
+                    "Supervisor",
+                    value=str(row.get("Supervisor") or ""),
+                    key=f"{form_key_prefix}_db_supervisor",
+                )
+                remarks = st.text_area(
+                    "Remarks",
+                    value=str(row.get("Remarks") or ""),
+                    key=f"{form_key_prefix}_db_remarks",
+                    height=120,
+                )
+
+            if st.form_submit_button("💾 Save Personnel Info", type="primary"):
+                normalized_sg = (sg or "").strip() or POSITION_TO_SG.get(str(staff_position or ""), "")
+                payload = {
+                    "name": name.strip(),
+                    "staff_id": staff_id.strip(),
+                    "email": email.strip() or None,
+                    "gender": gender,
+                    "age": int(age),
+                    "birth_year": int(birth_year),
+                    "nationality": nationality.strip() or "Malaysia",
+                    "employment_category": employment_category.strip() or None,
+                    "department": department,
+                    "section_name": section_name.strip() or None,
+                    "unit_name": unit_name.strip() or None,
+                    "sub_unit": sub_unit.strip() or None,
+                    "staff_position": str(staff_position),
+                    "sg": normalized_sg,
+                    "joining_date": joining_date,
+                    "contract_expire_date": contract_expire_date,
+                    "years_in_pet": float(years_in_pet),
+                    "years_re_experience": float(years_re_experience),
+                    "sg_years": float(sg_years),
+                    "sg_start_date": sg_start_date,
+                    "age_promoted": float(age_promoted),
+                    "current_assignment": current_assignment.strip() or None,
+                    "assignment_date": assignment_date,
+                    "assignment_length": float(assignment_length),
+                    "chat_status": chat_status,
+                    "chat_date": chat_date,
+                    "assessment_level": assessment_level,
+                    "last_assessment_date": last_assessment_date,
+                    "sub_disciplines": sub_disciplines.strip() or None,
+                    "potential": potential.strip() or None,
+                    "strength": strength.strip() or None,
+                    "recommendation": recommendation.strip() or None,
+                    "resource_sme": resource_sme.strip() or None,
+                    "interest": interest.strip() or None,
+                    "preference": preference.strip() or None,
+                    "comment": comment.strip() or None,
+                    "assessor1": assessor1.strip() or None,
+                    "assessor2": assessor2.strip() or None,
+                    "supervisor": supervisor.strip() or None,
+                    "remarks": remarks.strip() or None,
+                }
+
+                session = get_session(engine)
+                try:
+                    ok, msg = db_ops.update_personnel(session, pid, payload)
+                    if ok:
+                        st.success(msg)
+                        bump_version()
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                finally:
+                    session.close()
+
+    with assessment_tab:
+        st.markdown(f"### Assessment Entry for **{selected_name}**")
+        st.markdown(
+            f"**{row.get('Staff Position', '')}** • **{row.get('Department', '')}** • **{row.get('SG', '')}**"
+        )
+
+        with st.form("assessment_entry_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                adate = st.date_input("Assessment Date", value=date.today(), key="admin_assessment_date")
+                level = st.selectbox("Assessment Level", ASSESSMENT_LEVELS, key="admin_assessment_level")
+            with c2:
+                assessor1_entry = st.text_input("Assessor 1", key="admin_assessor1")
+                supervisor_entry = st.text_input("Supervisor", key="admin_supervisor")
+
+            st.markdown("### Competency Scores")
+            st.caption("Actual / Target — leave target as the previous value if unsure.")
+
+            score_inputs = {}
+            for ctype, info in COMP_TYPES.items():
+                with st.expander(f"{info['label']} ({ctype})", expanded=(ctype == "B")):
+                    for code in info["cols"]:
+                        prev_actual = row.get(code)
+                        prev_req = row.get(f"R-{code}")
+                        c_left, c_right = st.columns(2)
+                        with c_left:
+                            actual = st.number_input(
+                                f"{code} Actual",
+                                min_value=0.0,
+                                max_value=5.0,
+                                value=float(prev_actual) if pd.notna(prev_actual) else 0.0,
+                                step=0.5,
+                                key=f"admin_act_{code}_{pid}",
+                            )
+                        with c_right:
+                            requirement = st.number_input(
+                                f"{code} Target",
+                                min_value=0.0,
+                                max_value=5.0,
+                                value=float(prev_req) if pd.notna(prev_req) else 3.0,
+                                step=0.5,
+                                key=f"admin_req_{code}_{pid}",
+                            )
+                        score_inputs[code] = {
+                            "actual": actual,
+                            "req": requirement,
+                            "gap": round(max(requirement - actual, 0), 2),
+                        }
+
+            if st.form_submit_button("💾 Save Assessment", type="primary"):
+                session = get_session(engine)
+                try:
+                    ok, msg, aid = db_ops.add_assessment(session, pid, {
+                        "assessment_date": adate,
+                        "assessment_level": level,
+                        "assessor1": assessor1_entry.strip() or None,
+                        "supervisor": supervisor_entry.strip() or None,
+                    })
+                    if ok:
+                        ok2, msg2 = db_ops.add_competency_scores(session, aid, pid, score_inputs)
+                        if ok2:
+                            st.success(f"✅ Assessment saved for {selected_name} on {adate}")
+                            bump_version()
+                            st.cache_data.clear()
+                        else:
+                            st.error(msg2)
+                    else:
+                        st.error(msg)
+                finally:
+                    session.close()
+
+    with delete_tab:
+        st.warning(
+            f"⚠️ This will soft-delete **{selected_name}** "
+            f"(Staff ID: {row.get('Staff ID', 'N/A')})."
+        )
+        confirm_name = st.text_input("Type the person name to confirm deletion", key="personnel_delete_confirm")
+        if st.button("Confirm Soft Delete", type="primary", disabled=(confirm_name.strip() != selected_name.strip())):
             session = get_session(engine)
-            ok, msg, aid = db_ops.add_assessment(session, pid, {
-                "assessment_date": adate, "assessment_level": level,
-                "assessor1": assessor1, "supervisor": supervisor,
-            })
-            if ok:
-                ok2, msg2 = db_ops.add_competency_scores(session, aid, pid, score_inputs)
-                session.close()
-                if ok2:
-                    st.success(f"✅ Assessment saved for {sel} on {adate}")
+            try:
+                ok, msg = db_ops.delete_personnel(session, pid)
+                if ok:
+                    st.success(msg)
                     bump_version()
                     st.cache_data.clear()
+                    st.rerun()
                 else:
-                    st.error(msg2)
-            else:
+                    st.error(msg)
+            finally:
                 session.close()
-                st.error(msg)
-
 # ─────────────────────────────────────────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.caption(f"DB: `{DATABASE_URL}` · v3.0 · {datetime.now().strftime('%Y-%m-%d')}")

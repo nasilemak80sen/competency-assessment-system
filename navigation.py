@@ -13,8 +13,7 @@ PAGES = {
 
 ADMIN_PAGES = {
     "📥 Import": "⚙️ Admin: Import Data",
-    "👥 Personnel": "⚙️ Admin: Personnel CRUD",
-    "📝 Entry": "⚙️ Admin: Assessment Entry",
+    "👥 Database": "⚙️ Admin: Personnel Database Settings",
 }
 
 # Add breadcrumb at top of each page
@@ -30,8 +29,7 @@ def show_breadcrumb():
         "🎯 Readiness & Gaps": ["Home", "Talent Readiness"],
         "📊 Chart Builder & Depth Analysis": ["Home", "Chart Builder & Analysis"],
         "⚙️ Admin: Import Data": ["Admin", "Import"],
-        "⚙️ Admin: Personnel CRUD": ["Admin", "Personnel CRUD"],
-        "⚙️ Admin: Assessment Entry": ["Admin", "Entry"],
+        "⚙️ Admin: Personnel Database Settings": ["Admin", "Personnel Database Settings"],
     }
     
     breadcrumbs = breadcrumb_items.get(current, ["Home"])
@@ -55,7 +53,7 @@ def render_navigation():
         col_title, col_right = st.columns([0.85, 0.15])
         
         with col_title:
-            st.markdown("### 📊 RE Fraternity Competency Assessment v3.0")
+            st.markdown("### 📊 DPE | Reservoir Engineering Talent Profile Dashboard (Beta Release)")
         
         # Divider
         st.markdown("---")
@@ -79,10 +77,10 @@ def render_navigation():
         # Admin section
         st.markdown("")
         
-        admin_col1, admin_col2, admin_col3, admin_col_spacer = st.columns([1, 1, 1, 2])
+        admin_col1, admin_col2, admin_col_spacer = st.columns([1, 1, 3])
         
         for idx, (display_name, actual_name) in enumerate(ADMIN_PAGES.items()):
-            with [admin_col1, admin_col2, admin_col3][idx]:
+            with [admin_col1, admin_col2][idx]:
                 if st.button(
                     f"⚙️ {display_name}",
                     use_container_width=True,
