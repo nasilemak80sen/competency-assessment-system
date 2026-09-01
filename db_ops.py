@@ -725,7 +725,7 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
             "sg_years":           row.get("Years in Salary Grade"),
             "sg_start_date":      row.get("Date of Appointment to Current Grade"),
             "age_promoted":       row.get("Age Promoted to Staff or Principal"),
-            "current_assignment": row.get("Current Assignment / Loc:"),
+            "current_assignment": row.get("Current Location:"),
             "assignment_date":    row.get("Date in Position"),
             "assignment_length":  row.get("Length in Current Assignment"),
             "chat_status":        row.get("Chat Status"),
@@ -813,6 +813,11 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
 
         # ── Import summary scores ──────────────────────────────────────────
         sum_data = {
+            "next_grade_base" : _safe(row.get("Next Grade Base")),
+            "next_grade_keys" : _safe(row.get("Next Grade Keys")),
+            "next_grade_pacing" : _safe(row.get("Next Grade Pacing")),
+            "next_grade_emerging" : _safe(row.get("Next Grade Emerging")),
+            "next_grade_cti" : _safe(row.get("Next Grade CTI")),
             "staff_base":       _safe(row.get("Staff Base")),
             "staff_keys":       _safe(row.get("Staff Keys")),
             "staff_pacing":     _safe(row.get("Staff Pacing")),
@@ -952,7 +957,7 @@ def get_wide_dataframe(session: Session) -> pd.DataFrame:
             "Gender": p.gender,
             "Nationality": p.nationality,
             "Employment Category": p.employment_category,
-            "Current Assignment / Loc:": p.current_assignment,
+            "Current Location:": p.current_assignment,
             "Years in PET": p.years_in_pet,
             "Years in Salary Grade": p.sg_years,
             "Contract Expire Date": p.contract_expire_date,
@@ -981,6 +986,11 @@ def get_wide_dataframe(session: Session) -> pd.DataFrame:
         )
         if summary is not None:
             summary_columns = {
+                # "next_grade_base": "Next Grade Base",
+                # "next_grade_keys": "Next Grade Keys",
+                # "next_grade_pacing": "Next Grade Pacing",
+                # "next_grade_emerging": "Next Grade Emerging",
+                # "next_grade_cti": "Next Grade CTI",
                 "staff_base": "Staff Base",
                 "staff_keys": "Staff Keys",
                 "staff_pacing": "Staff Pacing",

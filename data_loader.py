@@ -16,7 +16,7 @@ import numpy as np
 import openpyxl
 from datetime import date
 from urllib.parse import urljoin
-from config import ( SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, CV_ALLOWED_FILE_TYPES, SHAREPOINT_CV_ROOT_URL,)
+from config import ( SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, CV_ALLOWED_FILE_TYPES, SHAREPOINT_CV_ROOT_URL, GRADE_LABELS, POSITION_TO_SG, SG_HIERARCHY,)
 
 
 def _normalize_summary_column_name(name: object) -> str:
@@ -56,6 +56,92 @@ def _safe_rule_val(val):
         return float(str(val).strip())
     except (ValueError, TypeError):
         return None
+
+def normalize_position_and_sg(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Standardize Staff Position and Salary Grade into the official
+    RE Fraternity hierarchy.
+
+    Original Excel values are preserved:
+        Staff Position
+        SG
+
+    Canonical application values are created:
+        Canonical Position
+        Canonical SG
+
+    Official hierarchy:
+        UPTREX
+        P1  - Junior Executive
+        P2  - Executive
+        P3  - Senior Executive
+        P4  - Senior Reservoir Engineer
+        P5  - Staff
+        P6  - Specialist
+        P7  - Principal
+        P8  - Senior Principal
+        P9  - Custodian
+        P10 - Senior Custodian
+    """
+
+    df = df.copy()
+
+    # -------------------------------------------------------------------------
+    # CLEAN SOURCE VALUES
+    # -------------------------------------------------------------------------
+
+    if "Staff Position" in df.columns:
+        df["Staff Position"] = (
+            df["Staff Position"]
+            .astype("string")
+            .str.strip()
+        )
+
+    if "SG" in df.columns:
+        df["SG"] = (
+            df["SG"]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        )
+
+    # -------------------------------------------------------------------------
+    # POSITION → SG
+    # -------------------------------------------------------------------------
+
+    df["Canonical SG"] = (
+        df["Staff Position"]
+        .map(POSITION_TO_SG)
+    )
+
+    # -------------------------------------------------------------------------
+    # FALLBACK TO SOURCE SG
+    #
+    # If the position is not recognised, retain a valid SG from Excel.
+    # This prevents legitimate records from becoming blank simply because
+    # a new/alternate position label hasn't been added to POSITION_TO_SG yet.
+    # -------------------------------------------------------------------------
+
+    valid_source_sg = df["SG"].isin(SG_HIERARCHY)
+
+    df.loc[
+        df["Canonical SG"].isna() & valid_source_sg,
+        "Canonical SG"
+    ] = df.loc[
+        df["Canonical SG"].isna() & valid_source_sg,
+        "SG"
+    ]
+
+    # -------------------------------------------------------------------------
+    # SG → OFFICIAL POSITION
+    # -------------------------------------------------------------------------
+
+    df["Canonical Position"] = (
+        df["Canonical SG"]
+        .map(GRADE_LABELS)
+    )
+
+    return df
 
 def load_master_data(path: str) -> pd.DataFrame:
     """
@@ -136,6 +222,7 @@ def load_master_data(path: str) -> pd.DataFrame:
 
     # Ensure Staff ID is string without trailing .0 for numeric IDs
     if "Staff ID" in df.columns:
+
         def _clean_staff_id(x):
             if pd.isna(x) or x in ("nan", "None"):
                 return np.nan
@@ -143,10 +230,18 @@ def load_master_data(path: str) -> pd.DataFrame:
                 return str(int(float(x)))
             except (ValueError, TypeError):
                 return str(x).strip()
+
         df["Staff ID"] = df["Staff ID"].apply(_clean_staff_id)
 
+    df = normalize_position_and_sg(df)
     df = df.reset_index(drop=True)
     return df
+
+
+
+# =========================================================================
+# STANDARDIZE POSITION / SALARY GRADE
+# =========================================================================
 
 def load_ruler_and_tech_mapping(
     path: str,
