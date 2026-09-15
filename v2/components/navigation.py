@@ -27,7 +27,14 @@ def render_header(title: str, subtitle: str | None = None) -> None:
 
 
 def render_navigation() -> None:
-    """Render the same top navigation structure and labels as golden navigation.py."""
+    """Render the same top navigation structure and labels as golden navigation.py.
+
+    These explicit widget keys intentionally use a v2-specific namespace. The
+    application also uses Streamlit's native ``st.navigation`` with
+    ``position=\"hidden\"``; short keys such as ``nav_0`` can collide with
+    Streamlit's internal navigation widget keys and raise
+    ``StreamlitDuplicateElementKey``.
+    """
     current_page = st.session_state.get("current_page", "🏠 Dashboard Home")
 
     nav_container = st.container()
@@ -47,7 +54,7 @@ def render_navigation() -> None:
                 if st.button(
                     display_name,
                     use_container_width=True,
-                    key=f"nav_{idx}",
+                    key=f"v2_main_nav_{idx}",
                     disabled=is_active,
                 ):
                     st.switch_page(PAGE_BY_PATH[path])
@@ -60,7 +67,7 @@ def render_navigation() -> None:
                 if st.button(
                     f"⚙️ {display_name}",
                     use_container_width=True,
-                    key=f"admin_{idx}",
+                    key=f"v2_admin_nav_{idx}",
                 ):
                     st.switch_page(PAGE_BY_PATH[path])
 
