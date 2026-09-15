@@ -16,8 +16,6 @@ LEGACY_APP = REPO_ROOT / "app.py"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import streamlit as st
-
 from components.navigation import render_navigation
 
 
@@ -29,15 +27,31 @@ def _read_legacy_source() -> str:
 
 @lru_cache(maxsize=1)
 def _page_blocks() -> dict[str, str]:
-    """Extract the original page branches verbatim."""
+    """Extract each original page branch as a standalone executable block.
+
+    The monolithic app uses one ``if`` followed by several ``elif`` branches.
+    A raw ``elif`` cannot be executed independently with ``exec()``, so only
+    the branch keyword at the start of each extracted block is normalised to
+    ``if``. The branch body itself is left unchanged.
+    """
     source = _read_legacy_source()
     pattern = re.compile(r"(?m)^(?:if|elif) page == ([\"'])(.*?)\1:\s*$")
     matches = list(pattern.finditer(source))
     blocks: dict[str, str] = {}
+
     for index, match in enumerate(matches):
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
-        blocks[match.group(2)] = source[start:end]
+        block = source[start:end]
+
+        # An extracted branch may originally be ``elif``. It must become a
+        # standalone ``if`` before exec(); otherwise Python raises
+        # SyntaxError: invalid syntax at the first line of the block.
+        if block.startswith("elif "):
+            block = "if " + block[len("elif "):]
+
+        blocks[match.group(2)] = block
+
     return blocks
 
 
