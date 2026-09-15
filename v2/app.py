@@ -6,6 +6,12 @@ branches from the legacy root app.
 """
 import streamlit as st
 
+# Bootstrap the v2 import path before Streamlit executes any page. Streamlit's
+# navigation runner executes page scripts in a context where the repository
+# root is not guaranteed to be on sys.path, so pages importing shared legacy
+# modules such as config.py would otherwise fail with ModuleNotFoundError.
+from core import bootstrap  # noqa: F401,E402
+
 pages = [
     st.Page("pages/01_Dashboard.py", title="🏠 Dashboard Home", url_path="", default=True),
     st.Page("pages/02_Personnel.py", title="👥 Personnel Directory", url_path="personnel"),
