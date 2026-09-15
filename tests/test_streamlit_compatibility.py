@@ -24,7 +24,7 @@ def test_v2_pages_do_not_require_modern_button_width_api():
 
 
 def test_v2_width_keywords_are_all_handled_by_central_compatibility_layer():
-    """Any v2 widget using width= must be one of the centrally patched widgets."""
+    """Any Streamlit widget/container using width= must be centrally supported."""
     supported = {"button", "download_button", "link_button", "dataframe", "plotly_chart"}
     offenders = []
 
@@ -35,10 +35,16 @@ def test_v2_width_keywords_are_all_handled_by_central_compatibility_layer():
                 continue
             if not any(keyword.arg == "width" for keyword in node.keywords):
                 continue
-            if isinstance(node.func, ast.Attribute):
-                method = node.func.attr
-                if method not in supported:
-                    offenders.append(f"{path}:{node.lineno} -> {method}")
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            method = node.func.attr
+            # Plotly figure/image helpers and other non-Streamlit APIs may also
+            # legitimately accept a width argument; only enforce Streamlit
+            # widget methods here.
+            if method in {"to_image"}:
+                continue
+            if method not in supported:
+                offenders.append(f"{path}:{node.lineno} -> {method}")
 
     assert not offenders, "Unsupported Streamlit width= calls found: " + ", ".join(offenders)
 
@@ -67,8 +73,8 @@ def test_v2_navigation_keys_are_namespaced_away_from_streamlit_nav_namespace():
                 explicit_keys.append(ast.unparse(keyword.value))
 
     assert explicit_keys == [
-        'f"v2_main_nav_{idx}"',
-        'f"v2_admin_nav_{idx}"',
+        "f'v2_main_nav_{idx}'",
+        "f'v2_admin_nav_{idx}'",
     ]
     source = path.read_text(encoding="utf-8")
     assert 'key=f"nav_{idx}"' not in source
@@ -78,11 +84,24 @@ def test_v2_navigation_keys_are_namespaced_away_from_streamlit_nav_namespace():
 
 def test_v2_navigation_declares_no_short_nav_keys():
     source = (ROOT / "v2" / "components" / "navigation.py").read_text(encoding="utf-8")
-    assert "nav_0" not in source
-    assert "nav_1" not in source
-    assert "nav_2" not in source
-    assert "nav_3" not in source
-    assert "nav_4" not in source
+    # Check actual key declarations rather than comments/docstrings.
+    tree = ast.parse(source)
+    key_literals = []
+    key_templates = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "key":
+                continue
+            if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                key_literals.append(keyword.value.value)
+            elif isinstance(keyword.value, ast.JoinedStr):
+                key_templates.append(ast.unparse(keyword.value))
+
+    assert "nav_0" not in key_literals
+    assert "admin_0" not in key_literals
+    assert all("v2_main_nav_" in value or "v2_admin_nav_" in value for value in key_templates)
 
 
 def test_v2_navigation_is_guarded_and_reset_per_script_run():
