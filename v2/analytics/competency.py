@@ -1,7 +1,20 @@
 """Pure competency calculations migrated from the legacy application."""
 from __future__ import annotations
+
+import numpy as np
 import pandas as pd
-from config import COMPETENCY_FULLNAMES
+
+from config import COMPETENCY_FULLNAMES, SCORE_COLS
+
+
+def build_heatmap_matrix(df: pd.DataFrame, value_cols=None) -> pd.DataFrame:
+    """Return personnel-by-competency scores for the competency heatmap."""
+    columns = list(value_cols) if value_cols is not None else [c for c in SCORE_COLS if c in df.columns]
+    columns = [c for c in columns if c in df.columns]
+    if df is None or df.empty or "Name" not in df.columns or not columns:
+        return pd.DataFrame()
+    matrix = df.set_index("Name")[columns].copy()
+    return matrix.dropna(how="all")
 
 
 def _safe_numeric(value):
