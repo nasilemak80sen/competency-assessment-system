@@ -1,8 +1,4 @@
-"""Function-level migration ledger for the legacy app.py inventory.
-
-The root app.py remains the behavioural reference until every workflow has
-passed static, behavioural, and UI regression checks.
-"""
+"""Function-level migration ledger for the legacy app.py inventory."""
 from __future__ import annotations
 from dataclasses import dataclass
 
@@ -28,13 +24,11 @@ PHASE_A_BATCH_1 = (
     MigrationItem("bulk_import_from_df", "v2.services.import_service.bulk_import_from_dataframe"),
     MigrationItem("bulk_import_cv_list", "v2.services.import_service.bulk_import_cv_list"),
 )
-
 PHASE_A_BATCH_2 = (
     MigrationItem("_safe_numeric", "v2.analytics.competency._safe_numeric", status="static", parity="logic extracted unchanged"),
     MigrationItem("_get_competency_display_name", "v2.analytics.competency._get_competency_display_name", status="static", parity="logic extracted unchanged"),
     MigrationItem("_get_all_competency_strengths", "v2.analytics.competency._get_all_competency_strengths", status="static", parity="logic extracted unchanged"),
 )
-
 PHASE_A_BATCH_3 = (
     MigrationItem("_grade_rank", "v2.analytics.readiness._grade_rank", status="static", parity="logic extracted unchanged"),
     MigrationItem("_safe_display_value", "v2.analytics.readiness._safe_display_value", status="static", parity="logic extracted unchanged"),
@@ -42,7 +36,6 @@ PHASE_A_BATCH_3 = (
     MigrationItem("_safe_date_display", "v2.analytics.readiness._safe_date_display", status="static", parity="logic extracted unchanged"),
     MigrationItem("_get_assessment_status", "v2.analytics.readiness._get_assessment_status", status="static", parity="logic extracted unchanged"),
 )
-
 PHASE_A_BATCH_4 = (
     MigrationItem("_rg_clean_value", "v2.analytics.readiness._rg_clean_value", status="static", parity="logic extracted unchanged"),
     MigrationItem("_rg_grade_rank", "v2.analytics.readiness._rg_grade_rank", status="static", parity="logic extracted unchanged"),
@@ -59,8 +52,24 @@ PHASE_A_BATCH_4 = (
     MigrationItem("_build_personnel_readiness_summary", "v2.analytics.readiness._build_personnel_readiness_summary", status="static", parity="logic extracted unchanged"),
     MigrationItem("_apply_readiness_personnel_filters", "v2.analytics.readiness._apply_readiness_personnel_filters", status="static", parity="logic extracted unchanged"),
 )
+PHASE_A_BATCH_5 = (
+    MigrationItem("_create_readiness_status_chart", "v2.analytics.charts._create_readiness_status_chart", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_department_readiness_chart", "v2.analytics.charts._create_department_readiness_chart", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_readiness_box_plot", "v2.analytics.charts._create_readiness_box_plot", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_readiness_coverage_scatter", "v2.analytics.charts._create_readiness_coverage_scatter", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_category_readiness_heatmap", "v2.analytics.charts._create_category_readiness_heatmap", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_category_gap_distribution", "v2.analytics.charts._create_category_gap_distribution", status="static", parity="visual logic extracted"),
+    MigrationItem("_build_competency_risk_summary", "v2.analytics.charts._build_competency_risk_summary", status="static", parity="aggregation extracted"),
+    MigrationItem("_create_competency_risk_matrix", "v2.analytics.charts._create_competency_risk_matrix", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_top_competency_gap_chart", "v2.analytics.charts._create_top_competency_gap_chart", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_department_competency_heatmap", "v2.analytics.charts._create_department_competency_heatmap", status="static", parity="visual logic extracted"),
+    MigrationItem("_create_personnel_priority_scatter", "v2.analytics.charts._create_personnel_priority_scatter", status="static", parity="visual logic extracted"),
+    MigrationItem("prepare_nationality_map_data", "v2.analytics.nationality.prepare_nationality_map_data", status="static", parity="logic extracted"),
+    MigrationItem("create_nationality_bubble_map", "v2.analytics.nationality.create_nationality_bubble_map", status="static", parity="visual logic extracted"),
+    MigrationItem("nationality_to_iso3", "v2.analytics.nationality.nationality_to_iso3", status="static", parity="logic extracted"),
+)
 
-PHASE_A_MIGRATED_COUNT = sum(len(batch) for batch in (PHASE_A_BATCH_1, PHASE_A_BATCH_2, PHASE_A_BATCH_3, PHASE_A_BATCH_4))
+PHASE_A_MIGRATED_COUNT = sum(len(batch) for batch in (PHASE_A_BATCH_1, PHASE_A_BATCH_2, PHASE_A_BATCH_3, PHASE_A_BATCH_4, PHASE_A_BATCH_5))
 PHASE_A_BOUNDARY_COUNT = len(PHASE_A_BATCH_1)
 PHASE_A_STATIC_COUNT = PHASE_A_MIGRATED_COUNT - PHASE_A_BOUNDARY_COUNT
 
