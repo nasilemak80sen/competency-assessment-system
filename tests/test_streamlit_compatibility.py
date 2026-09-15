@@ -18,9 +18,6 @@ def test_v2_pages_do_not_require_modern_button_width_api():
     page_root = ROOT / "v2"
     for path in page_root.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        # The compatibility shim may still accept modern width syntax during
-        # migration, but known legacy-problematic button calls must not bypass
-        # the compatibility layer through the old examples we previously hit.
         assert 'st.button("Reset", type="secondary", width="stretch"' not in source
         assert 'st.button("🔄 Refresh", type="secondary", width="stretch"' not in source
         assert 'st.button("📊 Generate Chart", type="primary", width="stretch"' not in source
@@ -86,3 +83,11 @@ def test_v2_navigation_declares_no_short_nav_keys():
     assert "nav_2" not in source
     assert "nav_3" not in source
     assert "nav_4" not in source
+
+
+def test_v2_navigation_is_guarded_and_reset_per_script_run():
+    navigation = (ROOT / "v2" / "components" / "navigation.py").read_text(encoding="utf-8")
+    app = (ROOT / "v2" / "app.py").read_text(encoding="utf-8")
+    assert 'if st.session_state.get("_v2_navigation_rendered", False):' in navigation
+    assert 'st.session_state["_v2_navigation_rendered"] = True' in navigation
+    assert 'st.session_state["_v2_navigation_rendered"] = False' in app
