@@ -1,7 +1,7 @@
 """Administration — native v2 CRUD and assessment entry page."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 
@@ -15,6 +15,71 @@ from config import SCORE_COLS, ASSESSMENT_LEVELS
 render_navigation()
 render_header("⚙️ Admin: Personnel Database Settings", "Maintain personnel records and enter competency assessments")
 
+
+def _safe_int(value, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    """Safely convert Excel/database values to an integer within widget bounds."""
+    try:
+        if value is None or pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        return default
+
+    # Date-like values must be handled before numeric conversion. Pandas may
+    # expose Excel dates as Timestamp/datetime objects.
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        candidate = int(value.year)
+    else:
+        numeric = pd.to_numeric(value, errors="coerce")
+        if pd.notna(numeric):
+            candidate = int(round(float(numeric)))
+        else:
+            parsed = pd.to_datetime(value, errors="coerce")
+            if pd.isna(parsed):
+                return default
+            candidate = int(parsed.year)
+
+    if minimum is not None and candidate < minimum:
+        return default
+    if maximum is not None and candidate > maximum:
+        return default
+    return candidate
+
+
+def _safe_birth_year(value, default: int = 1990) -> int:
+    """Normalize birth-year values, including Excel serial/date representations."""
+    try:
+        if value is None or pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        return default
+
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        year = int(value.year)
+        return year if 1950 <= year <= 2010 else default
+
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.notna(numeric):
+        numeric_value = float(numeric)
+        # A normal year should already be in the widget range.
+        if 1950 <= numeric_value <= 2010:
+            return int(round(numeric_value))
+        # Excel's date serial range (roughly 1950–2010) is around 18k–40k.
+        if 10000 <= numeric_value <= 60000:
+            parsed = pd.to_datetime(numeric_value, unit="D", origin="1899-12-30", errors="coerce")
+            if pd.notna(parsed) and 1950 <= parsed.year <= 2010:
+                return int(parsed.year)
+        # Very large values can be pandas datetime nanoseconds.
+        if abs(numeric_value) > 1_000_000_000:
+            parsed = pd.to_datetime(int(numeric_value), unit="ns", errors="coerce")
+            if pd.notna(parsed) and 1950 <= parsed.year <= 2010:
+                return int(parsed.year)
+
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.notna(parsed) and 1950 <= parsed.year <= 2010:
+        return int(parsed.year)
+    return default
+
+
 df = get_master_data()
 if df is None or df.empty:
     st.info("No personnel available. Import data first.")
@@ -26,7 +91,7 @@ row = df[df["Name"].astype(str) == selected_name].iloc[0]
 
 pid = None
 if "id" in row.index and pd.notna(row["id"]):
-    pid = int(row["id"])
+    pid = _safe_int(row["id"], 0, 1)
 else:
     session = open_session()
     try:
@@ -56,10 +121,8 @@ with personnel_tab:
             gender_options = ["M", "F", "Other"]
             current_gender = str(row.get("Gender") or "M")
             gender = st.selectbox("Gender", gender_options, index=gender_options.index(current_gender) if current_gender in gender_options else 0)
-            age_value = pd.to_numeric(row.get("Age"), errors="coerce")
-            age = st.number_input("Age", 18, 100, int(age_value) if pd.notna(age_value) else 30)
-            birth_value = pd.to_numeric(row.get("Birth Year"), errors="coerce")
-            birth_year = st.number_input("Birth Year", 1950, 2010, int(birth_value) if pd.notna(birth_value) else 1990)
+            age = st.number_input("Age", min_value=18, max_value=100, value=_safe_int(row.get("Age"), 30, 18, 100), step=1, format="%d")
+            birth_year = st.number_input("Birth Year", min_value=1950, max_value=2010, value=_safe_birth_year(row.get("Birth Year")), step=1, format="%d")
         with col3:
             department = st.text_input("Department", str(row.get("Department") or ""))
             position = st.text_input("Staff Position", str(row.get("Staff Position") or ""))
@@ -85,7 +148,7 @@ with personnel_tab:
 with assessment_tab:
     st.markdown("### New Assessment")
     with st.form(f"assessment_entry_form_{pid}"):
-        assessment_date = st.date_input("Assessment Date", value=date.today())
+        assessment_date = st.date_input("Assessment Date", value=date.today(), format="DD MMM YYYY")
         level_options = list(ASSESSMENT_LEVELS) if ASSESSMENT_LEVELS else ["Technical"]
         assessment_level = st.selectbox("Assessment Level", level_options)
         assessor1 = st.text_input("Assessor 1")
@@ -97,7 +160,7 @@ with assessment_tab:
         score_cols = st.columns(4)
         for index, code in enumerate(SCORE_COLS):
             with score_cols[index % 4]:
-                scores[code] = {"actual": st.number_input(code, min_value=0.0, max_value=5.0, step=0.5, value=0.0, key=f"score_{pid}_{code}")}
+                scores[code] = {"actual": st.number_input(code, min_value=0.0, max_value=5.0, step=0.5, value=0.0, format="%.1f", key=f"score_{pid}_{code}")}
         save_assessment = st.form_submit_button("✅ Save Assessment", type="primary", width="stretch")
     if save_assessment:
         session = open_session()
