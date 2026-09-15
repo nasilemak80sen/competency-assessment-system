@@ -25,9 +25,9 @@ def test_readiness_detail_preserves_gap_semantics():
     detail = build_readiness_detail_dataframe(_people(), _ruler(), "Current requirement")
     alice = detail[detail["Name"] == "Alice"].set_index("Competency Code")
     assert alice.loc["B1", "Gap"] == 0
-    assert alice.loc["B1", "Is Met"] is True
+    assert bool(alice.loc["B1", "Is Met"])
     assert alice.loc["B2", "Gap"] == -2
-    assert alice.loc["B2", "Is Major Gap"] is True
+    assert bool(alice.loc["B2", "Is Major Gap"])
 
 
 def test_readiness_summary_calculates_coverage_weighted_and_strict():
@@ -40,8 +40,7 @@ def test_readiness_summary_calculates_coverage_weighted_and_strict():
 
 
 def test_readiness_filters_match_name_staff_department_and_grade():
-    people = _people()
-    result = apply_readiness_personnel_filters(people, search_text="002", departments=["PSR"], salary_grades=["P1"])
+    result = apply_readiness_personnel_filters(_people(), search_text="002", departments=["PSR"], salary_grades=["P1"])
     assert result["Name"].tolist() == ["Bob"]
 
 
