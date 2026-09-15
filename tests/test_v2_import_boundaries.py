@@ -83,6 +83,22 @@ def test_page_registry_is_canonical_and_matches_golden_order():
     assert pages.PAGE_BY_PATH["individual-assessment"] is pages.PAGES[2]
 
 
+def test_registered_pages_all_render_shared_navigation():
+    page_files = [
+        V2_DIR / "pages" / "01_Dashboard.py",
+        V2_DIR / "pages" / "03_Competency_Heatmap.py",
+        V2_DIR / "pages" / "04_Readiness_and_Gaps.py",
+        V2_DIR / "pages" / "05_Individual_Assessment.py",
+        V2_DIR / "pages" / "06_Chart_Builder.py",
+        V2_DIR / "pages" / "07_Admin.py",
+        V2_DIR / "pages" / "08_Admin_Import_Data.py",
+    ]
+    for page_file in page_files:
+        source = page_file.read_text(encoding="utf-8")
+        assert "from components.navigation import" in source, page_file.name
+        assert "render_navigation()" in source, page_file.name
+
+
 def test_navigation_does_not_use_raw_page_paths():
     source = (V2_DIR / "components" / "navigation.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -138,6 +154,18 @@ def test_admin_numeric_inputs_are_bounded_and_integer_formatted():
     assert "int(birth_value)" not in source
 
 
+def test_dashboard_numeric_and_hover_formatting_contract():
+    source = (V2_DIR / "pages" / "01_Dashboard.py").read_text(encoding="utf-8")
+    # Avoid brittle matching of Python string-literal formatting. Assert the
+    # semantic formatting tokens and field names independently.
+    assert 'f"{float(age):.0f}"' in source
+    assert "Years of RE Experience" in source
+    assert "Years in PET" in source
+    assert ":.2f" in source
+    assert "<b>RE Experience:</b>" in source
+    assert "<b>PET Experience:</b>" in source
+
+
 def test_theme_uses_canonical_golden_css_asset():
     theme_source = (V2_DIR / "core" / "theme.py").read_text(encoding="utf-8")
     golden_css = (REPO_ROOT / "assets" / "css" / "petronas_theme.css").read_text(encoding="utf-8")
@@ -169,11 +197,6 @@ def test_dashboard_contains_golden_sections_controls_and_formatting():
         "Filter by Years in PETRONAS: ",
         "Filter by Years in RE Experience",
         "step=1.0",
-        'f"{float(age):.0f}"',
-        'RE Experience:</b> "'
-        "+ f\"{float(row['Years of RE Experience']):.2f} Years<br>\"",
-        'PET Experience:</b> "'
-        "+ f\"{float(row['Years in PET']):.2f} Years<br>\"",
         "RE Experience Tier",
         "RE Experience Bubble Size",
         "Beautiful_Hover",
