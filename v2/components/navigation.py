@@ -2,6 +2,8 @@
 
 import streamlit as st
 
+from core.pages import PAGE_BY_PATH
+
 
 def render_header(title: str, subtitle: str | None = None) -> None:
     st.markdown(f"# {title}")
@@ -10,16 +12,26 @@ def render_header(title: str, subtitle: str | None = None) -> None:
 
 
 def render_navigation() -> None:
-    """Native page links for the exact-parity migration pages."""
+    """Render sidebar links using the canonical st.Page objects.
+
+    With Streamlit's explicit ``st.navigation`` API, raw paths such as
+    ``app.py`` are not valid page targets. Reusing the exact ``st.Page``
+    instances registered by the entry point keeps sidebar navigation and the
+    navigation registry in sync.
+    """
     st.sidebar.markdown("### RE Fraternity")
-    st.sidebar.page_link("app.py", label="🏠 Dashboard Home")
-    st.sidebar.page_link("pages/02_Personnel.py", label="👥 Personnel Directory")
-    st.sidebar.page_link("pages/03_Competency_Heatmap.py", label="🌡️ Competency Heatmap")
-    st.sidebar.page_link("pages/05_Individual_Assessment.py", label="👤 Individual Assessment & Talent Profile")
-    st.sidebar.page_link("pages/04_Readiness_and_Gaps.py", label="🎯 Readiness & Gaps")
-    st.sidebar.page_link("pages/06_Chart_Builder.py", label="📊 Chart Builder & Depth Analysis")
-    st.sidebar.page_link("pages/08_Admin_Import_Data.py", label="⚙️ Admin: Import Data")
-    st.sidebar.page_link("pages/07_Admin.py", label="⚙️ Admin: Personnel Database Settings")
+
+    for path, label in (
+        ("", "🏠 Dashboard Home"),
+        ("personnel", "👥 Personnel Directory"),
+        ("competency-heatmap", "🌡️ Competency Heatmap"),
+        ("individual-assessment", "👤 Individual Assessment & Talent Profile"),
+        ("readiness-gaps", "🎯 Readiness & Gaps"),
+        ("chart-builder", "📊 Chart Builder & Depth Analysis"),
+        ("admin-import-data", "⚙️ Admin: Import Data"),
+        ("admin-personnel-settings", "⚙️ Admin: Personnel Database Settings"),
+    ):
+        st.sidebar.page_link(PAGE_BY_PATH[path], label=label)
 
     selected = st.session_state.get("selected_person_name")
     if selected:
@@ -27,6 +39,6 @@ def render_navigation() -> None:
         st.sidebar.caption("Selected personnel")
         st.sidebar.markdown(f"**{selected}**")
         st.sidebar.page_link(
-            "pages/05_Individual_Assessment.py",
+            PAGE_BY_PATH["individual-assessment"],
             label="Open profile →",
         )
