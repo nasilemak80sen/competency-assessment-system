@@ -6,7 +6,7 @@ import streamlit as st
 from components.navigation import render_navigation, render_header
 from core.bootstrap import get_master_data, open_session
 from models import Personnel
-from services.personnel_service import update as update_personnel, delete as delete_personnel
+from services.personnel_service import add as add_personnel, update as update_personnel, delete as delete_personnel
 from services.assessment_service import add_assessment, add_competency_scores
 from config import SCORE_COLS, ASSESSMENT_LEVELS, CHAT_STATUS_OPTIONS, COMP_TYPES, DEPARTMENTS, POSITIONS, POSITION_TO_SG
 
@@ -87,7 +87,90 @@ if pid is None: st.warning("No database personnel ID found for this person. Impo
 
 st.caption(f"Editing: **{selected_name}**")
 prefix=f"personnel_db_{pid}"
-personnel_tab,assessment_tab,delete_tab=st.tabs(["✏️ Edit Personnel Info","🧾 Assessment Entry","🗑️ Delete Personnel"])
+add_tab,personnel_tab,assessment_tab,delete_tab=st.tabs(["➕ Add New Personnel","✏️ Edit Personnel Info","🧾 Assessment Entry","🗑️ Delete Personnel"])
+
+with add_tab:
+    st.info("Add a single personnel record directly to the database. Excel Import remains available for bulk updates.")
+    with st.form("add_personnel_form"):
+        st.markdown("### Personal")
+        c1,c2,c3=st.columns(3)
+        with c1:
+            name_new=st.text_input("Name",key="add_personnel_name")
+            staff_id_new=st.text_input("Staff ID",key="add_personnel_staff_id")
+            email_new=st.text_input("Email",key="add_personnel_email")
+        with c2:
+            gender_new=st.selectbox("Gender",["M","F","Other"],key="add_personnel_gender")
+            age_new=st.number_input("Age",min_value=18,max_value=100,value=30,step=1,format="%d",key="add_personnel_age")
+            birth_year_new=st.number_input("Birth Year",min_value=1950,max_value=2010,value=1996,step=1,format="%d",key="add_personnel_birth_year")
+            nationality_new=st.text_input("Nationality","Malaysia",key="add_personnel_nationality")
+        with c3:
+            employment_category_new=st.text_input("Employment Category",key="add_personnel_employment_category")
+            dopt=list(DEPARTMENTS[:-1]); department_new=st.selectbox("Department",dopt,key="add_personnel_department")
+            popt=list(POSITIONS[:-1]); staff_position_new=st.selectbox("Staff Position",popt,key="add_personnel_position")
+            sg_new=st.text_input("SG",POSITION_TO_SG.get(staff_position_new,""),key="add_personnel_sg")
+        st.markdown("### Employment")
+        e1,e2,e3=st.columns(3)
+        with e1:
+            section_name_new=st.text_input("Section Name",key="add_personnel_section")
+            unit_name_new=st.text_input("Unit Name",key="add_personnel_unit")
+            sub_unit_new=st.text_input("Sub Unit",key="add_personnel_subunit")
+            current_assignment_new=st.text_input("Current Assignment",key="add_personnel_assignment")
+        with e2:
+            joining_date_new=st.date_input("Joining Date",date.today(),key="add_personnel_joining")
+            contract_expire_date_new=st.date_input("Contract Expire Date",date.today(),key="add_personnel_contract")
+            assignment_date_new=st.date_input("Assignment Date",date.today(),key="add_personnel_assignmentdate")
+            sg_start_date_new=st.date_input("SG Start Date",date.today(),key="add_personnel_sgstart")
+        with e3:
+            years_in_pet_new=st.number_input("Years in PET",0.0,60.0,0.0,0.5,key="add_personnel_pet")
+            years_re_experience_new=st.number_input("Years of RE Experience",0.0,60.0,0.0,0.5,key="add_personnel_re")
+            sg_years_new=st.number_input("Years in Salary Grade",0.0,60.0,0.0,0.5,key="add_personnel_sgyears")
+            age_promoted_new=st.number_input("Age Promoted",18.0,100.0,30.0,1.0,key="add_personnel_ageprom")
+            assignment_length_new=st.number_input("Length in Current Assignment",0.0,600.0,0.0,1.0,key="add_personnel_assignlen")
+        st.markdown("### Tenure")
+        t1,t2=st.columns(2)
+        with t1:
+            chat_status_new=st.selectbox("Chat Status",list(CHAT_STATUS_OPTIONS),key="add_personnel_chat")
+            chat_date_new=st.date_input("Chat Date",date.today(),key="add_personnel_chatdate")
+            assessment_level_new=st.selectbox("Assessment Level",list(ASSESSMENT_LEVELS),key="add_personnel_level")
+            last_assessment_date_new=st.date_input("Last Assessment Date",date.today(),key="add_personnel_lastdate")
+        with t2:
+            sub_disciplines_new=st.text_input("Sub-disciplines",key="add_personnel_subdisc")
+            potential_new=st.text_input("Potential",key="add_personnel_potential")
+            resource_sme_new=st.text_input("Resource / SME",key="add_personnel_resource")
+            interest_new=st.text_input("Interest",key="add_personnel_interest")
+        st.markdown("### Assessment / Notes")
+        a1,a2=st.columns(2)
+        with a1:
+            strength_new=st.text_area("Strength",height=120,key="add_personnel_strength")
+            recommendation_new=st.text_area("Recommendation",height=120,key="add_personnel_recommendation")
+        with a2:
+            preference_new=st.text_input("Preference",key="add_personnel_preference")
+            comment_new=st.text_area("Comment / Suggestion",height=120,key="add_personnel_comment")
+            assessor1_new=st.text_input("Assessor 1",key="add_personnel_assessor1")
+            assessor2_new=st.text_input("Assessor 2",key="add_personnel_assessor2")
+            supervisor_new=st.text_input("Supervisor",key="add_personnel_supervisor")
+            remarks_new=st.text_area("Remarks",height=100,key="add_personnel_remarks")
+        create_personnel=st.form_submit_button("➕ Add Personnel",type="primary")
+    if create_personnel:
+        if not name_new.strip():
+            st.error("Name is required.")
+        elif not staff_id_new.strip():
+            st.error("Staff ID is required.")
+        else:
+            payload={"name":name_new.strip(),"staff_id":staff_id_new.strip(),"email":email_new.strip() or None,"gender":gender_new,"age":int(age_new),"birth_year":int(birth_year_new),"nationality":nationality_new.strip() or "Malaysia","employment_category":employment_category_new.strip() or None,"department":department_new,"section_name":section_name_new.strip() or None,"unit_name":unit_name_new.strip() or None,"sub_unit":sub_unit_new.strip() or None,"staff_position":str(staff_position_new),"sg":sg_new.strip() or POSITION_TO_SG.get(str(staff_position_new),""),"joining_date":joining_date_new,"contract_expire_date":contract_expire_date_new,"years_in_pet":float(years_in_pet_new),"years_re_experience":float(years_re_experience_new),"sg_years":float(sg_years_new),"sg_start_date":sg_start_date_new,"age_promoted":float(age_promoted_new),"current_assignment":current_assignment_new.strip() or None,"assignment_date":assignment_date_new,"assignment_length":float(assignment_length_new),"chat_status":chat_status_new,"chat_date":chat_date_new,"assessment_level":assessment_level_new,"last_assessment_date":last_assessment_date_new,"sub_disciplines":sub_disciplines_new.strip() or None,"potential":potential_new.strip() or None,"strength":strength_new.strip() or None,"recommendation":recommendation_new.strip() or None,"resource_sme":resource_sme_new.strip() or None,"interest":interest_new.strip() or None,"preference":preference_new.strip() or None,"comment":comment_new.strip() or None,"assessor1":assessor1_new.strip() or None,"assessor2":assessor2_new.strip() or None,"supervisor":supervisor_new.strip() or None,"remarks":remarks_new.strip() or None}
+            s=open_session()
+            try:
+                ok,msg,new_id=add_personnel(s,payload)
+                if ok:
+                    st.success(f"✅ {msg}")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(msg)
+            except Exception as exc:
+                s.rollback(); st.error(f"Unable to add personnel: {exc}")
+            finally:
+                s.close()
 
 with personnel_tab:
     with st.form("personnel_database_form"):
