@@ -78,7 +78,7 @@ def _shared_source() -> str:
 
 
 def _compat_wrapper(function):
-    """Drop keyword arguments unsupported by the installed Streamlit API."""
+    """Remove only keywords that the installed callable explicitly rejects."""
     try:
         signature = inspect.signature(function)
         accepted = set(signature.parameters)
@@ -98,69 +98,80 @@ def _compat_wrapper(function):
     return wrapped
 
 
-def _legacy_widget_compat(function):
-    """Bridge newer widget sizing arguments to older Streamlit releases.
+def _legacy_api_compat(function):
+    """Retry a Streamlit call after removing an unsupported keyword.
 
-    Some older Streamlit releases expose widget methods through a metrics
-    wrapper whose signature contains ``**kwargs``. In that case a generic
-    signature-based filter cannot detect that ``width`` is unsupported and
-    the keyword reaches the underlying widget implementation unchanged.
+    Older Streamlit releases frequently expose methods through a metrics
+    wrapper that advertises ``**kwargs`` even though the underlying widget
+    rejects newer arguments. A runtime retry catches that exact failure mode
+    for *any* unsupported keyword instead of maintaining a growing list of
+    version-specific arguments.
 
-    The legacy application uses the newer ``width=`` argument on buttons.
-    Removing that argument is the safest compatibility behavior because the
-    older API will then render the button using its native sizing rules.
+    Only errors matching Python's ``unexpected keyword argument`` message
+    are retried. Other TypeErrors from the application or Streamlit propagate
+    normally and therefore remain visible rather than being masked.
     """
     @wraps(function)
     def wrapped(*args, **kwargs):
-        if "width" in kwargs:
-            kwargs = dict(kwargs)
-            kwargs.pop("width", None)
-        return function(*args, **kwargs)
+        pending = dict(kwargs)
+        while pending:
+            try:
+                return function(*args, **pending)
+            except TypeError as exc:
+                match = re.search(r"unexpected keyword argument ['\"]([^'\"]+)['\"]", str(exc))
+                if match is None:
+                    raise
+                unsupported = match.group(1)
+                if unsupported not in pending:
+                    raise
+                pending.pop(unsupported)
+        return function(*args)
 
     return wrapped
 
 
 def _dataframe_compat(function):
-    """Bridge newer string dataframe widths to older integer-width APIs."""
-    try:
-        signature = inspect.signature(function)
-        accepted = set(signature.parameters)
-        accepts_kwargs = any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in signature.parameters.values()
-        )
-    except (TypeError, ValueError):
-        return function
-
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        if isinstance(kwargs.get("width"), str):
-            kwargs = dict(kwargs)
-            kwargs.pop("width", None)
-        if not accepts_kwargs:
-            kwargs = {key: value for key, value in kwargs.items() if key in accepted}
-        return function(*args, **kwargs)
-
-    return wrapped
+    """Bridge newer dataframe width values and other unsupported kwargs."""
+    return _legacy_api_compat(function)
 
 
 @contextmanager
 def _streamlit_api_compatibility():
-    """Temporarily bridge known old/new Streamlit widget API differences."""
+    """Bridge newer Streamlit API arguments across legacy widget calls."""
     originals = {}
 
+    # These are the Streamlit calls used by the legacy app where API keyword
+    # drift is most likely to surface across the project's installed version.
+    # The retry mechanism is generic: if another keyword is unsupported, it is
+    # removed only after Streamlit explicitly rejects that keyword.
+    targets = (
+        "button",
+        "link_button",
+        "download_button",
+        "dataframe",
+        "data_editor",
+        "plotly_chart",
+        "columns",
+        "container",
+        "expander",
+        "tabs",
+        "selectbox",
+        "multiselect",
+        "radio",
+        "date_input",
+        "number_input",
+        "text_input",
+        "text_area",
+        "file_uploader",
+        "page_link",
+    )
+
     try:
-        for name in ("button", "link_button", "download_button"):
+        for name in targets:
             function = getattr(st, name, None)
             if function is not None:
                 originals[name] = function
-                setattr(st, name, _legacy_widget_compat(function))
-
-        dataframe = getattr(st, "dataframe", None)
-        if dataframe is not None:
-            originals["dataframe"] = dataframe
-            setattr(st, "dataframe", _dataframe_compat(dataframe))
-
+                setattr(st, name, _legacy_api_compat(function))
         yield
     finally:
         for name, function in originals.items():
