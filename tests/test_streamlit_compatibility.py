@@ -1,4 +1,5 @@
 from pathlib import Path
+import ast
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,3 +22,36 @@ def test_v2_pages_do_not_require_modern_button_width_api():
         assert 'st.button("Reset", type="secondary", width="stretch"' not in source
         assert 'st.button("🔄 Refresh", type="secondary", width="stretch"' not in source
         assert 'st.button("📊 Generate Chart", type="primary", width="stretch"' not in source
+
+
+def test_v2_navigation_keys_are_namespaced_away_from_streamlit_nav_namespace():
+    path = ROOT / "v2" / "components" / "navigation.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    explicit_keys = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "button":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "key" and isinstance(keyword.value, ast.JoinedStr):
+                explicit_keys.append(ast.unparse(keyword.value))
+
+    assert explicit_keys == [
+        'f"v2_main_nav_{idx}"',
+        'f"v2_admin_nav_{idx}"',
+    ]
+    source = path.read_text(encoding="utf-8")
+    assert 'key=f"nav_{idx}"' not in source
+    assert 'key=f"admin_{idx}"' not in source
+    assert 'key="nav_0"' not in source
+
+
+def test_v2_navigation_declares_no_short_nav_keys():
+    source = (ROOT / "v2" / "components" / "navigation.py").read_text(encoding="utf-8")
+    assert "nav_0" not in source
+    assert "nav_1" not in source
+    assert "nav_2" not in source
+    assert "nav_3" not in source
+    assert "nav_4" not in source
