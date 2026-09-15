@@ -36,7 +36,8 @@ def test_readiness_summary_calculates_coverage_weighted_and_strict():
     assert summary.loc["Alice", "Assessment Coverage %"] == 100.0
     assert summary.loc["Alice", "Strict Readiness %"] == 50.0
     assert round(summary.loc["Alice", "Weighted Readiness %"], 6) == round(5 / 7 * 100, 6)
-    assert summary.loc["Alice", "Readiness Status"] == "Development Required"
+    # Legacy readiness rule: weighted >=65%, coverage >=75%, major gaps <=2 => Near Ready.
+    assert summary.loc["Alice", "Readiness Status"] == "Near Ready"
 
 
 def test_readiness_filters_match_name_staff_department_and_grade():
