@@ -19,4 +19,8 @@ st.set_page_config(
 apply_theme()
 
 pg = st.navigation(PAGES, position="hidden")
+# The golden navigation component uses the human-readable page name to decide
+# which button is disabled. Keep that state synchronized with Streamlit's
+# canonical navigation object, including direct URL navigation.
+st.session_state.current_page = pg.title
 pg.run()
