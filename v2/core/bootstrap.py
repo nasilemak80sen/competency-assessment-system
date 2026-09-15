@@ -1,6 +1,7 @@
 """V2 application bootstrap and shared runtime context."""
 from __future__ import annotations
 
+import functools
 import sys
 from pathlib import Path
 
@@ -16,6 +17,45 @@ if str(V2_DIR) not in sys.path:
     sys.path.insert(0, str(V2_DIR))
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
+
+
+def _patch_streamlit_width_compatibility() -> None:
+    """Backport ``width=\"stretch\"`` to older Streamlit widget APIs.
+
+    v2 was developed against a newer Streamlit release where several widgets
+    accept a ``width`` keyword. Some deployed environments still expose the
+    older ``use_container_width`` API instead. Translate the modern keyword
+    centrally so every v2 page remains compatible without duplicating version
+    checks in individual pages.
+    """
+    mapping = {
+        "button": st.button,
+        "download_button": st.download_button,
+        "link_button": getattr(st, "link_button", None),
+        "dataframe": st.dataframe,
+        "plotly_chart": st.plotly_chart,
+    }
+
+    for widget_name, original in mapping.items():
+        if original is None or getattr(original, "_v2_width_compat", False):
+            continue
+
+        @functools.wraps(original)
+        def compatible_widget(*args, __original=original, **kwargs):
+            width = kwargs.pop("width", None)
+            if width == "stretch":
+                kwargs.setdefault("use_container_width", True)
+            elif width is not None:
+                # Older Streamlit versions cannot express fixed widget width
+                # through these APIs, so simply omit unsupported values.
+                pass
+            return __original(*args, **kwargs)
+
+        compatible_widget._v2_width_compat = True
+        setattr(st, widget_name, compatible_widget)
+
+
+_patch_streamlit_width_compatibility()
 
 from config import (  # noqa: E402
     APP_TITLE,
