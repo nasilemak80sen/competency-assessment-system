@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-
 import streamlit as st
 
 V2_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = V2_DIR.parent
+# Keep v2 packages ahead of root-level legacy modules. The repository root is
+# still exposed so v2 can import proven data/model modules such as config.py,
+# data_loader.py and models.py without shadowing v2.analytics.
+if str(V2_DIR) not in sys.path:
+    sys.path.insert(0, str(V2_DIR))
 if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+    sys.path.append(str(REPO_ROOT))
 
 from config import APP_TITLE, DATABASE_URL, EXCEL_PATH  # noqa: E402
 from data_loader import load_master_data, load_ruler_and_tech_mapping  # noqa: E402
@@ -18,11 +22,7 @@ from models import init_db, get_session as db_get_session  # noqa: E402
 
 def initialise_session() -> None:
     """Create stable cross-page state without overwriting widget-owned keys."""
-    defaults = {
-        "selected_personnel_id": None,
-        "selected_staff_id": None,
-        "selected_person_name": None,
-    }
+    defaults = {"selected_personnel_id": None, "selected_staff_id": None, "selected_person_name": None}
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
