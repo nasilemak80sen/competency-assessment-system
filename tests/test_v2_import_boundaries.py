@@ -1,10 +1,12 @@
-"""Import and navigation smoke tests for the Streamlit v2 module graph."""
+"""Import, navigation and golden-dashboard parity smoke tests."""
 from __future__ import annotations
 
-import importlib
 import ast
+import importlib
 import sys
 from pathlib import Path
+
+import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +48,9 @@ def test_native_analytics_imports_are_resolvable():
 def test_analytics_package_does_not_resolve_to_legacy_module():
     _prepare_v2_path()
     analytics = importlib.import_module("analytics")
-    assert getattr(analytics, "__file__", "").replace("\\", "/").startswith(str(V2_DIR).replace("\\", "/"))
+    assert getattr(analytics, "__file__", "").replace("\\", "/").startswith(
+        str(V2_DIR).replace("\\", "/")
+    )
 
 
 def test_page_registry_is_canonical_and_complete():
@@ -71,3 +75,47 @@ def test_navigation_does_not_use_raw_page_paths():
                     isinstance(first_arg, ast.Constant)
                     and isinstance(first_arg.value, str)
                 ), "Navigation must use registered st.Page objects, not raw paths."
+
+
+def test_dashboard_contains_golden_sections_and_controls():
+    source = (V2_DIR / "pages" / "01_Dashboard.py").read_text(encoding="utf-8")
+    required_text = [
+        "🏠 Dashboard Home",
+        "🌐 RE Nationalities",
+        "📊 Position Breakdown",
+        "📊 Salary Grade Distribution by Employment Type",
+        "🌏 Section Distribution",
+        "🏢 Office Location Distribution",
+        "👥 Gender Distribution",
+        "📈 Grade (SG) Distribution by Gender",
+        "📈 Age vs Salary Grade Analysis",
+        "📊 Career Distribution (2D)",
+        "🌐 Career Progression (3D)",
+        "RE Experience Tier",
+        "RE Experience Bubble Size",
+        "Beautiful_Hover",
+        "scatter_2d_age_sg",
+        "scatter_3d_career_landscape",
+    ]
+    for text in required_text:
+        assert text in source, f"Golden Dashboard component missing: {text}"
+
+
+def test_dashboard_backend_derives_golden_average_columns():
+    _prepare_v2_path()
+    bootstrap = importlib.import_module("core.bootstrap")
+    df = pd.DataFrame(
+        {
+            "B1": [4.0],
+            "B2": [2.0],
+            "K1": [3.0],
+            "P1": [5.0],
+            "E1": [4.0],
+        }
+    )
+    result = bootstrap.add_category_averages(df)
+    assert result.loc[0, "B_avg"] == 3.0
+    assert result.loc[0, "K_avg"] == 3.0
+    assert result.loc[0, "P_avg"] == 5.0
+    assert result.loc[0, "E_avg"] == 4.0
+    assert result.loc[0, "Overall_avg"] == 3.6
