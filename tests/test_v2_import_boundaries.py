@@ -84,8 +84,6 @@ def test_registered_pages_all_render_shared_navigation():
     ]
     for page_file in page_files:
         source = page_file.read_text(encoding="utf-8")
-        # Individual Assessment is intentionally a thin registered entrypoint;
-        # its implementation lives in the parity module and owns navigation.
         if page_file.name == "05_Individual_Assessment.py":
             assert "05_Individual_Assessment_Golden" in source
             implementation = (V2_DIR / "pages" / "05_Individual_Assessment_Golden.py").read_text(encoding="utf-8")
@@ -132,7 +130,7 @@ def test_chart_builder_renders_shared_navigation():
 def test_admin_forms_have_submit_controls():
     source = (V2_DIR / "pages" / "07_Admin.py").read_text(encoding="utf-8")
     assert source.count("with st.form(") == source.count("st.form_submit_button(")
-    assert "💾 Save Personnel Changes" in source
+    assert "💾 Save Personnel Info" in source
     assert "💾 Save Assessment" in source
 
 
