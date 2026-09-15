@@ -9,23 +9,8 @@ import streamlit as st
 from config import POSITION_HIERARCHY_ORDER, SG_HIERARCHY, SG_TO_POSITION_BRACKET
 from core.bootstrap import get_master_data
 from analytics.nationality import prepare_nationality_map_data, create_nationality_bubble_map
+from analytics.workforce import scatter_age_vs_grade
 from components.navigation import render_navigation, render_header
-
-
-def _scatter_age_vs_grade(df: pd.DataFrame) -> pd.DataFrame:
-    """Prepare legacy-compatible Age vs SG scatter data without root analytics import."""
-    size_cols = ["Years of RE Experience", "Years in PET"]
-    size_col = next((column for column in size_cols if column in df.columns), None)
-    columns = ["Name", "Age", "SG", "Staff Position", "Department", "Overall_avg"]
-    if size_col:
-        columns.append(size_col)
-    columns = [column for column in columns if column in df.columns]
-    out = df[columns].copy()
-    for column in ("Years of RE Experience", "Years in PET"):
-        if column in out.columns:
-            out[column] = out[column].fillna(0)
-    required = [column for column in ("Age", "SG") if column in out.columns]
-    return out.dropna(subset=required) if len(required) == 2 else out
 
 render_navigation()
 render_header("🏠 Dashboard Home", "DPE Reservoir Engineering workforce overview")
@@ -38,82 +23,109 @@ if df is None or df.empty:
 # Top metrics
 metric_cols = st.columns(5)
 total = len(df)
-metric_cols[0].metric("Total Personnel", total)
-if "Department" in df.columns:
-    metric_cols[1].metric("Departments", df["Department"].nunique())
-if "Staff Position" in df.columns:
-    metric_cols[2].metric("Positions", df["Staff Position"].nunique())
-if "SG" in df.columns:
-    metric_cols[3].metric("Salary Grades", df["SG"].nunique())
-if "Gender" in df.columns:
-    metric_cols[4].metric("Female", int((df["Gender"].astype(str).str.upper() == "FEMALE").sum()))
+gender = df.get("Gender", pd.Series(dtype=object)).astype(str).str.strip().str.upper()
+employment = df.get("Employment Category", pd.Series(dtype=object)).astype(str).str.strip().str.upper()
+metric_cols[0].metric("Total Personnel", int(total))
+metric_cols[1].metric("Permanent Employees", int(employment.eq("PERMANENT").sum()))
+metric_cols[2].metric("CDH Employees", int(employment.eq("CDH").sum()))
+metric_cols[3].metric("Male", int(gender.eq("M").sum()))
+metric_cols[4].metric("Female", int(gender.eq("F").sum()))
 
+# Nationality distribution
 st.markdown("---")
+st.subheader("🌐 RE Nationalities")
+nationality_df, unmatched = prepare_nationality_map_data(df)
+if not nationality_df.empty:
+    top = nationality_df.head(5); cols = st.columns(min(5, len(top)))
+    for index, (_, row) in enumerate(top.iterrows()): cols[index].metric(row["Nationality"], int(row["Personnel Count"]), row["Representation Display"])
+    st.plotly_chart(create_nationality_bubble_map(nationality_df), width="stretch", config={"displaylogo": True, "scrollZoom": True, "responsive": True, "modeBarButtonsToRemove": ["lasso2d", "select2d"], "toImageButtonOptions": {"format": "png", "filename": "RE_personnel_nationality_map", "height": 800, "width": 1400, "scale": 2}})
+    st.caption("Bubble size and color represent the number of personnel associated with each nationality. Markers use approximate country-centroid coordinates.")
+else: st.info("No valid nationality data is available for the geographical visualization.")
+if unmatched:
+    with st.expander("⚠️ Nationality values requiring mapping"): st.write(unmatched)
 
-# Nationality
-if "Nationality" in df.columns:
-    st.subheader("🌍 Nationality Distribution")
-    map_data = prepare_nationality_map_data(df)
-    if map_data is not None and not map_data.empty:
-        try:
-            fig = create_nationality_bubble_map(map_data)
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception:
-            st.dataframe(map_data, use_container_width=True)
+# Workforce distributions
+st.markdown("---")
+filter_cols = st.columns(3)
+with filter_cols[0]: selected_units = st.multiselect("Filter by Unit Name", sorted(df["Unit Name"].dropna().astype(str).unique()) if "Unit Name" in df else [], key="dash_unit1")
+with filter_cols[1]: selected_positions = st.multiselect("Filter by Position", sorted(df["Staff Position"].dropna().astype(str).unique()) if "Staff Position" in df else [], key="dash_pos1")
+with filter_cols[2]: selected_people = st.multiselect("Filter by Personnel", sorted(df["Name"].dropna().astype(str).unique()) if "Name" in df else [], key="dash_name")
+filtered = df.copy()
+if selected_units: filtered = filtered[filtered["Unit Name"].astype(str).isin(selected_units)]
+if selected_positions: filtered = filtered[filtered["Staff Position"].astype(str).isin(selected_positions)]
+if selected_people: filtered = filtered[filtered["Name"].astype(str).isin(selected_people)]
 
-# Position breakdown
-if "Staff Position" in df.columns:
-    st.subheader("👔 Position Breakdown")
-    position_counts = df["Staff Position"].fillna("Not Specified").value_counts().reindex(POSITION_HIERARCHY_ORDER).dropna()
-    if not position_counts.empty:
-        st.plotly_chart(px.bar(position_counts.reset_index(name="Personnel"), x="Staff Position", y="Personnel"), use_container_width=True)
+chart_cols = st.columns(2)
+with chart_cols[0]:
+    st.subheader("📊 Position Breakdown")
+    if "SG" in filtered and "Employment Category" in filtered:
+        chart = filtered.copy(); chart["Position"] = chart["SG"].map(SG_TO_POSITION_BRACKET).fillna("Other"); chart["Employment Type"] = chart["Employment Category"].astype(str).str.strip().str.upper().map({"PERMANENT":"Permanent","CDH":"CDH"}).fillna("Other")
+        grouped = chart.groupby(["Position","Employment Type"]).size().reset_index(name="Personnel")
+        st.plotly_chart(px.bar(grouped, x="Position", y="Personnel", color="Employment Type", barmode="stack", category_orders={"Position": [p for p in POSITION_HIERARCHY_ORDER if p in grouped["Position"].unique()]}), width="stretch", config={"displaylogo": False, "responsive": True})
+with chart_cols[1]:
+    st.subheader("📊 Salary Grade Distribution")
+    if "SG" in filtered and "Employment Category" in filtered:
+        chart = filtered.copy(); chart["Employment Type"] = chart["Employment Category"].astype(str).str.strip().str.upper().map({"PERMANENT":"Permanent","CDH":"CDH"}).fillna("Other")
+        grouped = chart.groupby(["SG","Employment Type"]).size().reset_index(name="Personnel"); order = [g for g in SG_HIERARCHY if g in grouped["SG"].unique()]
+        st.plotly_chart(px.bar(grouped, x="SG", y="Personnel", color="Employment Type", barmode="stack", category_orders={"SG": order}), width="stretch", config={"displaylogo": False, "responsive": True})
 
-# Salary grade distribution
-if "SG" in df.columns:
-    st.subheader("💼 Salary Grade Distribution")
-    sg_counts = df["SG"].fillna("Not Specified").value_counts()
-    ordered = [sg for sg in SG_HIERARCHY if sg in sg_counts.index]
-    remaining = [sg for sg in sg_counts.index if sg not in ordered]
-    sg_plot = sg_counts.reindex(ordered + remaining).dropna()
-    st.plotly_chart(px.bar(sg_plot.reset_index(name="Personnel"), x="SG", y="Personnel"), use_container_width=True)
+# Legacy dashboard row: gender and office location distribution
+st.markdown("---")
+row2 = st.columns(2)
+with row2[0]:
+    st.subheader("👥 Gender Distribution")
+    if "Gender" in df.columns:
+        counts = df["Gender"].astype(str).str.strip().replace({"M":"Male","F":"Female"}).value_counts().reset_index(); counts.columns=["Gender","Count"]
+        st.plotly_chart(px.pie(counts, names="Gender", values="Count", hole=0.35), width="stretch", config={"displaylogo": False,"responsive":True})
+    else: st.info("Gender data not available")
+with row2[1]:
+    st.subheader("🏢 Office Location Distribution")
+    location_column = "Current Location:" if "Current Location:" in df.columns else ("Current Assignment / Loc:" if "Current Assignment / Loc:" in df.columns else None)
+    if location_column:
+        locations = df[location_column].fillna("Not Specified").astype(str).str.strip().replace("", "Not Specified").value_counts().reset_index(); locations.columns=["Current Assignment","Count"]; locations=locations.sort_values("Count",ascending=True)
+        fig=px.bar(locations,x="Count",y="Current Assignment",orientation="h",text="Count",color="Count",color_continuous_scale="Emrld")
+        fig.update_traces(textposition="outside",hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>"); fig.update_layout(height=max(500,len(locations)*25),showlegend=False)
+        st.plotly_chart(fig,width="stretch",config={"displaylogo":False,"responsive":True})
+    else: st.info("Office location data not available")
 
-# Gender distribution
-if "Gender" in df.columns:
-    st.subheader("⚥ Gender Distribution")
-    gender = df["Gender"].fillna("Not Specified").value_counts().reset_index(name="Personnel")
-    st.plotly_chart(px.pie(gender, names="Gender", values="Personnel"), use_container_width=True)
+# Legacy dashboard row: age vs salary grade
+st.markdown("---")
+st.subheader("📈 Age vs Salary Grade Analysis")
+scatter_df = scatter_age_vs_grade(df)
+if not scatter_df.empty:
+    filter_area = st.columns(4)
+    with filter_area[0]: age_units = st.multiselect("Unit Name", sorted(df["Unit Name"].dropna().astype(str).unique()) if "Unit Name" in df else [], key="dash_age_unit")
+    with filter_area[1]: age_positions = st.multiselect("Staff Position", sorted(df["Staff Position"].dropna().astype(str).unique()) if "Staff Position" in df else [], key="dash_age_position")
+    with filter_area[2]:
+        pet_values=pd.to_numeric(df.get("Years in PET",pd.Series([0])),errors="coerce").fillna(0); pet_min,pet_max=float(pet_values.min()),float(pet_values.max())
+        pet_range=st.slider("Years in PETRONAS",pet_min,pet_max,(pet_min,pet_max),step=1.0,key="dash_pet_range")
+    with filter_area[3]:
+        re_values=pd.to_numeric(df.get("Years of RE Experience",pd.Series([0])),errors="coerce").fillna(0); re_min,re_max=float(re_values.min()),float(re_values.max())
+        re_range=st.slider("Years of RE Experience",re_min,re_max,(re_min,re_max),step=1.0,key="dash_re_range")
+    career_filtered=df.copy()
+    if age_units: career_filtered=career_filtered[career_filtered["Unit Name"].astype(str).isin(age_units)]
+    if age_positions: career_filtered=career_filtered[career_filtered["Staff Position"].astype(str).isin(age_positions)]
+    if "Years in PET" in career_filtered.columns: career_filtered=career_filtered[pd.to_numeric(career_filtered["Years in PET"],errors="coerce").fillna(0).between(*pet_range)]
+    if "Years of RE Experience" in career_filtered.columns: career_filtered=career_filtered[pd.to_numeric(career_filtered["Years of RE Experience"],errors="coerce").fillna(0).between(*re_range)]
+    plot_df=scatter_age_vs_grade(career_filtered)
+    if not plot_df.empty:
+        fig=px.scatter(plot_df,x="Age",y="SG",color="SG",hover_name="Name",hover_data={c:True for c in ["Department","Staff Position","Years of RE Experience","Years in PET"] if c in plot_df.columns},category_orders={"SG":SG_HIERARCHY},height=520)
+        st.plotly_chart(fig,width="stretch",config={"displaylogo":False,"responsive":True})
+    else: st.info("No personnel match the selected career filters.")
+else: st.info("Age or salary grade data not available")
 
-# Office / current assignment distribution
-for column, title in [("Office Location", "📍 Office Location Distribution"), ("Current Assignment", "🏢 Current Assignment Distribution")]:
-    if column in df.columns:
-        st.subheader(title)
-        counts = df[column].fillna("Not Specified").value_counts().reset_index(name="Personnel")
-        st.plotly_chart(px.bar(counts, x=column, y="Personnel"), use_container_width=True)
-
-# Age vs salary grade
-if {"Age", "SG"}.issubset(df.columns):
-    st.subheader("📈 Age vs Salary Grade")
-    scatter_df = df.copy()
-    if "Overall_avg" not in scatter_df.columns:
-        score_columns = [column for column in scatter_df.columns if str(column).startswith(("B", "K", "P", "E")) and str(column)[1:].isdigit()]
-        if score_columns:
-            scatter_df["Overall_avg"] = scatter_df[score_columns].mean(axis=1, skipna=True)
-    scatter_df = _scatter_age_vs_grade(scatter_df)
-    if not scatter_df.empty:
-        size_col = next((c for c in ("Years of RE Experience", "Years in PET") if c in scatter_df.columns), None)
-        kwargs = {"size": size_col} if size_col else {}
-        fig = px.scatter(scatter_df, x="Age", y="SG", hover_name="Name", color="Department" if "Department" in scatter_df.columns else None, **kwargs)
-        st.plotly_chart(fig, use_container_width=True)
-
-# 3D career landscape
-required_3d = {"Age", "Years in Salary Grade", "SG"}
+# Legacy dashboard career landscape
+st.markdown("---")
+st.subheader("🌐 3D Career Landscape")
+required_3d={"Age","SG","Years in PET","Years of RE Experience"}
 if required_3d.issubset(df.columns):
-    st.subheader("🧭 3D Career Landscape")
-    career_df = df.copy()
-    career_df["Age"] = pd.to_numeric(career_df["Age"], errors="coerce")
-    career_df["Years in Salary Grade"] = pd.to_numeric(career_df["Years in Salary Grade"], errors="coerce")
-    career_df["SG Rank"] = career_df["SG"].map(lambda value: SG_HIERARCHY.index(value) if value in SG_HIERARCHY else None)
-    career_df = career_df.dropna(subset=["Age", "Years in Salary Grade", "SG Rank"])
-    if not career_df.empty:
-        fig = px.scatter_3d(career_df, x="Age", y="Years in Salary Grade", z="SG Rank", color="Department" if "Department" in career_df.columns else None, hover_name="Name")
-        st.plotly_chart(fig, use_container_width=True)
+    career=df[list(required_3d|({"Name","Department","Staff Position"} & set(df.columns)))].copy()
+    career["Age"]=pd.to_numeric(career["Age"],errors="coerce"); career["Years in PET"]=pd.to_numeric(career["Years in PET"],errors="coerce").fillna(0); career["Years of RE Experience"]=pd.to_numeric(career["Years of RE Experience"],errors="coerce").fillna(0); career=career.dropna(subset=["Age","SG"])
+    if not career.empty:
+        sg_order=[g for g in SG_HIERARCHY if g in career["SG"].astype(str).unique()]
+        career["SG Rank"]=career["SG"].astype(str).map({g:i for i,g in enumerate(sg_order)})
+        fig3d=px.scatter_3d(career,x="Years of RE Experience",y="Age",z="Years in PET",color="SG",hover_name="Name",hover_data={c:True for c in ["Department","Staff Position"] if c in career.columns},category_orders={"SG":sg_order},height=650)
+        fig3d.update_layout(scene={"xaxis_title":"Years of RE Experience","yaxis_title":"Age","zaxis_title":"Years in PET"},margin={"l":0,"r":0,"t":50,"b":0})
+        st.plotly_chart(fig3d,width="stretch",config={"displaylogo":False,"responsive":True})
+    else: st.info("No valid personnel records are available for the career landscape.")
+else: st.info("Age, salary grade and experience fields are required for the 3D career landscape.")
