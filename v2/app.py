@@ -18,6 +18,12 @@ st.set_page_config(
 )
 apply_theme()
 
+# Navigation is rendered by the active page's shared navigation component.
+# Reset this run-local guard on every Streamlit script execution so navigation
+# remains visible after reruns while duplicate calls within the same execution
+# become harmless.
+st.session_state["_v2_navigation_rendered"] = False
+
 pg = st.navigation(PAGES, position="hidden")
 # The golden navigation component uses the human-readable page name to decide
 # which button is disabled. Keep that state synchronized with Streamlit's
