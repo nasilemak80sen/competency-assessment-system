@@ -78,7 +78,7 @@ def _shared_source() -> str:
 
 
 def _compat_wrapper(function):
-    """Remove only keywords that the installed callable explicitly rejects."""
+    """Drop keyword arguments unsupported by the installed Streamlit API."""
     try:
         signature = inspect.signature(function)
         accepted = set(signature.parameters)
@@ -99,39 +99,53 @@ def _compat_wrapper(function):
 
 
 def _legacy_api_compat(function):
-    """Retry a Streamlit call after removing an unsupported keyword.
+    """Retry Streamlit calls after removing incompatible newer API arguments.
 
-    Older Streamlit releases frequently expose methods through a metrics
-    wrapper that advertises ``**kwargs`` even though the underlying widget
-    rejects newer arguments. A runtime retry catches that exact failure mode
-    for *any* unsupported keyword instead of maintaining a growing list of
-    version-specific arguments.
+    The installed application uses an older Streamlit release while parts of
+    the legacy source contain newer API conventions. Two compatibility cases
+    are handled here:
 
-    Only errors matching Python's ``unexpected keyword argument`` message
-    are retried. Other TypeErrors from the application or Streamlit propagate
-    normally and therefore remain visible rather than being masked.
+    1. String sizing values such as ``width="stretch"`` are newer semantics
+       that older Streamlit implementations may pass through until a low-level
+       protobuf assignment raises ``TypeError``. Removing the string sizing
+       argument preserves the older native sizing behavior.
+    2. If an older implementation explicitly raises ``unexpected keyword
+       argument``, that one rejected keyword is removed and the call is retried.
+
+    Other TypeErrors are never swallowed.
     """
     @wraps(function)
     def wrapped(*args, **kwargs):
         pending = dict(kwargs)
-        while pending:
+
+        # Newer Streamlit supports string sizing values such as
+        # width="stretch" / width="content". Older releases can accept the
+        # keyword through an outer **kwargs wrapper and fail only when the
+        # value reaches a protobuf field that requires an integer.
+        for sizing_key in ("width", "height"):
+            if isinstance(pending.get(sizing_key), str):
+                pending.pop(sizing_key, None)
+
+        while True:
             try:
                 return function(*args, **pending)
             except TypeError as exc:
-                match = re.search(r"unexpected keyword argument ['\"]([^'\"]+)['\"]", str(exc))
+                match = re.search(
+                    r"unexpected keyword argument ['\"]([^'\"]+)['\"]",
+                    str(exc),
+                )
                 if match is None:
                     raise
                 unsupported = match.group(1)
                 if unsupported not in pending:
                     raise
                 pending.pop(unsupported)
-        return function(*args)
 
     return wrapped
 
 
 def _dataframe_compat(function):
-    """Bridge newer dataframe width values and other unsupported kwargs."""
+    """Bridge newer dataframe sizing and keyword arguments."""
     return _legacy_api_compat(function)
 
 
@@ -140,10 +154,6 @@ def _streamlit_api_compatibility():
     """Bridge newer Streamlit API arguments across legacy widget calls."""
     originals = {}
 
-    # These are the Streamlit calls used by the legacy app where API keyword
-    # drift is most likely to surface across the project's installed version.
-    # The retry mechanism is generic: if another keyword is unsupported, it is
-    # removed only after Streamlit explicitly rejects that keyword.
     targets = (
         "button",
         "link_button",
