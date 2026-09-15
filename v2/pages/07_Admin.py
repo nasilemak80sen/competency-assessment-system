@@ -10,7 +10,7 @@ from core.bootstrap import get_master_data, open_session
 from models import Personnel
 from services.personnel_service import update as update_personnel, delete as delete_personnel
 from services.assessment_service import add_assessment, add_competency_scores
-from config import SCORE_COLS, COMP_TYPES, ASSESSMENT_LEVELS
+from config import SCORE_COLS, ASSESSMENT_LEVELS
 
 render_navigation()
 render_header("⚙️ Admin: Personnel Database Settings", "Maintain personnel records and enter competency assessments")
@@ -68,14 +68,14 @@ with personnel_tab:
     if submitted:
         session = open_session()
         try:
-            result = update_personnel(session, pid, {
-                "name": name, "staff_id": staff_id, "email": email, "gender": gender,
-                "age": age, "birth_year": birth_year, "department": department,
-                "staff_position": position, "sg": sg,
-            })
-            session.commit()
-            st.success("Personnel record updated.")
-            st.cache_data.clear()
+            ok, message = update_personnel(session, pid, {"name": name, "staff_id": staff_id, "email": email, "gender": gender,
+                                                          "age": age, "birth_year": birth_year, "department": department,
+                                                          "staff_position": position, "sg": sg})
+            if ok:
+                st.success(message)
+                st.cache_data.clear()
+            else:
+                st.error(message)
         except Exception as exc:
             session.rollback()
             st.error(f"Unable to update personnel: {exc}")
@@ -97,27 +97,18 @@ with assessment_tab:
         score_cols = st.columns(4)
         for index, code in enumerate(SCORE_COLS):
             with score_cols[index % 4]:
-                category = code[:1]
-                scores[code] = {"actual_score": st.number_input(code, min_value=0.0, max_value=5.0, step=0.5, value=0.0, key=f"score_{pid}_{code}")}
+                scores[code] = {"actual": st.number_input(code, min_value=0.0, max_value=5.0, step=0.5, value=0.0, key=f"score_{pid}_{code}")}
         save_assessment = st.form_submit_button("✅ Save Assessment", type="primary", width="stretch")
     if save_assessment:
         session = open_session()
         try:
-            ok, message, assessment_id = add_assessment(session, pid, {
-                "assessment_date": assessment_date,
-                "assessment_level": assessment_level,
-                "assessor1": assessor1,
-                "assessor2": assessor2,
-                "supervisor": supervisor,
-                "remarks": remarks,
-            })
+            ok, message, assessment_id = add_assessment(session, pid, {"assessment_date": assessment_date, "assessment_level": assessment_level,
+                                                                       "assessor1": assessor1, "assessor2": assessor2, "supervisor": supervisor, "remarks": remarks})
             if not ok:
-                session.rollback()
                 st.error(message)
             else:
                 score_ok, score_message = add_competency_scores(session, assessment_id, pid, scores)
                 if not score_ok:
-                    session.rollback()
                     st.error(score_message)
                 else:
                     session.commit()
@@ -135,10 +126,12 @@ with delete_tab:
     if st.button("🗑️ Delete Personnel", type="secondary", disabled=not confirm, key=f"delete_personnel_{pid}"):
         session = open_session()
         try:
-            result = delete_personnel(session, pid)
-            session.commit()
-            st.success("Personnel record deleted.")
-            st.cache_data.clear()
+            ok, message = delete_personnel(session, pid)
+            if ok:
+                st.success(message)
+                st.cache_data.clear()
+            else:
+                st.error(message)
         except Exception as exc:
             session.rollback()
             st.error(f"Unable to delete personnel: {exc}")
