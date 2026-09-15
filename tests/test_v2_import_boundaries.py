@@ -53,14 +53,25 @@ def test_analytics_package_does_not_resolve_to_legacy_module():
     )
 
 
-def test_page_registry_is_canonical_and_complete():
+def test_page_registry_is_canonical_and_matches_golden_order():
     _prepare_v2_path()
     pages = importlib.import_module("core.pages")
 
-    assert len(pages.PAGES) == 8
-    assert len(pages.PAGE_BY_PATH) == 8
+    assert len(pages.PAGES) == 7
+    assert len(pages.PAGE_BY_PATH) == 7
     assert pages.PAGE_BY_PATH[""] is pages.PAGES[0]
-    assert pages.PAGE_BY_PATH["individual-assessment"] is pages.PAGES[4]
+
+    expected_titles = [
+        "🏠 Dashboard Home",
+        "🌡️ Competency Heatmap",
+        "👤 Individual Assessment & Talent Profile",
+        "🎯 Readiness & Gaps",
+        "📊 Chart Builder & Depth Analysis",
+        "⚙️ Admin: Import Data",
+        "⚙️ Admin: Personnel Database Settings",
+    ]
+    assert [page.title for page in pages.PAGES] == expected_titles
+    assert pages.PAGE_BY_PATH["individual-assessment"] is pages.PAGES[2]
 
 
 def test_navigation_does_not_use_raw_page_paths():
@@ -77,7 +88,36 @@ def test_navigation_does_not_use_raw_page_paths():
                 ), "Navigation must use registered st.Page objects, not raw paths."
 
 
-def test_dashboard_contains_golden_sections_and_controls():
+def test_navigation_matches_golden_labels_and_button_layout():
+    source = (V2_DIR / "components" / "navigation.py").read_text(encoding="utf-8")
+    expected = [
+        '("🏠 Dashboard", "🏠 Dashboard Home", "")',
+        '("🌡️ Heatmap", "🌡️ Competency Heatmap", "competency-heatmap")',
+        '("👤 Assessment", "👤 Individual Assessment & Talent Profile", "individual-assessment")',
+        '("🎯 Readiness", "🎯 Readiness & Gaps", "readiness-gaps")',
+        '("📊 Charts", "📊 Chart Builder & Depth Analysis", "chart-builder")',
+        '("📥 Import", "⚙️ Admin: Import Data", "admin-import-data")',
+        '("👥 Database", "⚙️ Admin: Personnel Database Settings", "admin-personnel-settings")',
+        'st.columns(5)',
+        'disabled=is_active',
+        'st.switch_page(PAGE_BY_PATH[path])',
+    ]
+    for text in expected:
+        assert text in source, f"Golden navigation detail missing: {text}"
+
+
+def test_theme_uses_canonical_golden_css_asset():
+    theme_source = (V2_DIR / "core" / "theme.py").read_text(encoding="utf-8")
+    golden_css = (REPO_ROOT / "assets" / "css" / "petronas_theme.css").read_text(encoding="utf-8")
+    assert "petronas_theme.css" in theme_source
+    assert "_THEME_PATH" in theme_source
+    assert "stButton > button:hover" in golden_css
+    assert "stTabs [role=\"tab\"][aria-selected=\"true\"]" in golden_css
+    assert "stDateInput" in golden_css
+    assert "petronas-loader" in golden_css
+
+
+def test_dashboard_contains_golden_sections_controls_and_formatting():
     source = (V2_DIR / "pages" / "01_Dashboard.py").read_text(encoding="utf-8")
     required_text = [
         "🏠 Dashboard Home",
@@ -91,6 +131,15 @@ def test_dashboard_contains_golden_sections_and_controls():
         "📈 Age vs Salary Grade Analysis",
         "📊 Career Distribution (2D)",
         "🌐 Career Progression (3D)",
+        "Filter by Personnel",
+        "Filter by Unit Name",
+        "Filter by Position",
+        "Filter by Years in PETRONAS: ",
+        "Filter by Years in RE Experience",
+        'step=1.0',
+        'f"{float(age):.0f}"',
+        'f"{float(row[\'Years of RE Experience\']):.2f} Years"',
+        'f"{float(row[\'Years in PET\']):.2f} Years"',
         "RE Experience Tier",
         "RE Experience Bubble Size",
         "Beautiful_Hover",
@@ -98,7 +147,7 @@ def test_dashboard_contains_golden_sections_and_controls():
         "scatter_3d_career_landscape",
     ]
     for text in required_text:
-        assert text in source, f"Golden Dashboard component missing: {text}"
+        assert text in source, f"Golden Dashboard detail missing: {text}"
 
 
 def test_dashboard_backend_derives_golden_average_columns():
