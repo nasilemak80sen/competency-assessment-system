@@ -78,7 +78,7 @@ def _shared_source() -> str:
 
 
 def _compat_wrapper(function):
-    """Drop only keyword arguments unsupported by the installed Streamlit API."""
+    """Drop keyword arguments unsupported by the installed Streamlit API."""
     try:
         signature = inspect.signature(function)
         accepted = set(signature.parameters)
@@ -93,6 +93,28 @@ def _compat_wrapper(function):
     def wrapped(*args, **kwargs):
         if not accepts_kwargs:
             kwargs = {key: value for key, value in kwargs.items() if key in accepted}
+        return function(*args, **kwargs)
+
+    return wrapped
+
+
+def _legacy_widget_compat(function):
+    """Bridge newer widget sizing arguments to older Streamlit releases.
+
+    Some older Streamlit releases expose widget methods through a metrics
+    wrapper whose signature contains ``**kwargs``. In that case a generic
+    signature-based filter cannot detect that ``width`` is unsupported and
+    the keyword reaches the underlying widget implementation unchanged.
+
+    The legacy application uses the newer ``width=`` argument on buttons.
+    Removing that argument is the safest compatibility behavior because the
+    older API will then render the button using its native sizing rules.
+    """
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if "width" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs.pop("width", None)
         return function(*args, **kwargs)
 
     return wrapped
@@ -125,15 +147,14 @@ def _dataframe_compat(function):
 @contextmanager
 def _streamlit_api_compatibility():
     """Temporarily bridge known old/new Streamlit widget API differences."""
-    generic_targets = ["button", "link_button", "download_button"]
     originals = {}
 
     try:
-        for name in generic_targets:
+        for name in ("button", "link_button", "download_button"):
             function = getattr(st, name, None)
             if function is not None:
                 originals[name] = function
-                setattr(st, name, _compat_wrapper(function))
+                setattr(st, name, _legacy_widget_compat(function))
 
         dataframe = getattr(st, "dataframe", None)
         if dataframe is not None:
