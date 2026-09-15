@@ -35,3 +35,20 @@ jobs:
 
       - name: Full pytest suite
         run: pytest -q
+
+      - name: Streamlit v2 boot smoke test
+        shell: bash
+        run: |
+          set -e
+          python -m streamlit run v2/app.py --server.headless true --server.port 8501 > /tmp/v2-streamlit.log 2>&1 &
+          pid=$!
+          trap 'kill $pid || true' EXIT
+          for i in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8501/ > /dev/null; then
+              echo "v2 Streamlit server booted successfully."
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/v2-streamlit.log
+          exit 1
