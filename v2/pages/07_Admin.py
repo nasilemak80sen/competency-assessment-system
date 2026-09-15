@@ -55,6 +55,12 @@ def _text(row,key,default=""):
     except (TypeError,ValueError): pass
     return str(v).strip()
 
+def _first_text(row, *keys, default=""):
+    for key in keys:
+        value=_text(row,key,"")
+        if value: return value
+    return default
+
 def _num(value,default=0.0,lo=0.0,hi=600.0):
     x=pd.to_numeric(value,errors="coerce")
     return float(x) if pd.notna(x) and lo<=float(x)<=hi else float(default)
@@ -108,11 +114,11 @@ with personnel_tab:
             section_name=st.text_input("Section Name",_text(row,"Section Name"),key=f"{prefix}_section")
             unit_name=st.text_input("Unit Name",_text(row,"Unit Name"),key=f"{prefix}_unit")
             sub_unit=st.text_input("Sub Unit",_text(row,"Sub Unit"),key=f"{prefix}_subunit")
-            current_assignment=st.text_input("Current Assignment",_text(row,"Current Location:"),key=f"{prefix}_assignment")
+            current_assignment=st.text_input("Current Assignment",_first_text(row,"Current Assignment","Current Location:",default=""),key=f"{prefix}_assignment")
         with e2:
             joining_date=st.date_input("Joining Date",_date(row.get("Joining Date")),key=f"{prefix}_joining")
             contract_expire_date=st.date_input("Contract Expire Date",_date(row.get("Contract Expire Date")),key=f"{prefix}_contract")
-            assignment_date=st.date_input("Assignment Date",_date(row.get("Assignment Date") or row.get("Date in Position")),key=f"{prefix}_assignmentdate")
+            assignment_date=st.date_input("Assignment Date",_date(row.get("Assignment Date") or row.get("Date in Position") or row.get("Date of Appointment to Current Grade")),key=f"{prefix}_assignmentdate")
             sg_start_date=st.date_input("SG Start Date",_date(row.get("SG Start Date") or row.get("Date of Appointment to Current Grade")),key=f"{prefix}_sgstart")
         with e3:
             years_in_pet=st.number_input("Years in PET",0.0,60.0,_num(row.get("Years in PET")),0.5,key=f"{prefix}_pet")
