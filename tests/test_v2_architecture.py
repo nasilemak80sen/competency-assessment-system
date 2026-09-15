@@ -1,11 +1,16 @@
 from pathlib import Path
 import ast
+import hashlib
 
 from v2.core.migration_manifest import PHASE_A_MIGRATED_COUNT, TOTAL_LEGACY_FUNCTIONS
 
 
 ROOT = Path(__file__).resolve().parents[1]
 V2 = ROOT / "v2"
+
+# Golden-reference guard: the legacy root app.py is not allowed to drift during
+# migration. This is the Git blob SHA for the protected app.py revision.
+GOLDEN_APP_BLOB_SHA = "4c7d301592b36f137e203008de23ad4fe5e2a3dd"
 
 
 def _imports_legacy_runtime(path: Path) -> bool:
@@ -19,11 +24,21 @@ def _imports_legacy_runtime(path: Path) -> bool:
     return False
 
 
+def _git_blob_sha(path: Path) -> str:
+    content = path.read_bytes()
+    header = f"blob {len(content)}\0".encode("utf-8")
+    return hashlib.sha1(header + content).hexdigest()
+
+
 def test_v2_pages_do_not_depend_on_legacy_runtime():
     pages = sorted((V2 / "pages").glob("*.py"))
     assert pages
     assert all(not _imports_legacy_runtime(page) for page in pages)
     assert not (V2 / "core" / "legacy_runtime.py").exists()
+
+
+def test_golden_legacy_app_is_unchanged():
+    assert _git_blob_sha(ROOT / "app.py") == GOLDEN_APP_BLOB_SHA
 
 
 def test_migration_manifest_is_bounded():
