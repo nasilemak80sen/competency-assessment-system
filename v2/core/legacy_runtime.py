@@ -22,6 +22,8 @@ import re
 
 import streamlit as st
 
+from components.navigation import render_navigation
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_APP = REPO_ROOT / "app.py"
@@ -38,9 +40,6 @@ def _page_blocks() -> dict[str, str]:
     """Extract the original page branches verbatim from app.py."""
     source = _read_legacy_source()
 
-    # The page branches are the executable `if/elif page == ...` statements.
-    # Comments are deliberately ignored so the extraction remains resilient
-    # to different PAGE comment styles in the legacy file.
     pattern = re.compile(
         r"(?m)^(?:if|elif) page == ([\"'])(.*?)\1:\s*$"
     )
@@ -60,9 +59,10 @@ def _shared_source() -> str:
     """
     Return the original application setup up to the first page branch.
 
-    The sidebar navigation itself is intentionally excluded because native
-    Streamlit page navigation is now provided by v2. The exact data/session
-    bootstrap immediately following navigation is retained verbatim.
+    The legacy interactive navigation is excluded because v2 supplies native
+    Streamlit page links. The original imports, helper functions, database
+    bootstrap, cached loaders, session state, and wide-data construction are
+    retained verbatim.
     """
     source = _read_legacy_source()
 
@@ -77,8 +77,6 @@ def _shared_source() -> str:
     navigation_end = first_page.start()
     navigation_block = source[navigation_marker:navigation_end]
 
-    # Preserve the legacy setup after the navigation declaration while
-    # replacing only the interactive navigation itself.
     lines = navigation_block.splitlines(keepends=True)
     retained: list[str] = []
     skipping_radio = False
@@ -110,8 +108,8 @@ def render_legacy_page(page_label: str) -> None:
     """
     Render one original app.py page branch inside the v2 Streamlit page.
 
-    The original source is executed unchanged after the shared application
-    setup. Only the value of `page` is injected by this migration layer.
+    The original branch code is not rewritten. Only the selected `page` value
+    and the v2 native navigation shell are supplied by this adapter.
     """
     blocks = _page_blocks()
     if page_label not in blocks:
@@ -120,6 +118,8 @@ def render_legacy_page(page_label: str) -> None:
             f"Legacy page {page_label!r} was not found. Available pages:\n{available}"
         )
 
+    render_navigation()
+
     namespace = {
         "__name__": "__legacy_app_runtime__",
         "__file__": str(LEGACY_APP),
@@ -127,7 +127,4 @@ def render_legacy_page(page_label: str) -> None:
     }
 
     exec(_shared_source(), namespace, namespace)
-
-    # The original branch conditions are retained verbatim. Setting `page`
-    # above makes exactly one of them execute, matching the original router.
     exec(blocks[page_label], namespace, namespace)
