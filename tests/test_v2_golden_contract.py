@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ADMIN = ROOT / "v2/pages/07_Admin.py"
 IND = ROOT / "v2/pages/05_Individual_Assessment_Golden.py"
 HEATMAP = ROOT / "v2/pages/03_Competency_Heatmap.py"
+READINESS = ROOT / "v2/pages/04_Readiness_and_Gaps.py"
+CHARTS = ROOT / "v2/pages/06_Chart_Builder.py"
 
 
 def test_admin_has_complete_golden_personnel_field_contract():
@@ -109,25 +111,65 @@ def test_heatmap_has_golden_filters_sorting_and_coverage_controls():
 def test_heatmap_has_golden_visual_and_summary_workflows():
     s = HEATMAP.read_text(encoding="utf-8")
     required = [
-        "Actual Competency Score Matrix",
-        "Competency Name:",
-        "Actual Score:",
-        "heatmap_personnel_summary.csv",
-        "heatmap_competency_summary.csv",
-        "Heatmap Analysis Summary",
-        "Personnel Summary",
-        "Competency Summary",
-        "Category Summary",
-        "Scores ≥4",
-        "Scores ≤2",
-        "Coverage %",
-        "ProgressColumn",
-        "xgap=1.5",
-        "ygap=1.5",
-        '"competency_heatmap"',
+        "Actual Competency Score Matrix", "Competency Name:", "Actual Score:",
+        "heatmap_personnel_summary.csv", "heatmap_competency_summary.csv", "Heatmap Analysis Summary",
+        "Personnel Summary", "Competency Summary", "Category Summary", "Scores ≥4", "Scores ≤2",
+        "Coverage %", "ProgressColumn", "xgap=1.5", "ygap=1.5", '"competency_heatmap"',
     ]
     missing = [x for x in required if x not in s]
     assert not missing, f"Heatmap visualization/summary contract missing: {missing}"
+
+
+def test_readiness_has_full_golden_filter_kpi_and_tab_contract():
+    s = READINESS.read_text(encoding="utf-8")
+    required = [
+        "Global Filters", "Search Personnel", "Career Ruler", "Employment Category", "Target Requirement",
+        "Selected Target SG", "Reset", "Assessment Coverage (%)", "Readiness Status", "Filtered Personnel",
+        "Fully Assessed", "Median Readiness", "📊 Overview", "📈 Readiness Distribution", "🔍 Gap Deep Dive",
+        "🎯 Personnel Prioritization", "Personnel Ready for Assessment", "Full Personnel Readiness Table",
+        "Competency Risk Detail", "Rank competency gaps by", "Top 10", "Top 15", "Selected Personnel Detail",
+        "Competency Gap Detail", "Metric Methodology",
+    ]
+    missing = [x for x in required if x not in s]
+    assert not missing, f"Readiness workflow contract missing: {missing}"
+
+
+def test_readiness_uses_native_readiness_analytics_stack():
+    s = READINESS.read_text(encoding="utf-8")
+    for text in [
+        "build_readiness_detail_dataframe",
+        "build_personnel_readiness_summary",
+        "apply_readiness_personnel_filters",
+        "_create_readiness_status_chart",
+        "_create_department_readiness_chart",
+        "_create_readiness_box_plot",
+        "_create_category_readiness_heatmap",
+        "_create_readiness_coverage_scatter",
+        "_build_competency_risk_summary",
+        "_create_competency_risk_matrix",
+        "_create_top_competency_gap_chart",
+        "_create_department_competency_heatmap",
+        "_create_personnel_priority_scatter",
+    ]:
+        assert text in s, f"Readiness analytics dependency missing: {text}"
+
+
+def test_chart_builder_has_golden_data_analysis_and_compatibility_workflow():
+    s = CHARTS.read_text(encoding="utf-8")
+    required = [
+        "📈 Step 2: Select Data Elements",
+        "🔍 Step 3: Data Analysis & Compatibility Check",
+        "✅ Data elements look good for analysis!",
+        "Data Compatibility Issues Detected",
+        "Step 4: Select Chart Type",
+        "Incompatible Chart Types (Why?)",
+        "Step 5: Generate Chart",
+        "Select up to 3 personnel",
+        "X-Axis Data Element",
+        "Y-Axis Data Element (optional, for paired charts)",
+    ]
+    missing = [x for x in required if x not in s]
+    assert not missing, f"Chart Builder workflow contract missing: {missing}"
 
 
 def test_integer_persistence_source_is_explicitly_hardened_in_model_contract():
