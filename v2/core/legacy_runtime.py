@@ -1,18 +1,4 @@
-"""
-Exact-parity runtime for the v2 migration.
-
-This module intentionally executes the original app.py page branches rather
-than re-implementing them. The goal is to preserve the original UI/UX and
-business rules while we move the monolith into real modules one workflow at
-a time.
-
-Migration rule:
-    1. Do not change the extracted page source here.
-    2. First establish v2 parity with app.py.
-    3. Then replace one extracted branch at a time with a normal module.
-    4. Write-heavy workflows are migrated only after their original branch is
-       isolated and verified.
-"""
+"""Exact-parity runtime used while the monolithic app is being migrated."""
 
 from __future__ import annotations
 
@@ -21,61 +7,44 @@ from pathlib import Path
 import re
 import sys
 
+# Streamlit executes v2/app.py with v2 as the application directory. The
+# original app.py imports root-level modules (config, models, data_loader,
+# db_ops, analytics, chart_builder), so make the repository root importable
+# before executing any legacy source.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LEGACY_APP = REPO_ROOT / "app.py"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import streamlit as st
 
 from components.navigation import render_navigation
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-LEGACY_APP = REPO_ROOT / "app.py"
-
-# The legacy app.py imports root-level modules such as config, models,
-# data_loader, db_ops, analytics, and chart_builder. When Streamlit is started
-# with v2/app.py, Python's import path is rooted at v2, so the repository root
-# is not guaranteed to be importable. Add it explicitly before executing the
-# original source. This does not alter any legacy business logic; it only makes
-# the original module dependencies resolvable from the v2 entrypoint.
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-
 @lru_cache(maxsize=1)
 def _read_legacy_source() -> str:
-    """Read the original monolithic app.py without modifying it."""
+    """Read the original app.py without modifying it."""
     return LEGACY_APP.read_text(encoding="utf-8")
 
 
 @lru_cache(maxsize=1)
 def _page_blocks() -> dict[str, str]:
-    """Extract the original page branches verbatim from app.py."""
+    """Extract the original page branches verbatim."""
     source = _read_legacy_source()
-
-    pattern = re.compile(
-        r"(?m)^(?:if|elif) page == ([\"'])(.*?)\1:\s*$"
-    )
+    pattern = re.compile(r"(?m)^(?:if|elif) page == ([\"'])(.*?)\1:\s*$")
     matches = list(pattern.finditer(source))
-
     blocks: dict[str, str] = {}
     for index, match in enumerate(matches):
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(source)
         blocks[match.group(2)] = source[start:end]
-
     return blocks
 
 
 @lru_cache(maxsize=1)
 def _shared_source() -> str:
-    """
-    Return the original application setup up to the first page branch.
-
-    The legacy interactive navigation is excluded because v2 supplies native
-    Streamlit page links. The original imports, helper functions, database
-    bootstrap, cached loaders, session state, and wide-data construction are
-    retained verbatim.
-    """
+    """Return legacy setup while replacing only the old page router."""
     source = _read_legacy_source()
-
     navigation_marker = source.index("# SIDEBAR NAVIGATION")
     first_page = re.search(
         r"(?m)^(?:if|elif) page == ([\"'])(.*?)\1:\s*$",
@@ -84,9 +53,7 @@ def _shared_source() -> str:
     if first_page is None:
         raise RuntimeError("Could not locate the first page branch in app.py")
 
-    navigation_end = first_page.start()
-    navigation_block = source[navigation_marker:navigation_end]
-
+    navigation_block = source[navigation_marker:first_page.start()]
     lines = navigation_block.splitlines(keepends=True)
     retained: list[str] = []
     skipping_radio = False
@@ -115,12 +82,7 @@ def _shared_source() -> str:
 
 
 def render_legacy_page(page_label: str) -> None:
-    """
-    Render one original app.py page branch inside the v2 Streamlit page.
-
-    The original branch code is not rewritten. Only the selected `page` value
-    and the v2 native navigation shell are supplied by this adapter.
-    """
+    """Render an original page branch with its original dependencies intact."""
     blocks = _page_blocks()
     if page_label not in blocks:
         available = "\n".join(f"- {name}" for name in blocks)
@@ -128,13 +90,15 @@ def render_legacy_page(page_label: str) -> None:
             f"Legacy page {page_label!r} was not found. Available pages:\n{available}"
         )
 
-    render_navigation()
-
     namespace = {
         "__name__": "__legacy_app_runtime__",
         "__file__": str(LEGACY_APP),
         "page": page_label,
     }
 
+    # IMPORTANT: the legacy shared setup contains st.set_page_config(). It
+    # must execute before any other Streamlit command. The v2 navigation is
+    # therefore rendered only after the original page configuration/CSS/setup.
     exec(_shared_source(), namespace, namespace)
+    render_navigation()
     exec(blocks[page_label], namespace, namespace)
