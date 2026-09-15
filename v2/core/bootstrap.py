@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
 V2_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = V2_DIR.parent
@@ -25,34 +26,41 @@ def _patch_streamlit_width_compatibility() -> None:
     v2 was developed against a newer Streamlit release where several widgets
     accept a ``width`` keyword. Some deployed environments still expose the
     older ``use_container_width`` API instead. Translate the modern keyword
-    centrally so every v2 page remains compatible without duplicating version
-    checks in individual pages.
+    centrally for both ``st.<widget>`` and ``container.<widget>`` calls so
+    every v2 page remains compatible without duplicating version checks.
     """
-    mapping = {
-        "button": st.button,
-        "download_button": st.download_button,
-        "link_button": getattr(st, "link_button", None),
-        "dataframe": st.dataframe,
-        "plotly_chart": st.plotly_chart,
-    }
+    widget_names = (
+        "button",
+        "download_button",
+        "link_button",
+        "dataframe",
+        "plotly_chart",
+    )
 
-    for widget_name, original in mapping.items():
-        if original is None or getattr(original, "_v2_width_compat", False):
-            continue
+    # Patch the module-level st methods first. Then patch DeltaGenerator so
+    # calls made through columns, containers, tabs, expanders, etc. receive
+    # the same compatibility treatment.
+    targets = [st, DeltaGenerator]
+    for target in targets:
+        for widget_name in widget_names:
+            original = getattr(target, widget_name, None)
+            if original is None or getattr(original, "_v2_width_compat", False):
+                continue
 
-        @functools.wraps(original)
-        def compatible_widget(*args, __original=original, **kwargs):
-            width = kwargs.pop("width", None)
-            if width == "stretch":
-                kwargs.setdefault("use_container_width", True)
-            elif width is not None:
-                # Older Streamlit versions cannot express fixed widget width
-                # through these APIs, so simply omit unsupported values.
-                pass
-            return __original(*args, **kwargs)
+            @functools.wraps(original)
+            def compatible_widget(*args, __original=original, **kwargs):
+                width = kwargs.pop("width", None)
+                if width == "stretch":
+                    kwargs.setdefault("use_container_width", True)
+                elif width is not None:
+                    # Older Streamlit versions cannot express fixed widget
+                    # width through these APIs, so simply omit unsupported
+                    # values rather than crashing.
+                    pass
+                return __original(*args, **kwargs)
 
-        compatible_widget._v2_width_compat = True
-        setattr(st, widget_name, compatible_widget)
+            compatible_widget._v2_width_compat = True
+            setattr(target, widget_name, compatible_widget)
 
 
 _patch_streamlit_width_compatibility()
