@@ -2,15 +2,12 @@
 
 The root app.py remains the behavioural reference implementation during the
 migration. A function is counted as migrated only when v2 owns a callable
-boundary for it and the boundary delegates to the existing implementation
-without changing arguments, defaults, validation, persistence semantics, or
-return values.
+boundary and parity coverage exists for the migrated behaviour.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 
 TOTAL_LEGACY_FUNCTIONS = 75
 
@@ -26,9 +23,7 @@ class MigrationItem:
     parity: str = "delegates unchanged"
 
 
-# Phase A / Batch 1: persistence-facing boundaries already extracted into v2.
-# These are intentionally adapters, not rewrites. The legacy implementation
-# remains the source of truth until parity tests prove a replacement safe.
+# Persistence-facing boundaries already extracted into v2.
 PHASE_A_BATCH_1: tuple[MigrationItem, ...] = (
     MigrationItem("add_personnel", "v2.services.personnel_service.add"),
     MigrationItem("update_personnel", "v2.services.personnel_service.update"),
@@ -51,9 +46,33 @@ PHASE_A_BATCH_1: tuple[MigrationItem, ...] = (
     ),
 )
 
+# Pure analytics functions now have static v2 implementations. They are kept
+# separate from the UI-rendering functions so the extraction can be tested
+# without starting Streamlit.
+PHASE_A_BATCH_2: tuple[MigrationItem, ...] = (
+    MigrationItem(
+        "_safe_numeric",
+        "v2.analytics.competency._safe_numeric",
+        status="static",
+        parity="logic extracted unchanged",
+    ),
+    MigrationItem(
+        "_get_competency_display_name",
+        "v2.analytics.competency._get_competency_display_name",
+        status="static",
+        parity="logic extracted unchanged",
+    ),
+    MigrationItem(
+        "_get_all_competency_strengths",
+        "v2.analytics.competency._get_all_competency_strengths",
+        status="static",
+        parity="logic extracted unchanged",
+    ),
+)
 
-PHASE_A_MIGRATED_COUNT = len(PHASE_A_BATCH_1)
-
+PHASE_A_MIGRATED_COUNT = len(PHASE_A_BATCH_1) + len(PHASE_A_BATCH_2)
+PHASE_A_BOUNDARY_COUNT = len(PHASE_A_BATCH_1)
+PHASE_A_STATIC_COUNT = len(PHASE_A_BATCH_2)
 
 if PHASE_A_MIGRATED_COUNT > TOTAL_LEGACY_FUNCTIONS:
     raise RuntimeError("Phase A migration count exceeds the legacy inventory")
