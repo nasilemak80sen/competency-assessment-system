@@ -19,6 +19,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 import re
+import sys
 
 import streamlit as st
 
@@ -27,6 +28,15 @@ from components.navigation import render_navigation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_APP = REPO_ROOT / "app.py"
+
+# The legacy app.py imports root-level modules such as config, models,
+# data_loader, db_ops, analytics, and chart_builder. When Streamlit is started
+# with v2/app.py, Python's import path is rooted at v2, so the repository root
+# is not guaranteed to be importable. Add it explicitly before executing the
+# original source. This does not alter any legacy business logic; it only makes
+# the original module dependencies resolvable from the v2 entrypoint.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 @lru_cache(maxsize=1)
