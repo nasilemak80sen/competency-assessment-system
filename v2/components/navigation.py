@@ -27,14 +27,18 @@ def render_header(title: str, subtitle: str | None = None) -> None:
 
 
 def render_navigation() -> None:
-    """Render the same top navigation structure and labels as golden navigation.py.
+    """Render the golden top navigation once per Streamlit script execution.
 
-    These explicit widget keys intentionally use a v2-specific namespace. The
-    application also uses Streamlit's native ``st.navigation`` with
-    ``position=\"hidden\"``; short keys such as ``nav_0`` can collide with
-    Streamlit's internal navigation widget keys and raise
-    ``StreamlitDuplicateElementKey``.
+    The v2 app uses Streamlit's native ``st.navigation`` in hidden mode and
+    each page calls this shared renderer for the visible golden-style menu.
+    A run-level guard makes duplicate calls harmless while ``v2/app.py``
+    resets the guard on every script execution, so navigation still appears
+    normally after reruns and page switches.
     """
+    if st.session_state.get("_v2_navigation_rendered", False):
+        return
+    st.session_state["_v2_navigation_rendered"] = True
+
     current_page = st.session_state.get("current_page", "🏠 Dashboard Home")
 
     nav_container = st.container()
