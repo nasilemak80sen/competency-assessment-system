@@ -11,7 +11,7 @@ import pandas as pd
 from config import COMPETENCY_FULLNAMES
 
 
-def safe_numeric(value):
+def _safe_numeric(value):
     """Safely convert a value to a rounded integer, or return None."""
     try:
         value = pd.to_numeric(value, errors="coerce")
@@ -25,18 +25,15 @@ def safe_numeric(value):
         return None
 
 
-def get_competency_display_name(code):
-    """Return the configured display name, falling back to the code."""
+def _get_competency_display_name(code):
     return COMPETENCY_FULLNAMES.get(code, code)
 
 
-def get_all_competency_strengths(person_row, competency_codes):
+def _get_all_competency_strengths(person_row, competency_codes):
     """Return assessed competencies with target and gap information.
 
-    This is the non-UI portion of the legacy ``_get_all_competency_strengths``
-    function. Sorting, rank assignment, target handling, and gap labels are
-    intentionally retained exactly so the page layer can consume the same
-    result without changing business rules.
+    Sorting, rank assignment, target handling, and gap labels intentionally
+    match the legacy implementation. UI rendering remains outside this module.
     """
     results = []
 
@@ -47,7 +44,7 @@ def get_all_competency_strengths(person_row, competency_codes):
         if code not in person_row.index:
             continue
 
-        actual = safe_numeric(person_row.get(code))
+        actual = _safe_numeric(person_row.get(code))
 
         if actual is None:
             continue
@@ -56,7 +53,7 @@ def get_all_competency_strengths(person_row, competency_codes):
         required = None
 
         if req_col in person_row.index:
-            required = safe_numeric(person_row.get(req_col))
+            required = _safe_numeric(person_row.get(req_col))
 
         gap = None
         gap_status = "Target unavailable"
@@ -74,7 +71,7 @@ def get_all_competency_strengths(person_row, competency_codes):
         results.append(
             {
                 "Code": code,
-                "Competency": get_competency_display_name(code),
+                "Competency": _get_competency_display_name(code),
                 "Score": actual,
                 "Target": required,
                 "Gap": gap,
@@ -105,3 +102,8 @@ def get_all_competency_strengths(person_row, competency_codes):
     result_df.insert(0, "Rank", range(1, len(result_df) + 1))
 
     return result_df
+
+
+safe_numeric = _safe_numeric
+get_competency_display_name = _get_competency_display_name
+get_all_competency_strengths = _get_all_competency_strengths
