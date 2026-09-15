@@ -1,8 +1,5 @@
-"""Individual Assessment page entrypoint.
+"""Individual Assessment page entrypoint."""
+from importlib import import_module
 
-The implementation lives in the golden-parity module so this registered page
-has a small, stable entrypoint while the migration remains modular.
-"""
-from pages.05_Individual_Assessment_Golden import render_page
-
+render_page = import_module("pages.05_Individual_Assessment_Golden").render_page
 render_page()
