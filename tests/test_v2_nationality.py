@@ -52,7 +52,7 @@ def _sample_map_df():
     )
 
 
-def test_create_nationality_distribution_map_has_map_and_top_nationalities():
+def test_create_nationality_distribution_map_has_interactive_orthographic_globe():
     fig = create_nationality_distribution_map(_sample_map_df())
 
     assert len(fig.data) == 3
@@ -60,10 +60,15 @@ def test_create_nationality_distribution_map_has_map_and_top_nationalities():
     assert fig.data[0].locationmode == "ISO-3"
     assert fig.data[1].type == "scattergeo"
     assert fig.data[2].type == "bar"
-    assert fig.layout.geo.projection.type == "natural earth"
+    assert fig.layout.geo.projection.type == "orthographic"
+    assert fig.layout.geo.projection.scale == 1.55
+    assert fig.layout.geo.projection.minscale == 0.85
+    assert fig.layout.geo.projection.maxscale == 3.2
+    assert fig.layout.geo.projection.rotation.lon == 105
+    assert fig.layout.geo.projection.rotation.lat == 8
     assert fig.layout.geo.showcountries is True
     assert fig.layout.geo.showland is True
-    assert fig.layout.height == 760
+    assert fig.layout.height == 790
 
 
 def test_create_nationality_bubble_map_remains_backward_compatible():
@@ -73,3 +78,4 @@ def test_create_nationality_bubble_map_remains_backward_compatible():
     assert fig.data[0].type == "choropleth"
     assert fig.data[1].type == "scattergeo"
     assert fig.data[2].type == "bar"
+    assert fig.layout.geo.projection.type == "orthographic"
