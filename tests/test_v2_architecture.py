@@ -52,3 +52,10 @@ def test_all_registered_v2_pages_exist():
         "06_Chart_Builder.py", "07_Admin.py", "08_Admin_Import_Data.py",
     ]
     assert all((V2 / "pages" / name).exists() for name in expected)
+
+
+def test_individual_assessment_entrypoint_does_not_rely_on_import_cache():
+    wrapper = (V2 / "pages" / "05_Individual_Assessment.py").read_text(encoding="utf-8")
+    assert "import runpy" in wrapper
+    assert "runpy.run_path" in wrapper
+    assert "import_module" not in wrapper
