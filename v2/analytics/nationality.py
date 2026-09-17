@@ -39,9 +39,9 @@ def prepare_nationality_map_data(
 ) -> tuple[pd.DataFrame, list[str]]:
     """Prepare nationality counts, geographic coordinates and ISO-3 codes.
 
-    The returned dataframe supports both country-level choropleth rendering and
-    optional centroid bubbles. ``unmatched`` contains nationality labels that
-    cannot be represented geographically with the configured country metadata.
+    The returned dataframe supports country-level choropleth rendering and
+    centroid bubbles. ``unmatched`` contains nationality labels that cannot be
+    represented geographically with the configured country metadata.
     """
     if personnel_df is None or personnel_df.empty or "Nationality" not in personnel_df.columns:
         return pd.DataFrame(), []
@@ -54,7 +54,6 @@ def prepare_nationality_map_data(
         )
     ].copy()
 
-    # Some source rows contain multiple nationalities separated by '/'.
     df["Nationality"] = df["Nationality"].str.split("/")
     df = df.explode("Nationality")
     df["Nationality"] = (
@@ -75,9 +74,6 @@ def prepare_nationality_map_data(
         lambda country: COUNTRY_COORDINATES.get(country, {}).get("longitude")
     )
 
-    # A country needs an ISO code for the filled map and coordinates for the
-    # optional centroid bubble. Keep the current unmatched behaviour so admins
-    # can see source values that need configuration.
     unmatched = (
         summary.loc[
             summary[["ISO3", "Latitude", "Longitude"]].isna().any(axis=1),
@@ -106,15 +102,17 @@ def prepare_nationality_map_data(
 
 
 def create_nationality_distribution_map(map_df: pd.DataFrame):
-    """Build the enterprise-style global nationality distribution visual.
+    """Build an interactive 3D-style nationality globe for the dashboard.
 
-    Layout:
-      1. Country-filled world map for geographic context.
-      2. Small centroid bubbles to emphasize personnel concentration.
-      3. Top-nationalities horizontal bar chart for exact comparison.
+    The visual design is inspired by the referenced Basemap globe project:
+    orthographic globe, dark space-like canvas and a focused viewing angle.
+    Plotly's native Geo renderer is used instead of generating PNG frames, so
+    the globe stays interactive inside Streamlit without a Basemap dependency.
 
-    The renderer uses Plotly's built-in Geo renderer and therefore does not
-    depend on MapLibre or external map tiles.
+    The figure contains:
+      1. An orthographic globe with country-level nationality colouring.
+      2. Centroid bubbles showing personnel concentration.
+      3. A compact Top Nationalities bar chart for exact comparison.
     """
     if map_df is None or map_df.empty:
         raise ValueError("Nationality map data cannot be empty.")
@@ -125,8 +123,9 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
     ).fillna(0)
     chart_df = chart_df[chart_df["Personnel Count"] > 0].copy()
 
-    # Keep the map readable when there are many nationalities, while the
-    # underlying data table remains available through the existing dashboard.
+    if chart_df.empty:
+        raise ValueError("Nationality map data contains no positive personnel counts.")
+
     top_bar = chart_df.nlargest(10, "Personnel Count").sort_values(
         "Personnel Count", ascending=True
     )
@@ -135,13 +134,11 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         rows=2,
         cols=1,
         specs=[[{"type": "geo"}], [{"type": "xy"}]],
-        row_heights=[0.73, 0.27],
-        vertical_spacing=0.08,
+        row_heights=[0.75, 0.25],
+        vertical_spacing=0.07,
     )
 
-    # ------------------------------------------------------------------
-    # Layer 1: country-level choropleth
-    # ------------------------------------------------------------------
+    # Country-level nationality colouring.
     fig.add_trace(
         go.Choropleth(
             locations=chart_df["ISO3"],
@@ -154,8 +151,8 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
             zmax=max(float(chart_df["Personnel Count"].max()), 1.0),
             marker={
                 "line": {
-                    "color": "#FFFFFF",
-                    "width": 0.65,
+                    "color": "rgba(255,255,255,0.65)",
+                    "width": 0.55,
                 }
             },
             colorbar={
@@ -163,11 +160,12 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
                 "orientation": "h",
                 "x": 0.5,
                 "xanchor": "center",
-                "y": 0.315,
+                "y": 0.285,
                 "yanchor": "bottom",
-                "len": 0.36,
-                "thickness": 11,
-                "tickfont": {"size": 10},
+                "len": 0.34,
+                "thickness": 10,
+                "tickfont": {"size": 10, "color": "#E8EEF2"},
+                "title_font": {"size": 10, "color": "#E8EEF2"},
             },
             hovertemplate=(
                 "<b>%{text}</b><br>"
@@ -181,12 +179,10 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         col=1,
     )
 
-    # ------------------------------------------------------------------
-    # Layer 2: centroid bubbles — visual emphasis, not the data source
-    # ------------------------------------------------------------------
-    # sqrt scaling prevents Malaysia from visually swallowing all smaller
-    # nationalities while keeping the actual count in the hover tooltip.
-    bubble_sizes = (chart_df["Personnel Count"].pow(0.5) * 5.5).clip(lower=8, upper=38)
+    # Centroid bubbles use sqrt scaling so smaller nationalities remain visible.
+    bubble_sizes = (chart_df["Personnel Count"].pow(0.5) * 5.5).clip(
+        lower=7, upper=34
+    )
 
     fig.add_trace(
         go.Scattergeo(
@@ -198,10 +194,10 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
             marker={
                 "size": bubble_sizes,
                 "color": "#FFFFFF",
-                "opacity": 0.78,
+                "opacity": 0.88,
                 "line": {
-                    "color": "#20419A",
-                    "width": 1.5,
+                    "color": "#00A19C",
+                    "width": 1.4,
                 },
             },
             hovertemplate=(
@@ -216,9 +212,7 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         col=1,
     )
 
-    # ------------------------------------------------------------------
-    # Layer 3: exact top-nationality comparison
-    # ------------------------------------------------------------------
+    # Exact comparison below the globe.
     fig.add_trace(
         go.Bar(
             x=top_bar["Personnel Count"],
@@ -227,8 +221,8 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
             text=top_bar["Personnel Count"].astype(int),
             textposition="outside",
             marker={
-                "color": "#20419A",
-                "line": {"color": "#16316F", "width": 0.5},
+                "color": "#00A19C",
+                "line": {"color": "#007F7B", "width": 0.5},
             },
             hovertemplate="<b>%{y}</b><br>Personnel: %{x:.0f}<extra></extra>",
             showlegend=False,
@@ -237,25 +231,37 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         col=1,
     )
 
+    # Basemap-inspired orthographic globe styling.
     fig.update_geos(
         row=1,
         col=1,
         scope="world",
-        projection_type="natural earth",
-        projection_scale=1.08,
-        center={"lat": 15, "lon": 65},
+        projection={
+            "type": "orthographic",
+            "scale": 1.55,
+            "minscale": 0.85,
+            "maxscale": 3.2,
+            "rotation": {
+                "lon": 105,
+                "lat": 8,
+                "roll": 0,
+            },
+        },
         showframe=False,
         showland=True,
-        landcolor="#F4F6F7",
+        landcolor="#18252B",
         showocean=True,
-        oceancolor="#EAF1F4",
+        oceancolor="#050B10",
         showlakes=True,
-        lakecolor="#EAF1F4",
+        lakecolor="#07151C",
         showcountries=True,
-        countrycolor="#C8D0D5",
-        countrywidth=0.55,
-        coastlinecolor="#AEB8BE",
+        countrycolor="rgba(220,235,240,0.42)",
+        countrywidth=0.45,
+        coastlinecolor="rgba(255,255,255,0.55)",
         coastlinewidth=0.7,
+        showcoastlines=True,
+        showrivers=False,
+        bgcolor="#050B10",
     )
 
     fig.update_xaxes(
@@ -263,44 +269,56 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         col=1,
         title_text="Personnel",
         showgrid=True,
-        gridcolor="#E6EAED",
+        gridcolor="#24363E",
         zeroline=False,
-        tickfont={"size": 10},
-        title_font={"size": 11},
+        tickfont={"size": 10, "color": "#C8D5DA"},
+        title_font={"size": 10, "color": "#C8D5DA"},
     )
     fig.update_yaxes(
         row=2,
         col=1,
         title_text="",
-        tickfont={"size": 10},
+        tickfont={"size": 10, "color": "#C8D5DA"},
         automargin=True,
     )
 
     fig.add_annotation(
         text="<b>Top Nationalities</b>",
         x=0,
-        y=0.275,
+        y=0.255,
         xref="paper",
         yref="paper",
         xanchor="left",
         yanchor="bottom",
         showarrow=False,
-        font={"size": 13, "color": "#263238"},
+        font={"size": 12, "color": "#E8EEF2"},
+    )
+
+    fig.add_annotation(
+        text="Drag to rotate  •  Scroll to zoom",
+        x=0.995,
+        y=0.985,
+        xref="paper",
+        yref="paper",
+        xanchor="right",
+        yanchor="top",
+        showarrow=False,
+        font={"size": 10, "color": "#AFC1C8"},
     )
 
     fig.update_layout(
-        height=760,
-        margin={"l": 8, "r": 8, "t": 18, "b": 18},
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
+        height=790,
+        margin={"l": 8, "r": 8, "t": 12, "b": 12},
+        paper_bgcolor="#050B10",
+        plot_bgcolor="#050B10",
         font={
             "family": "Arial, sans-serif",
-            "color": "#263238",
+            "color": "#E8EEF2",
         },
         hoverlabel={
-            "bgcolor": "#FFFFFF",
-            "font": {"color": "#263238"},
-            "bordercolor": "#D5DADD",
+            "bgcolor": "#101C22",
+            "font": {"color": "#F3F7F8"},
+            "bordercolor": "#2D4A55",
         },
         bargap=0.28,
         showlegend=False,
@@ -309,7 +327,7 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
 
 
 def create_nationality_bubble_map(map_df: pd.DataFrame):
-    """Backward-compatible alias for the redesigned nationality visual."""
+    """Backward-compatible entry point for the nationality dashboard."""
     return create_nationality_distribution_map(map_df)
 
 
