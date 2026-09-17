@@ -16,6 +16,7 @@ from analytics.readiness import (
     build_target_gap_dataframe,
     calculate_readiness_metrics,
 )
+from components.competency_charts import render_actual_target_charts
 from components.navigation import render_header, render_navigation
 from config import COMPETENCY_FULLNAMES, COMP_TYPES
 from core.bootstrap import get_master_data, get_ruler_data, open_session
@@ -552,42 +553,7 @@ def render_page():
         )
 
         st.markdown("### 📈 Gap Analysis Visualizations")
-        chart_col, radar_col = st.columns([3, 2])
-        comparison = go.Figure(
-            [
-                go.Bar(x=gap["Competency"], y=gap["Target"], name="Target"),
-                go.Bar(x=gap["Competency"], y=gap["Actual"], name="Actual"),
-            ]
-        )
-        comparison.update_layout(
-            title="Actual vs Target Competency Scores",
-            height=500,
-            yaxis={"range": [0, 5], "dtick": 1},
-            barmode="group",
-        )
-        chart_col.plotly_chart(comparison, width="stretch", config={"displaylogo": False})
-
-        radar = go.Figure(
-            [
-                go.Scatterpolar(
-                    r=gap["Actual"].fillna(0),
-                    theta=gap["Competency"],
-                    fill="toself",
-                    name="Actual",
-                ),
-                go.Scatterpolar(
-                    r=gap["Target"],
-                    theta=gap["Competency"],
-                    name="Target",
-                ),
-            ]
-        )
-        radar.update_layout(
-            title="Competency Radar",
-            height=500,
-            polar={"radialaxis": {"range": [0, 5], "dtick": 1}},
-        )
-        radar_col.plotly_chart(radar, width="stretch", config={"displaylogo": False})
+        render_actual_target_charts(gap)
 
     if summary:
         with st.expander("📊 Summary Personnel Scores and Competencies", expanded=True):
