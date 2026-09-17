@@ -65,8 +65,14 @@ def prepare_nationality_map_data(personnel_df: pd.DataFrame) -> tuple[pd.DataFra
 
 
 def create_nationality_bubble_map(map_df: pd.DataFrame):
-    """Build the golden Plotly nationality bubble map using Carto Voyager tiles."""
-    fig = px.scatter_map(
+    """Build a reliable Plotly geographic nationality bubble map.
+
+    Uses Plotly's built-in Geo renderer rather than external MapLibre tiles.
+    This avoids blank Cartesian canvases when the browser/network cannot load
+    third-party map tiles, while preserving the golden bubble size, color,
+    hover, and overall visual treatment.
+    """
+    fig = px.scatter_geo(
         map_df,
         lat="Latitude",
         lon="Longitude",
@@ -85,24 +91,24 @@ def create_nationality_bubble_map(map_df: pd.DataFrame):
             "Representation Display",
         ],
         size_max=42,
-        zoom=2.0,
-        center={
-            "lat": 15,
-            "lon": 65,
-        },
+        projection="natural earth",
+        scope="world",
         color_continuous_scale=[
             [0.00, "#BFD730"],
             [0.01, "#00A19C"],
             [0.04, "#20419A"],
             [1.00, "#763F98"],
         ],
-        map_style="carto-voyager",
-        opacity=0.75,
     )
 
     fig.update_traces(
         marker={
             "sizemin": 7,
+            "opacity": 0.75,
+            "line": {
+                "width": 1.0,
+                "color": "#FFFFFF",
+            },
         },
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
@@ -110,6 +116,26 @@ def create_nationality_bubble_map(map_df: pd.DataFrame):
             "Representation: %{customdata[2]}"
             "<extra></extra>"
         ),
+    )
+
+    fig.update_geos(
+        showframe=False,
+        showland=True,
+        landcolor="#F4F6F7",
+        showocean=True,
+        oceancolor="#EAF1F4",
+        showlakes=True,
+        lakecolor="#EAF1F4",
+        showcountries=True,
+        countrycolor="#C8D0D5",
+        countrywidth=0.65,
+        coastlinecolor="#AEB8BE",
+        coastlinewidth=0.8,
+        projection_scale=1.08,
+        center={
+            "lat": 15,
+            "lon": 65,
+        },
     )
 
     fig.update_layout(
