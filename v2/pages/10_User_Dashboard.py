@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy.orm import selectinload
 
 from components.competency_charts import render_actual_target_charts
 from components.navigation import render_header, render_navigation
@@ -134,6 +135,7 @@ person_db = None
 try:
     person_db = (
         session.query(Personnel)
+        .options(selectinload(Personnel.assessments))
         .filter(Personnel.id == linked_id, Personnel.is_deleted.is_(False))
         .first()
     )
