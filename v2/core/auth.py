@@ -1,7 +1,16 @@
 """Centralized POC authentication, session and authorization helpers."""
 from __future__ import annotations
+
 import streamlit as st
-from services.auth_service import ROLE_ADMIN, ROLE_USER, authenticate, bootstrap_admin_from_environment, ensure_auth_table
+
+from components.login_ui import render_login_ui
+from services.auth_service import (
+    ROLE_ADMIN,
+    ROLE_USER,
+    authenticate,
+    bootstrap_admin_from_environment,
+    ensure_auth_table,
+)
 
 
 def initialize_auth() -> None:
@@ -49,23 +58,8 @@ def logout() -> None:
 
 
 def render_login() -> bool:
-    if is_authenticated():
-        return True
-    st.markdown("# 🔐 RE Competency Assessment System")
-    st.caption("POC secure access — sign in to continue")
-    _, center, _ = st.columns([1, 2, 1])
-    with center:
-        with st.form("poc_login_form"):
-            username = st.text_input("Username", autocomplete="username")
-            password = st.text_input("Password", type="password", autocomplete="current-password")
-            submitted = st.form_submit_button("🔐 Sign In", type="primary")
-        if submitted:
-            if login(username, password):
-                st.rerun()
-            else:
-                st.error("Invalid username/password or inactive account.")
-        st.info("POC bootstrap: set POC_ADMIN_USERNAME and POC_ADMIN_PASSWORD before the first run.")
-    return False
+    """Render the unauthenticated entry screen without mixing UI into auth logic."""
+    return render_login_ui(login)
 
 
 def require_roles(*roles: str) -> bool:
