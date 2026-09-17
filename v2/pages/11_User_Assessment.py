@@ -1,7 +1,7 @@
 """Personnel-scoped assessment workspace for USER accounts.
 
-This page borrows the most useful features from the Admin Individual Assessment
-page while keeping the USER experience limited to one linked personnel record.
+This page borrows the relevant capabilities from the Admin Individual Assessment
+page while keeping every view and calculation scoped to the authenticated user.
 """
 from __future__ import annotations
 
@@ -25,10 +25,14 @@ from core.auth import ROLE_USER, current_user, personnel_id, require_roles
 from core.bootstrap import get_master_data, get_ruler_data, open_session
 from models import Personnel, SummaryScore
 
+
 require_roles(ROLE_USER)
 render_navigation()
 user = current_user()
-render_header("👤 My Assessment", "Your readiness, competency gaps, targets and assessment history")
+render_header(
+    "👤 My Assessment",
+    "Your readiness, competency gaps, targets, strengths and assessment history",
+)
 
 
 def _text(value, fallback="Not Available"):
@@ -41,6 +45,11 @@ def _text(value, fallback="Not Available"):
         pass
     text = str(value).strip()
     return text if text and text.lower() not in {"nan", "none", "nat"} else fallback
+
+
+def _date(value, fallback="Not Available"):
+    parsed = pd.to_datetime(value, errors="coerce")
+    return fallback if pd.isna(parsed) else parsed.strftime("%d %b %Y")
 
 
 def _strength_frame(person, competency_type):
@@ -59,7 +68,9 @@ def _strength_frame(person, competency_type):
             )
 
     if not records:
-        return pd.DataFrame(columns=["Rank", "Code", "Competency", "Score", "Target", "Gap", "Status"])
+        return pd.DataFrame(
+            columns=["Rank", "Code", "Competency", "Score", "Target", "Gap", "Status"]
+        )
 
     frame = pd.DataFrame(records)
     frame["Gap"] = frame["Score"] - frame["Target"]
@@ -171,12 +182,12 @@ st.caption(
     f"{person.get('Department', 'N/A')} · Staff ID: {staff_id}"
 )
 
-records = []
+assessment_records = []
 for ctype, info in COMP_TYPES.items():
     for code in info.get("cols", []):
         actual = pd.to_numeric(person.get(code), errors="coerce")
         stored_target = pd.to_numeric(person.get(f"R-{code}"), errors="coerce")
-        records.append(
+        assessment_records.append(
             {
                 "Type": info.get("label", ctype),
                 "Code": code,
@@ -185,7 +196,7 @@ for ctype, info in COMP_TYPES.items():
                 "Stored Target": stored_target,
             }
         )
-assessment_df = pd.DataFrame(records)
+assessment_df = pd.DataFrame(assessment_records)
 assessment_df["Gap"] = assessment_df["Stored Target"] - assessment_df["Actual"]
 
 assessed = assessment_df["Actual"].notna()
@@ -200,6 +211,7 @@ try:
     summary = (
         session.query(SummaryScore)
         .filter(SummaryScore.personnel_id == linked_id)
+        .order_by(SummaryScore.updated_at.desc())
         .first()
     )
     db_person = session.query(Personnel).filter(Personnel.id == linked_id).first()
@@ -213,20 +225,40 @@ try:
                     {
                         "date": assessment.assessment_date,
                         "type": score.competency_type,
+                        "code": score.competency_code,
                         "actual": score.actual_score,
+                        "requirement": score.requirement_score,
+                        "gap": score.gap_score,
                     }
                 )
 finally:
     session.close()
 
-last_assessment = max((item["date"] for item in history if item.get("date")), default=None)
+history_dates = [item["date"] for item in history if item.get("date")]
+metadata_last_assessment = person_db.last_assessment_date or person.get("Last Assesment Date") or person.get("Last Assessment Date")
+metadata_last_assessment = pd.to_datetime(metadata_last_assessment, errors="coerce")
+all_assessment_dates = [date for date in history_dates if date is not None]
+if pd.notna(metadata_last_assessment):
+    all_assessment_dates.append(metadata_last_assessment.date() if hasattr(metadata_last_assessment, "date") else metadata_last_assessment)
+last_assessment = max(all_assessment_dates) if all_assessment_dates else None
 
 metric_cols = st.columns(5)
 metric_cols[0].metric("Assessment Coverage", f"{coverage:.0f}%")
 metric_cols[1].metric("Average Score", f"{average_score:.2f}/5")
 metric_cols[2].metric("Stored Target Gaps", stored_gap_count)
-metric_cols[3].metric("Last Assessment", last_assessment.strftime("%d %b %Y") if last_assessment else "N/A")
-metric_cols[4].metric("Assessment Level", _text(person.get("Assessment Level")))
+metric_cols[3].metric("Last Assessment", _date(last_assessment))
+metric_cols[4].metric(
+    "Assessment Level",
+    _text(person_db.assessment_level or person.get("Assessment Level")),
+)
+
+st.markdown("---")
+st.subheader("📌 My Assessment Context")
+context_cols = st.columns(4)
+context_cols[0].info(f"**Potential**\n\n{_text(person_db.potential or person.get('Potential'))}")
+context_cols[1].info(f"**Recommendation**\n\n{_text(person_db.recommendation or person.get('Recommendation'))}")
+context_cols[2].info(f"**Supervisor**\n\n{_text(person_db.supervisor or person.get('Supervisor'))}")
+context_cols[3].info(f"**Sub-Disciplines**\n\n{_text(person_db.sub_disciplines or person.get('Sub-Disciplines'))}")
 
 st.markdown("---")
 st.subheader("🎯 Career Target & Readiness")
@@ -277,7 +309,6 @@ gap_df = (
     if target in requirements
     else pd.DataFrame()
 )
-
 metrics = calculate_readiness_metrics(gap_df)
 
 if gap_df.empty:
@@ -341,6 +372,15 @@ else:
     st.markdown("### 📈 Readiness Visualizations")
     render_actual_target_charts(gap_df)
 
+    download_df = gap_df.copy()
+    csv_data = download_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Download My Target Gap Analysis (CSV)",
+        csv_data,
+        file_name=f"My_Assessment_Gaps_{staff_id}_{target or 'target'}.csv",
+        mime="text/csv",
+    )
+
 st.markdown("---")
 st.subheader("📊 My Competency Scorecard")
 scorecard_tabs = st.tabs(["Overview", "Strengths", "Stored Targets"])
@@ -402,6 +442,7 @@ st.subheader("📅 My Assessment History")
 if history:
     history_df = pd.DataFrame(history)
     history_df["date"] = pd.to_datetime(history_df["date"], errors="coerce")
+    history_df = history_df.dropna(subset=["date"]).sort_values(["date", "type", "code"])
     history_summary = history_df.groupby(["date", "type"], as_index=False)["actual"].mean()
 
     history_fig = go.Figure()
@@ -426,15 +467,26 @@ if history:
     st.plotly_chart(history_fig, width="stretch", config={"displaylogo": False})
 
     history_table = history_df.rename(
-        columns={"date": "Assessment Date", "type": "Competency Type", "actual": "Actual Score"}
+        columns={
+            "date": "Assessment Date",
+            "type": "Competency Type",
+            "code": "Competency Code",
+            "actual": "Actual Score",
+            "requirement": "Requirement",
+            "gap": "Recorded Gap",
+        }
     )
     st.dataframe(
-        history_table[["Assessment Date", "Competency Type", "Actual Score"]],
+        history_table[
+            ["Assessment Date", "Competency Type", "Competency Code", "Actual Score", "Requirement", "Recorded Gap"]
+        ],
         width="stretch",
         hide_index=True,
         column_config={
             "Assessment Date": st.column_config.DateColumn("Assessment Date"),
             "Actual Score": st.column_config.NumberColumn("Actual Score", format="%.1f"),
+            "Requirement": st.column_config.NumberColumn("Requirement", format="%.1f"),
+            "Recorded Gap": st.column_config.NumberColumn("Recorded Gap", format="%.1f"),
         },
     )
 else:
