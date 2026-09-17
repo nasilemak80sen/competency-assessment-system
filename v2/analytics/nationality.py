@@ -47,6 +47,7 @@ def prepare_nationality_map_data(personnel_df: pd.DataFrame) -> tuple[pd.DataFra
         .unique()
         .tolist()
     )
+
     map_df = (
         summary.dropna(subset=["Latitude", "Longitude"])
         .sort_values("Personnel Count", ascending=False)
@@ -64,13 +65,8 @@ def prepare_nationality_map_data(personnel_df: pd.DataFrame) -> tuple[pd.DataFra
 
 
 def create_nationality_bubble_map(map_df: pd.DataFrame):
-    """Build the RE nationality geospatial bubble map.
-
-    This intentionally keeps the existing public function name so the Dashboard
-    page and any downstream callers remain unchanged while the visual is moved
-    from Mapbox to Plotly's native geographic renderer.
-    """
-    fig = px.scatter_geo(
+    """Build the golden Plotly nationality bubble map using Carto Voyager tiles."""
+    fig = px.scatter_map(
         map_df,
         lat="Latitude",
         lon="Longitude",
@@ -83,24 +79,31 @@ def create_nationality_bubble_map(map_df: pd.DataFrame):
             "Personnel Count": True,
             "Representation Display": True,
         },
-        custom_data=["Nationality", "Personnel Count", "Representation Display"],
-        size_max=38,
-        projection="natural earth",
-        scope="world",
+        custom_data=[
+            "Nationality",
+            "Personnel Count",
+            "Representation Display",
+        ],
+        size_max=42,
+        zoom=2.0,
+        center={
+            "lat": 15,
+            "lon": 65,
+        },
         color_continuous_scale=[
             [0.00, "#BFD730"],
             [0.01, "#00A19C"],
             [0.04, "#20419A"],
             [1.00, "#763F98"],
         ],
+        map_style="carto-voyager",
+        opacity=0.75,
     )
 
     fig.update_traces(
-        marker=dict(
-            sizemin=7,
-            opacity=0.82,
-            line=dict(width=1.2, color="#FFFFFF"),
-        ),
+        marker={
+            "sizemin": 7,
+        },
         hovertemplate=(
             "<b>%{customdata[0]}</b><br>"
             "Personnel: %{customdata[1]:.0f}<br>"
@@ -109,32 +112,20 @@ def create_nationality_bubble_map(map_df: pd.DataFrame):
         ),
     )
 
-    fig.update_geos(
-        showland=True,
-        landcolor="#F4F6F7",
-        showocean=True,
-        oceancolor="#EAF1F4",
-        showlakes=True,
-        lakecolor="#EAF1F4",
-        showcountries=True,
-        countrycolor="#C8D0D5",
-        countrywidth=0.65,
-        coastlinecolor="#AEB8BE",
-        coastlinewidth=0.8,
-        showframe=False,
-    )
-
     fig.update_layout(
         height=560,
-        margin={"l": 0, "r": 0, "t": 25, "b": 0},
+        margin={
+            "l": 0,
+            "r": 0,
+            "t": 40,
+            "b": 0,
+        },
         paper_bgcolor="#FFFFFF",
         plot_bgcolor="#FFFFFF",
-        geo=dict(
-            projection_scale=1.08,
-            center=dict(lat=15, lon=65),
-        ),
         coloraxis_colorbar={
-            "title": {"text": "Personnel"},
+            "title": {
+                "text": "Personnel",
+            },
             "orientation": "h",
             "x": 0.5,
             "xanchor": "center",
@@ -142,9 +133,14 @@ def create_nationality_bubble_map(map_df: pd.DataFrame):
             "yanchor": "top",
             "len": 0.45,
             "thickness": 12,
-            "tickfont": {"size": 11},
+            "tickfont": {
+                "size": 11,
+            },
         },
-        font={"family": "Arial, sans-serif", "color": "#263238"},
+        font={
+            "family": "Arial, sans-serif",
+            "color": "#263238",
+        },
     )
     return fig
 
