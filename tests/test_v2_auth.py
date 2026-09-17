@@ -55,6 +55,18 @@ def test_user_account_requires_personnel_link(monkeypatch, tmp_path: Path):
     assert "linked to a personnel" in message
 
 
+def test_admin_user_access_uses_database_personnel_ids():
+    page_source = Path("v2/pages/09_Admin_User_Access.py").read_text(encoding="utf-8")
+
+    # USER linkage must use the SQLAlchemy Personnel table because the master
+    # workbook does not contain the database primary-key ``id`` field.
+    assert "from models import Personnel" in page_source
+    assert "session.query(Personnel)" in page_source
+    assert "Personnel.is_deleted.is_(False)" in page_source
+    assert "int(person.id)" in page_source
+    assert "get_master_data" not in page_source
+
+
 def test_app_and_navigation_define_two_role_surfaces():
     app_source = Path("v2/app.py").read_text(encoding="utf-8")
     pages_source = Path("v2/core/pages.py").read_text(encoding="utf-8")
