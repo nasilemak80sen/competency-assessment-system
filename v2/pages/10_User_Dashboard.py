@@ -134,7 +134,7 @@ with edit_tab:
         preference = st.text_area("Preference", value=_profile_value(person_db.preference, person.get("Preference")), height=90)
         strength = st.text_area("Strength", value=_profile_value(person_db.strength, person.get("Strength")), height=110)
 
-        saved = st.form_submit_button("💾 Save Profile", type="primary", width="stretch")
+        saved = st.form_submit_button("💾 Save Profile", type="primary")
 
     if saved:
         payload = {
