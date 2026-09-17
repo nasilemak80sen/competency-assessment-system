@@ -37,12 +37,7 @@ def nationality_to_iso3(nationality):
 def prepare_nationality_map_data(
     personnel_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Prepare nationality counts, geographic coordinates and ISO-3 codes.
-
-    The returned dataframe supports country-level choropleth rendering and
-    centroid bubbles. ``unmatched`` contains nationality labels that cannot be
-    represented geographically with the configured country metadata.
-    """
+    """Prepare nationality counts, geographic coordinates and ISO-3 codes."""
     if personnel_df is None or personnel_df.empty or "Nationality" not in personnel_df.columns:
         return pd.DataFrame(), []
 
@@ -104,15 +99,10 @@ def prepare_nationality_map_data(
 def create_nationality_distribution_map(map_df: pd.DataFrame):
     """Build an interactive 3D-style nationality globe for the dashboard.
 
-    The visual design is inspired by the referenced Basemap globe project:
-    orthographic globe, dark space-like canvas and a focused viewing angle.
-    Plotly's native Geo renderer is used instead of generating PNG frames, so
-    the globe stays interactive inside Streamlit without a Basemap dependency.
-
-    The figure contains:
-      1. An orthographic globe with country-level nationality colouring.
-      2. Centroid bubbles showing personnel concentration.
-      3. A compact Top Nationalities bar chart for exact comparison.
+    Inspired by the referenced Basemap globe project: orthographic globe,
+    dark space-like canvas and a focused viewing angle. Plotly's native Geo
+    renderer keeps it interactive inside Streamlit without generating PNG
+    frames or requiring the Basemap dependency.
     """
     if map_df is None or map_df.empty:
         raise ValueError("Nationality map data cannot be empty.")
@@ -138,7 +128,6 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         vertical_spacing=0.07,
     )
 
-    # Country-level nationality colouring.
     fig.add_trace(
         go.Choropleth(
             locations=chart_df["ISO3"],
@@ -149,12 +138,7 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
             colorscale=_MAP_COLORSCALE,
             zmin=0,
             zmax=max(float(chart_df["Personnel Count"].max()), 1.0),
-            marker={
-                "line": {
-                    "color": "rgba(255,255,255,0.65)",
-                    "width": 0.55,
-                }
-            },
+            marker={"line": {"color": "rgba(255,255,255,0.65)", "width": 0.55}},
             colorbar={
                 "title": {"text": "Personnel"},
                 "orientation": "h",
@@ -170,8 +154,7 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
             hovertemplate=(
                 "<b>%{text}</b><br>"
                 "Personnel: %{customdata[0]:.0f}<br>"
-                "Representation: %{customdata[1]}"
-                "<extra></extra>"
+                "Representation: %{customdata[1]}<extra></extra>"
             ),
             showscale=True,
         ),
@@ -179,7 +162,6 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         col=1,
     )
 
-    # Centroid bubbles use sqrt scaling so smaller nationalities remain visible.
     bubble_sizes = (chart_df["Personnel Count"].pow(0.5) * 5.5).clip(
         lower=7, upper=34
     )
@@ -195,16 +177,12 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
                 "size": bubble_sizes,
                 "color": "#FFFFFF",
                 "opacity": 0.88,
-                "line": {
-                    "color": "#00A19C",
-                    "width": 1.4,
-                },
+                "line": {"color": "#00A19C", "width": 1.4},
             },
             hovertemplate=(
                 "<b>%{text}</b><br>"
                 "Personnel: %{customdata[0]:.0f}<br>"
-                "Representation: %{customdata[1]}"
-                "<extra></extra>"
+                "Representation: %{customdata[1]}<extra></extra>"
             ),
             showlegend=False,
         ),
@@ -212,7 +190,6 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         col=1,
     )
 
-    # Exact comparison below the globe.
     fig.add_trace(
         go.Bar(
             x=top_bar["Personnel Count"],
@@ -220,10 +197,7 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
             orientation="h",
             text=top_bar["Personnel Count"].astype(int),
             textposition="outside",
-            marker={
-                "color": "#00A19C",
-                "line": {"color": "#007F7B", "width": 0.5},
-            },
+            marker={"color": "#00A19C", "line": {"color": "#007F7B", "width": 0.5}},
             hovertemplate="<b>%{y}</b><br>Personnel: %{x:.0f}<extra></extra>",
             showlegend=False,
         ),
@@ -231,7 +205,8 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         col=1,
     )
 
-    # Basemap-inspired orthographic globe styling.
+    # Plotly 6.x-compatible orthographic globe. Scale is the initial zoom.
+    # Drag rotates the globe and the browser scroll wheel zooms it further.
     fig.update_geos(
         row=1,
         col=1,
@@ -239,13 +214,7 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         projection={
             "type": "orthographic",
             "scale": 1.55,
-            "minscale": 0.85,
-            "maxscale": 3.2,
-            "rotation": {
-                "lon": 105,
-                "lat": 8,
-                "roll": 0,
-            },
+            "rotation": {"lon": 105, "lat": 8, "roll": 0},
         },
         showframe=False,
         showland=True,
@@ -293,7 +262,6 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         showarrow=False,
         font={"size": 12, "color": "#E8EEF2"},
     )
-
     fig.add_annotation(
         text="Drag to rotate  •  Scroll to zoom",
         x=0.995,
@@ -311,10 +279,7 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         margin={"l": 8, "r": 8, "t": 12, "b": 12},
         paper_bgcolor="#050B10",
         plot_bgcolor="#050B10",
-        font={
-            "family": "Arial, sans-serif",
-            "color": "#E8EEF2",
-        },
+        font={"family": "Arial, sans-serif", "color": "#E8EEF2"},
         hoverlabel={
             "bgcolor": "#101C22",
             "font": {"color": "#F3F7F8"},
