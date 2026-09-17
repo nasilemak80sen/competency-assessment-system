@@ -28,6 +28,29 @@ def render_header(title: str, subtitle: str | None = None) -> None:
         st.caption(subtitle)
 
 
+def render_top_navigation() -> None:
+    """Render the persistent navigation strip at the top of every v2 page."""
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stPageLink-NavLink"] a {
+            border-radius: 8px;
+            padding: 0.45rem 0.75rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container():
+        cols = st.columns(len(NAVIGATION_PAGES))
+        for column, (page_path, label) in zip(cols, NAVIGATION_PAGES):
+            with column:
+                st.page_link(page_path, label=label)
+
+    st.markdown("---")
+
+
 def render_navigation() -> None:
     if st.session_state.get("_v2_navigation_rendered", False):
         return
