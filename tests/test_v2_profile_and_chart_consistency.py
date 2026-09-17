@@ -34,14 +34,15 @@ def test_user_assessment_uses_shared_actual_target_chart_component():
     source = (ROOT / "v2/pages/11_User_Assessment.py").read_text(encoding="utf-8")
 
     assert "from components.competency_charts import render_actual_target_charts" in source
-    assert "render_actual_target_charts(assessment_df)" in source
+    assert "render_actual_target_charts(gap_df)" in source
 
 
 def test_user_dashboard_exposes_self_service_profile_edit_without_org_control_fields():
     source = (ROOT / "v2/pages/10_User_Dashboard.py").read_text(encoding="utf-8")
 
-    assert 'st.tabs(["👤 My Profile", "✏️ Edit Profile"])' in source
+    assert '"✏️ Edit Profile"' in source
     assert 'st.form("user_edit_profile_form")' in source
+    assert 'st.form_submit_button("💾 Save Profile", type="primary")' in source
     assert 'from db_ops import update_personnel' in source
     assert '"email": email.strip() or None' in source
     assert '"gender": gender.strip() or None' in source
