@@ -13,6 +13,11 @@ PAGES = [
     st.Page("pages/09_Admin_User_Access.py", title="🔐 Admin: User Access Management", url_path="admin-user-access"),
 ]
 
+USER_PAGES = [
+    st.Page("pages/10_User_Dashboard.py", title="🏠 My Dashboard", url_path="my-dashboard", default=True),
+    st.Page("pages/11_User_Assessment.py", title="👤 My Assessment", url_path="my-assessment"),
+]
+
 PAGE_BY_PATH = {
     "": PAGES[0],
     "competency-heatmap": PAGES[1],
@@ -22,4 +27,6 @@ PAGE_BY_PATH = {
     "admin-import-data": PAGES[5],
     "admin-personnel-settings": PAGES[6],
     "admin-user-access": PAGES[7],
+    "my-dashboard": USER_PAGES[0],
+    "my-assessment": USER_PAGES[1],
 }
