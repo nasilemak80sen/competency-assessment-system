@@ -1,4 +1,4 @@
-"""Golden-app-compatible role-aware top navigation for native v2."""
+"""Role-aware top navigation for native v2."""
 from __future__ import annotations
 import streamlit as st
 from core.auth import current_user, is_admin
@@ -11,7 +11,10 @@ MAIN_NAV = (
     ("🎯 Readiness", "🎯 Readiness & Gaps", "readiness-gaps"),
     ("📊 Charts", "📊 Chart Builder & Depth Analysis", "chart-builder"),
 )
-
+USER_NAV = (
+    ("🏠 My Dashboard", "🏠 My Dashboard", "my-dashboard"),
+    ("👤 My Assessment", "👤 My Assessment", "my-assessment"),
+)
 ADMIN_NAV = (
     ("📥 Import", "⚙️ Admin: Import Data", "admin-import-data"),
     ("👥 Database", "⚙️ Admin: Personnel Database Settings", "admin-personnel-settings"),
@@ -33,19 +36,16 @@ def render_navigation() -> None:
     admin = is_admin()
     user = current_user()
 
-    nav_container = st.container()
-    with nav_container:
-        col_title, _ = st.columns([0.85, 0.15])
-        with col_title:
-            title = "### 📊 DPE | Reservoir Engineering Talent Profile Dashboard (Beta Release)"
-            if user:
-                title += f" · {user.get('display_name') or user.get('username')}"
-            st.markdown(title)
+    with st.container():
+        title = "### 📊 DPE | Reservoir Engineering Talent Profile Dashboard (Beta Release)"
+        if user:
+            title += f" · {user.get('display_name') or user.get('username')}"
+        st.markdown(title)
         st.markdown("---")
 
-        visible_main = MAIN_NAV if admin else (MAIN_NAV[0], MAIN_NAV[2])
-        nav_cols = st.columns(len(visible_main))
-        for idx, (display_name, actual_name, path) in enumerate(visible_main):
+        visible_nav = MAIN_NAV if admin else USER_NAV
+        nav_cols = st.columns(len(visible_nav))
+        for idx, (display_name, actual_name, path) in enumerate(visible_nav):
             with nav_cols[idx]:
                 is_active = current_page == actual_name
                 if st.button(display_name, use_container_width=True, key=f"v2_main_nav_{idx}", disabled=is_active):
@@ -58,7 +58,6 @@ def render_navigation() -> None:
                 with admin_cols[idx]:
                     if st.button(f"⚙️ {display_name}", use_container_width=True, key=f"v2_admin_nav_{idx}"):
                         st.switch_page(PAGE_BY_PATH[path])
-
         st.markdown("---")
 
 
