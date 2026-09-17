@@ -16,12 +16,13 @@ def test_user_dashboard_exposes_personal_assessment_metadata_and_gap_summary():
     source = DASHBOARD.read_text(encoding="utf-8")
     for text in [
         "person_db.assessment_level",
-        "person_db.last_assessment_date",
         "person_db.chat_status",
         "person_db.potential",
         "person_db.recommendation",
         "person_db.supervisor",
-        "Top Development Gaps",
+        "metadata_last_assessment",
+        "db_assessment_dates",
+        "last_assessment = max(assessment_dates)",
         "Profile Completeness",
         "Actual",
         "Target",
@@ -32,12 +33,16 @@ def test_user_dashboard_exposes_personal_assessment_metadata_and_gap_summary():
 def test_user_dashboard_edit_form_does_not_use_unsupported_width_keyword():
     source = DASHBOARD.read_text(encoding="utf-8")
     assert "st.form_submit_button(\"💾 Save Profile\", type=\"primary\", width=\"stretch\")" not in source
+    assert 'st.form_submit_button("💾 Save Profile", type="primary")' in source
 
 
 def test_user_assessment_uses_latest_summary_and_metadata_fallbacks():
     source = ASSESSMENT.read_text(encoding="utf-8")
     assert "SummaryScore.updated_at.desc()" in source
-    assert "person_db.last_assessment_date" in source
+    assert "metadata_last_assessment" in source
+    assert "db_assessment_dates" in source
+    assert "assessment_dates = [pd.Timestamp(value) for value in db_assessment_dates" in source
+    assert "last_assessment = max(assessment_dates)" in source
     assert 'person.get("Last Assesment Date")' in source
     assert 'person.get("Last Assessment Date")' in source
 
@@ -48,6 +53,8 @@ def test_user_assessment_includes_self_service_analysis_features():
         "Career Target & Readiness",
         "Priority Development Areas",
         "render_actual_target_charts(gap_df)",
+        "classify_readiness_status",
+        "recommend_readiness_action",
         "Competency Strengths",
         "My Assessment History",
         "Existing Assessment Summary Scores",
