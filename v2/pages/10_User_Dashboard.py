@@ -24,14 +24,16 @@ if mine.empty:
 person = mine.iloc[0]
 
 st.caption(f"Signed in as **{user.get('display_name') or user.get('username')}**")
-st.subheader(f"Welcome, {_text if False else str(person.get('Name', 'Personnel'))}")
+st.subheader(f"Welcome, {person.get('Name', 'Personnel')}")
 
+re_years = pd.to_numeric(person.get("Years of RE Experience"), errors="coerce")
+pet_years = pd.to_numeric(person.get("Years in PET"), errors="coerce")
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Salary Grade", str(person.get("SG", "N/A")))
 c2.metric("Position", str(person.get("Staff Position", "N/A")))
 c3.metric("Department", str(person.get("Department", "N/A")))
-c4.metric("RE Experience", f"{pd.to_numeric(person.get('Years of RE Experience'), errors='coerce'):.1f} yrs" if pd.notna(pd.to_numeric(person.get('Years of RE Experience'), errors='coerce')) else "N/A")
-c5.metric("PETRONAS Experience", f"{pd.to_numeric(person.get('Years in PET'), errors='coerce'):.1f} yrs" if pd.notna(pd.to_numeric(person.get('Years in PET'), errors='coerce')) else "N/A")
+c4.metric("RE Experience", f"{re_years:.1f} yrs" if pd.notna(re_years) else "N/A")
+c5.metric("PETRONAS Experience", f"{pet_years:.1f} yrs" if pd.notna(pet_years) else "N/A")
 
 st.markdown("---")
 profile_left, profile_right = st.columns(2)
