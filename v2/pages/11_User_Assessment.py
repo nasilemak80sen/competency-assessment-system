@@ -1,11 +1,9 @@
-"""Personnel-scoped assessment workspace for USER accounts.
-
-This page borrows the relevant capabilities from the Admin Individual Assessment
-page while keeping every view and calculation scoped to the authenticated user.
-"""
+"""Personnel-scoped assessment workspace for USER accounts."""
 from __future__ import annotations
 
 from datetime import datetime
+from io import BytesIO
+import html
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -50,6 +48,11 @@ def _text(value, fallback="Not Available"):
 def _date(value, fallback="Not Available"):
     parsed = pd.to_datetime(value, errors="coerce")
     return fallback if pd.isna(parsed) else parsed.strftime("%d %b %Y")
+
+
+def _controlled_value(workbook_value, db_value=None, fallback="Not Available"):
+    """Workbook-first for organisation-controlled analytical fields."""
+    return _text(workbook_value, _text(db_value, fallback))
 
 
 def _strength_frame(person, competency_type):
@@ -113,15 +116,15 @@ def _render_strength_section(person):
                     st.markdown(f"**{row['Competency']}**")
                     st.metric("Score", f"{row['Score']:.1f}/5")
                     if pd.notna(row["Target"]):
-                        st.caption(f"Target: **{float(row['Target']):.1f}**")
+                        st.caption(f"Stored Target: **{float(row['Target']):.1f}**")
                     else:
-                        st.caption("Target: **Not available**")
+                        st.caption("Stored Target: **Not available**")
                     if row["Status"] == "Above Target":
-                        st.success(f"+{row['Gap']:.1f} above target")
+                        st.success(f"+{row['Gap']:.1f} above stored target")
                     elif row["Status"] == "Target Met":
-                        st.success("Target met")
+                        st.success("Stored target met")
                     elif row["Status"] == "Gap Remaining":
-                        st.warning(f"{abs(row['Gap']):.1f} below target")
+                        st.warning(f"{abs(row['Gap']):.1f} below stored target")
                     else:
                         st.info("Target unavailable")
 
@@ -132,10 +135,106 @@ def _render_strength_section(person):
                     hide_index=True,
                     column_config={
                         "Score": st.column_config.NumberColumn("Score", format="%.1f"),
-                        "Target": st.column_config.NumberColumn("Target", format="%.1f"),
-                        "Gap": st.column_config.NumberColumn("Gap", format="%.1f"),
+                        "Target": st.column_config.NumberColumn("Stored Target", format="%.1f"),
+                        "Gap": st.column_config.NumberColumn("Score vs Stored Target", format="%.1f"),
                     },
                 )
+
+
+def _personal_pdf(person, gap_df, metrics, target):
+    """Generate a read-only personal assessment report."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+    )
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("DPE Reservoir Engineering — My Competency Assessment", styles["Title"]),
+        Spacer(1, 4 * mm),
+        Paragraph(
+            f"<b>Name:</b> {html.escape(_text(person.get('Name')))} &nbsp;&nbsp; "
+            f"<b>Staff ID:</b> {html.escape(_text(person.get('Staff ID')))}",
+            styles["BodyText"],
+        ),
+        Paragraph(
+            f"<b>Position:</b> {html.escape(_text(person.get('Staff Position')))} &nbsp;&nbsp; "
+            f"<b>Grade:</b> {html.escape(_text(person.get('SG')))}",
+            styles["BodyText"],
+        ),
+        Paragraph(
+            f"<b>Target:</b> {html.escape(_text(target))}",
+            styles["BodyText"],
+        ),
+        Spacer(1, 4 * mm),
+        Paragraph("Readiness Summary", styles["Heading2"]),
+    ]
+
+    summary_table = Table(
+        [
+            ["Weighted", "Strict", "Met", "Minor", "Major"],
+            [
+                f"{metrics['weighted_readiness']:.1f}%",
+                f"{metrics['strict_readiness']:.1f}%",
+                metrics["met"],
+                metrics["minor"],
+                metrics["major"],
+            ],
+        ]
+    )
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ]
+        )
+    )
+    story.extend([summary_table, Spacer(1, 4 * mm), Paragraph("Priority Development Areas", styles["Heading2"])])
+
+    rows = [["Code", "Competency", "Actual", "Target", "Gap", "Status"]]
+    priority = gap_df[gap_df["Status"].isin(["Major Gap", "Minor Gap"])].copy()
+    for _, record in priority.iterrows():
+        rows.append(
+            [
+                _text(record.get("Competency"), "—"),
+                _text(record.get("Competency Name"), "—"),
+                "—" if pd.isna(record.get("Actual")) else f"{float(record['Actual']):.1f}",
+                "—" if pd.isna(record.get("Target")) else f"{float(record['Target']):.1f}",
+                "—" if pd.isna(record.get("Gap")) else f"{float(record['Gap']):.1f}",
+                _text(record.get("Status"), "—"),
+            ]
+        )
+    if len(rows) == 1:
+        rows.append(["—", "No recorded priority gaps", "—", "—", "—", "—"])
+
+    table = Table(rows, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    story.append(table)
+    document.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 linked_id = personnel_id()
@@ -234,34 +333,37 @@ try:
 finally:
     session.close()
 
-history_dates = [item["date"] for item in history if item.get("date")]
-metadata_last_assessment = person_db.last_assessment_date or person.get("Last Assesment Date") or person.get("Last Assessment Date")
-metadata_last_assessment = pd.to_datetime(metadata_last_assessment, errors="coerce")
-all_assessment_dates = [date for date in history_dates if date is not None]
-if pd.notna(metadata_last_assessment):
-    all_assessment_dates.append(metadata_last_assessment.date() if hasattr(metadata_last_assessment, "date") else metadata_last_assessment)
-last_assessment = max(all_assessment_dates) if all_assessment_dates else None
+metadata_last_assessment = person.get("Last Assesment Date") or person.get("Last Assessment Date")
+history_dates = [pd.Timestamp(item["date"]) for item in history if item.get("date")]
+metadata_timestamp = pd.to_datetime(metadata_last_assessment, errors="coerce")
+if pd.notna(metadata_timestamp):
+    history_dates.append(metadata_timestamp)
+last_assessment = max(history_dates) if history_dates else None
+
+assessment_level = _controlled_value(person.get("Assessment Level"), person_db.assessment_level)
+potential = _controlled_value(person.get("Potential"), person_db.potential)
+recommendation = _controlled_value(person.get("Recommendation"), person_db.recommendation)
+supervisor = _controlled_value(person.get("Supervisor"), person_db.supervisor)
+sub_disciplines = _controlled_value(person.get("Sub-Disciplines"), person_db.sub_disciplines)
 
 metric_cols = st.columns(5)
 metric_cols[0].metric("Assessment Coverage", f"{coverage:.0f}%")
 metric_cols[1].metric("Average Score", f"{average_score:.2f}/5")
 metric_cols[2].metric("Stored Target Gaps", stored_gap_count)
 metric_cols[3].metric("Last Assessment", _date(last_assessment))
-metric_cols[4].metric(
-    "Assessment Level",
-    _text(person_db.assessment_level or person.get("Assessment Level")),
-)
+metric_cols[4].metric("Assessment Level", assessment_level)
 
 st.markdown("---")
 st.subheader("📌 My Assessment Context")
 context_cols = st.columns(4)
-context_cols[0].info(f"**Potential**\n\n{_text(person_db.potential or person.get('Potential'))}")
-context_cols[1].info(f"**Recommendation**\n\n{_text(person_db.recommendation or person.get('Recommendation'))}")
-context_cols[2].info(f"**Supervisor**\n\n{_text(person_db.supervisor or person.get('Supervisor'))}")
-context_cols[3].info(f"**Sub-Disciplines**\n\n{_text(person_db.sub_disciplines or person.get('Sub-Disciplines'))}")
+context_cols[0].info(f"**Potential**\n\n{potential}")
+context_cols[1].info(f"**Recommendation**\n\n{recommendation}")
+context_cols[2].info(f"**Supervisor**\n\n{supervisor}")
+context_cols[3].info(f"**Sub-Disciplines**\n\n{sub_disciplines}")
 
 st.markdown("---")
 st.subheader("🎯 Career Target & Readiness")
+st.caption("Stored targets reflect the current analytical dataset. The target selected below is a career-readiness view and does not modify the assessment record.")
 rulers = list(ruler_map.keys())
 personal_ruler = _rg_get_person_ruler(person, ruler_map) if rulers else None
 
@@ -372,14 +474,23 @@ else:
     st.markdown("### 📈 Readiness Visualizations")
     render_actual_target_charts(gap_df)
 
-    download_df = gap_df.copy()
-    csv_data = download_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "📥 Download My Target Gap Analysis (CSV)",
-        csv_data,
-        file_name=f"My_Assessment_Gaps_{staff_id}_{target or 'target'}.csv",
-        mime="text/csv",
-    )
+    csv_data = gap_df.to_csv(index=False).encode("utf-8")
+    export_cols = st.columns(2)
+    with export_cols[0]:
+        st.download_button(
+            "📥 Download My Target Gap Analysis (CSV)",
+            csv_data,
+            file_name=f"My_Assessment_Gaps_{staff_id}_{target or 'target'}.csv",
+            mime="text/csv",
+        )
+    with export_cols[1]:
+        pdf_data = _personal_pdf(person, gap_df, metrics, target)
+        st.download_button(
+            "📄 Download My Assessment Report (PDF)",
+            pdf_data,
+            file_name=f"My_Assessment_{staff_id}_{target or 'target'}.pdf",
+            mime="application/pdf",
+        )
 
 st.markdown("---")
 st.subheader("📊 My Competency Scorecard")
@@ -403,6 +514,12 @@ with scorecard_tabs[0]:
             "Average": st.column_config.NumberColumn("Average Score", format="%.2f"),
             "Coverage": st.column_config.NumberColumn("Coverage", format="%.0f%%"),
         },
+    )
+    st.download_button(
+        "📥 Download My Competency Scorecard (CSV)",
+        assessment_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"My_Competency_Scorecard_{staff_id}.csv",
+        mime="text/csv",
     )
 
 with scorecard_tabs[1]:
@@ -432,8 +549,8 @@ with scorecard_tabs[2]:
             hide_index=True,
             column_config={
                 "Actual": st.column_config.NumberColumn("Actual", format="%.1f"),
-                "Stored Target": st.column_config.NumberColumn("Target", format="%.1f"),
-                "Stored Gap": st.column_config.NumberColumn("Gap", format="%.1f"),
+                "Stored Target": st.column_config.NumberColumn("Stored Target", format="%.1f"),
+                "Stored Gap": st.column_config.NumberColumn("Actual vs Stored Target", format="%.1f"),
             },
         )
 
@@ -510,5 +627,5 @@ if summary:
 
 st.caption(
     "This assessment workspace is intentionally limited to your linked personnel record. "
-    "Organisation-wide personnel selection, administration, document management and assessment editing remain admin-only."
+    "Assessment results, targets, organisational attributes and history are read-only for USER accounts."
 )
