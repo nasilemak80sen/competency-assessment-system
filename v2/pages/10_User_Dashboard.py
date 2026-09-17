@@ -1,6 +1,8 @@
 """Personnel-scoped dashboard for USER accounts."""
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -10,7 +12,7 @@ from config import COMP_TYPES, COMPETENCY_FULLNAMES
 from core.auth import ROLE_USER, current_user, personnel_id, require_roles
 from core.bootstrap import get_master_data, open_session
 from db_ops import update_personnel
-from models import Personnel
+from models import CVDocument, Personnel
 
 
 require_roles(ROLE_USER)
@@ -34,6 +36,11 @@ def _profile_value(db_value, workbook_value=None, fallback="Not available"):
     return fallback
 
 
+def _controlled_value(workbook_value, db_value=None, fallback="Not available"):
+    """Workbook-first for organisation-controlled analytical fields."""
+    return _profile_value(workbook_value, db_value, fallback)
+
+
 def _safe_date(value, fallback="Not available"):
     parsed = pd.to_datetime(value, errors="coerce")
     return fallback if pd.isna(parsed) else parsed.strftime("%d %b %Y")
@@ -50,15 +57,13 @@ def _build_score_frame(person):
     records = []
     for ctype, info in COMP_TYPES.items():
         for code in info.get("cols", []):
-            actual = _numeric_score(person.get(code))
-            target = _numeric_score(person.get(f"R-{code}"))
             records.append(
                 {
                     "Type": info.get("label", ctype),
                     "Code": code,
                     "Competency": COMPETENCY_FULLNAMES.get(code, code),
-                    "Actual": actual,
-                    "Target": target,
+                    "Actual": _numeric_score(person.get(code)),
+                    "Target": _numeric_score(person.get(f"R-{code}")),
                 }
             )
     frame = pd.DataFrame(records)
@@ -72,12 +77,31 @@ if linked_id is None:
     st.stop()
 
 session = open_session()
+document_records = []
 try:
     person_db = (
         session.query(Personnel)
         .filter(Personnel.id == linked_id, Personnel.is_deleted.is_(False))
         .first()
     )
+    if person_db is not None:
+        docs = (
+            session.query(CVDocument)
+            .filter(CVDocument.personnel_id == linked_id, CVDocument.is_deleted.is_(False))
+            .order_by(CVDocument.modified_date.desc(), CVDocument.id.desc())
+            .all()
+        )
+        document_records = [
+            {
+                "name": item.cv_file_name or "Document",
+                "type": item.file_type or "N/A",
+                "status": item.cv_status or "N/A",
+                "modified": item.modified_date,
+                "url": (item.sharepoint_url or "").strip(),
+                "notes": getattr(item, "notes", None) or "",
+            }
+            for item in docs
+        ]
 finally:
     session.close()
 
@@ -116,14 +140,18 @@ profile_fields = [
 ]
 profile_completeness = sum(bool(value.strip()) for value in profile_fields) / len(profile_fields) * 100
 
-assessment_level = _profile_value(person_db.assessment_level, person.get("Assessment Level"))
-last_assessment = person_db.last_assessment_date or person.get("Last Assesment Date") or person.get("Last Assessment Date")
-chat_status = _profile_value(person_db.chat_status, person.get("Chat Status"))
-chat_date = person_db.chat_date or person.get("Chat Date")
-potential = _profile_value(person_db.potential, person.get("Potential"))
-recommendation = _profile_value(person_db.recommendation, person.get("Recommendation"))
-sub_disciplines = _profile_value(person_db.sub_disciplines, person.get("Sub-Disciplines"))
-resource_sme = _profile_value(person_db.resource_sme, person.get("Resource/SME"))
+assessment_level = _controlled_value(person.get("Assessment Level"), person_db.assessment_level)
+last_assessment = person.get("Last Assesment Date") or person.get("Last Assessment Date") or person_db.last_assessment_date
+chat_status = _controlled_value(person.get("Chat Status"), person_db.chat_status)
+chat_date = person.get("Chat Date") or person_db.chat_date
+potential = _controlled_value(person.get("Potential"), person_db.potential)
+recommendation = _controlled_value(person.get("Recommendation"), person_db.recommendation)
+sub_disciplines = _controlled_value(person.get("Sub-Disciplines"), person_db.sub_disciplines)
+resource_sme = _controlled_value(person.get("Resource/SME"), person_db.resource_sme)
+supervisor = _controlled_value(person.get("Supervisor"), person_db.supervisor)
+contract_expiry = person.get("Contract Expire Date") or person_db.contract_expire_date
+assignment_length = person.get("Length in Current Assignment") or person_db.assignment_length
+years_in_grade = person.get("Years in Salary Grade") or person_db.sg_years
 
 st.caption(f"Signed in as **{user.get('display_name') or user.get('username')}**")
 st.subheader(f"Welcome, {person_db.name or person.get('Name')}")
@@ -144,7 +172,9 @@ summary_cols[1].metric("Average Competency", f"{average_score:.2f}/5")
 summary_cols[2].metric("Profile Completeness", f"{profile_completeness:.0f}%")
 summary_cols[3].metric("Assessment Level", assessment_level)
 
-profile_tab, career_tab, edit_tab = st.tabs(["👤 My Profile", "🎯 Career & Assessment", "✏️ Edit Profile"])
+profile_tab, career_tab, documents_tab, edit_tab = st.tabs(
+    ["👤 My Profile", "🎯 Career & Assessment", "📄 My Documents", "✏️ Edit Profile"]
+)
 
 with profile_tab:
     profile_left, profile_right = st.columns(2)
@@ -225,14 +255,24 @@ with career_tab:
     career_cols[2].metric("Chat Status", chat_status)
     career_cols[3].metric("Chat Date", _safe_date(chat_date))
 
-    st.markdown("### 📌 Assessment Context")
-    context_left, context_right = st.columns(2)
-    with context_left:
-        st.info(f"**Potential:** {potential}")
-        st.info(f"**Recommendation:** {recommendation}")
-    with context_right:
-        st.info(f"**Supervisor:** {_profile_value(person_db.supervisor, person.get('Supervisor'))}")
-        st.info(f"**Current Assignment:** {_profile_value(person_db.current_assignment, person.get('Current Location:'))}")
+    details_left, details_right = st.columns(2)
+    with details_left:
+        st.markdown("### 📌 Assessment Context")
+        st.info(f"**Potential:** {potential}\n\n**Recommendation:** {recommendation}")
+        st.info(f"**Supervisor:** {supervisor}\n\n**Sub-Disciplines:** {sub_disciplines}")
+    with details_right:
+        st.markdown("### 🏢 Employment Context")
+        st.info(
+            f"**Contract Expiry:** {_safe_date(contract_expiry)}\n\n"
+            f"**Years in Grade:** {_profile_value(years_in_grade, fallback='Not available')}\n\n"
+            f"**Current Assignment:** {_profile_value(person_db.current_assignment, person.get('Current Location:'))}\n\n"
+            f"**Assignment Length:** {_profile_value(assignment_length, fallback='Not available')}"
+        )
+
+    parsed_last = pd.to_datetime(last_assessment, errors="coerce")
+    if pd.notna(parsed_last):
+        days_since = max(0, (date.today() - parsed_last.date()).days)
+        st.caption(f"Assessment recency: **{days_since} day(s)** since the latest recorded assessment date.")
 
     gap_frame = score_df.dropna(subset=["Actual", "Target"]).copy()
     gap_frame["Gap"] = gap_frame["Target"] - gap_frame["Actual"]
@@ -253,6 +293,46 @@ with career_tab:
         )
         st.caption("Open **My Assessment** for target-grade selection, readiness analysis and detailed development gaps.")
 
+with documents_tab:
+    st.subheader("📄 My CV & Supporting Documents")
+    valid_documents = [item for item in document_records if item["url"].lower().startswith(("https://", "http://"))]
+    invalid_documents = [item for item in document_records if item not in valid_documents]
+
+    if not document_records:
+        st.info("No CV or supporting document is currently registered for your personnel record.")
+    elif not valid_documents:
+        st.warning("Document records exist, but no valid SharePoint link is currently available.")
+        st.dataframe(
+            pd.DataFrame(document_records)[["name", "type", "status", "modified", "notes"]],
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        latest = valid_documents[0]
+        latest_cols = st.columns([2, 1, 1])
+        latest_cols[0].metric("Latest Document", latest["name"])
+        latest_cols[1].metric("File Type", latest["type"])
+        latest_cols[2].metric("Last Modified", _safe_date(latest["modified"], "Date unavailable"))
+        st.link_button("📄 Open Latest Document in SharePoint", latest["url"], width="stretch")
+        st.caption(f"{len(valid_documents)} valid linked document(s) available.")
+
+        with st.expander(f"🗂️ View all documents ({len(valid_documents)})", expanded=len(valid_documents) <= 3):
+            for item in valid_documents:
+                info_col, action_col = st.columns([4, 1])
+                info_col.markdown(
+                    f"**{item['name']}**  \n`{item['type']}` · {item['status']} · Modified {_safe_date(item['modified'], 'Date unavailable')}"
+                )
+                action_col.link_button("Open", item["url"], width="stretch")
+                st.divider()
+
+        if invalid_documents:
+            with st.expander(f"⚠️ Records without valid links ({len(invalid_documents)})"):
+                st.dataframe(
+                    pd.DataFrame(invalid_documents)[["name", "type", "status", "modified", "notes"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+
 with edit_tab:
     st.subheader("✏️ Edit My Profile")
     st.info("You can update your personal/contact information and career preferences here. Organisation-controlled fields and assessment results cannot be changed from USER access.")
@@ -263,11 +343,7 @@ with edit_tab:
         nationality = st.text_input("Nationality", value=_profile_value(person_db.nationality, person.get("Nationality"), ""))
         current_assignment = st.text_input(
             "Current Assignment",
-            value=_profile_value(
-                person_db.current_assignment,
-                person.get("Current Location:"),
-                "",
-            ),
+            value=_profile_value(person_db.current_assignment, person.get("Current Location:"), ""),
         )
         interest = st.text_area("Interest", value=_profile_value(person_db.interest, person.get("Interest"), ""), height=90)
         preference = st.text_area("Preference", value=_profile_value(person_db.preference, person.get("Preference"), ""), height=90)
