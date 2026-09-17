@@ -52,15 +52,13 @@ def _build_score_frame(person):
     records = []
     for ctype, info in COMP_TYPES.items():
         for code in info.get("cols", []):
-            records.append(
-                {
-                    "Type": info.get("label", ctype),
-                    "Code": code,
-                    "Competency": COMPETENCY_FULLNAMES.get(code, code),
-                    "Actual": _numeric_score(person.get(code)),
-                    "Target": _numeric_score(person.get(f"R-{code}")),
-                }
-            )
+            records.append({
+                "Type": info.get("label", ctype),
+                "Code": code,
+                "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                "Actual": _numeric_score(person.get(code)),
+                "Target": _numeric_score(person.get(f"R-{code}")),
+            })
     frame = pd.DataFrame(records)
     frame["Gap"] = frame["Target"] - frame["Actual"]
     return frame
@@ -120,7 +118,6 @@ def _profile_css():
         }
         .profile-hero-name { font-size: 1.45rem; font-weight: 700; margin-bottom: 3px; }
         .profile-hero-meta { color: rgba(128,128,128,.95); font-size: .9rem; }
-        .profile-section-title { font-size: 1rem; font-weight: 700; margin: 5px 0 8px 0; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -192,10 +189,9 @@ years_in_grade = person.get("Years in Salary Grade") or person_db.sg_years
 
 assessment_dates = []
 for assessment in getattr(person_db, "assessments", []):
-    if assessment.assessment_date is not None:
-        parsed = pd.to_datetime(assessment.assessment_date, errors="coerce")
-        if pd.notna(parsed):
-            assessment_dates.append(parsed)
+    parsed = pd.to_datetime(assessment.assessment_date, errors="coerce")
+    if pd.notna(parsed):
+        assessment_dates.append(parsed)
 for candidate in (person.get("Last Assesment Date"), person.get("Last Assessment Date")):
     parsed = pd.to_datetime(candidate, errors="coerce")
     if pd.notna(parsed):
@@ -223,7 +219,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Executive-style KPI strip: this is the first thing a USER should see.
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Assessment Coverage", f"{coverage:.0f}%")
 k2.metric("Average Competency", f"{average_score:.2f} / 5")
@@ -240,27 +235,31 @@ with profile_tab:
     identity_col, work_col = st.columns(2)
     with identity_col:
         st.markdown("#### Personal Information")
-        identity_html = "<div class='profile-card'>"
-        identity_html += _field_row("Name", user_name, "👤")
-        identity_html += _field_row("Staff ID", person_db.staff_id, "🪪")
-        identity_html += _field_row("Age", _display_age(person, person_db), "🎂")
-        identity_html += _field_row("Email", editable_profile_values["Email"], "✉️")
-        identity_html += _field_row("Gender", editable_profile_values["Gender"], "⚥")
-        identity_html += _field_row("Nationality", editable_profile_values["Nationality"], "🌏")
-        identity_html += "</div>"
-        st.markdown(identity_html, unsafe_allow_html=True)
+        st.markdown(
+            "<div class='profile-card'>"
+            + _field_row("Name", user_name, "👤")
+            + _field_row("Staff ID", person_db.staff_id, "🪪")
+            + _field_row("Age", _display_age(person, person_db), "🎂")
+            + _field_row("Email", editable_profile_values["Email"], "✉️")
+            + _field_row("Gender", editable_profile_values["Gender"], "⚥")
+            + _field_row("Nationality", editable_profile_values["Nationality"], "🌏")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
     with work_col:
         st.markdown("#### Organisation & Assignment")
-        work_html = "<div class='profile-card'>"
-        work_html += _field_row("Position", position, "💼")
-        work_html += _field_row("Salary Grade", sg, "📈")
-        work_html += _field_row("Department", department, "🏢")
-        work_html += _field_row("Section", section, "📂")
-        work_html += _field_row("Employment", employment, "📋")
-        work_html += _field_row("Current Assignment", editable_profile_values["Current Assignment"], "📍")
-        work_html += "</div>"
-        st.markdown(work_html, unsafe_allow_html=True)
+        st.markdown(
+            "<div class='profile-card'>"
+            + _field_row("Position", position, "💼")
+            + _field_row("Salary Grade", sg, "📈")
+            + _field_row("Department", department, "🏢")
+            + _field_row("Section", section, "📂")
+            + _field_row("Employment", employment, "📋")
+            + _field_row("Current Assignment", editable_profile_values["Current Assignment"], "📍")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
     st.markdown("#### 🧭 Talent Profile")
     talent_left, talent_right = st.columns(2)
@@ -326,9 +325,11 @@ with career_tab:
             st.markdown(f"**Remarks**\n\n{remarks}")
     with context_right:
         st.markdown("#### 🏢 Employment Context")
+        re_text = f"{re_years:.1f} yrs" if pd.notna(re_years) else "Not available"
+        pet_text = f"{pet_years:.1f} yrs" if pd.notna(pet_years) else "Not available"
         st.info(
-            f"**RE Experience:** {re_years:.1f} yrs\n\n" if pd.notna(re_years) else "**RE Experience:** Not available\n\n"
-            f"**PETRONAS Experience:** {pet_years:.1f} yrs\n\n" if pd.notna(pet_years) else "**PETRONAS Experience:** Not available\n\n"
+            f"**RE Experience:** {re_text}\n\n"
+            f"**PETRONAS Experience:** {pet_text}\n\n"
             f"**Contract Expiry:** {_safe_date(contract_expiry)}\n\n"
             f"**Years in Grade:** {_profile_value(years_in_grade)}\n\n"
             f"**Current Assignment:** {editable_profile_values['Current Assignment']}\n\n"
@@ -385,17 +386,15 @@ with documents_tab:
         if invalid_documents:
             with st.expander(f"⚠️ Records without valid links ({len(invalid_documents)})"):
                 st.dataframe(
-                    pd.DataFrame(
-                        [
-                            {
-                                "Document": item.cv_file_name or "Document",
-                                "Type": item.file_type or "N/A",
-                                "Status": item.cv_status or "N/A",
-                                "Modified": item.modified_date,
-                            }
-                            for item in invalid_documents
-                        ]
-                    ),
+                    pd.DataFrame([
+                        {
+                            "Document": item.cv_file_name or "Document",
+                            "Type": item.file_type or "N/A",
+                            "Status": item.cv_status or "N/A",
+                            "Modified": item.modified_date,
+                        }
+                        for item in invalid_documents
+                    ]),
                     width="stretch",
                     hide_index=True,
                 )
