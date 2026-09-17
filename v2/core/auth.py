@@ -1,7 +1,6 @@
 """Centralized POC authentication, session and authorization helpers."""
 from __future__ import annotations
 import streamlit as st
-from components import navigation as _navigation_module
 from services.auth_service import ROLE_ADMIN, ROLE_USER, authenticate, bootstrap_admin_from_environment, ensure_auth_table
 
 
@@ -50,12 +49,11 @@ def logout() -> None:
 
 
 def render_login() -> bool:
-    """Render login gate. Returns True only for an authenticated session."""
     if is_authenticated():
         return True
     st.markdown("# 🔐 RE Competency Assessment System")
     st.caption("POC secure access — sign in to continue")
-    left, center, right = st.columns([1, 2, 1])
+    _, center, _ = st.columns([1, 2, 1])
     with center:
         with st.form("poc_login_form"):
             username = st.text_input("Username", autocomplete="username")
@@ -66,8 +64,7 @@ def render_login() -> bool:
                 st.rerun()
             else:
                 st.error("Invalid username/password or inactive account.")
-        if not st.session_state.get("auth_user"):
-            st.info("POC note: the first admin account can be bootstrapped from POC_ADMIN_USERNAME / POC_ADMIN_PASSWORD environment variables.")
+        st.info("POC bootstrap: set POC_ADMIN_USERNAME and POC_ADMIN_PASSWORD before the first run.")
     return False
 
 
@@ -83,28 +80,24 @@ def require_roles(*roles: str) -> bool:
 
 
 def enforce_page_access(page_title: str) -> None:
-    """Block direct navigation to restricted pages even when visible nav is hidden."""
     user = current_user()
     if not user:
         st.stop()
     if user.get("role") == ROLE_ADMIN:
         return
-    allowed = {"🏠 Dashboard Home", "👤 Individual Assessment & Talent Profile"}
-    if page_title not in allowed:
+    if page_title not in {"🏠 Dashboard Home", "👤 Individual Assessment & Talent Profile"}:
         st.error("⛔ This area is restricted to administrators.")
         st.stop()
 
 
 def render_user_identity() -> None:
-    """Render a small identity/logout control in the shared top bar."""
     user = current_user()
     if not user:
         return
-    with st.container():
-        identity_col, logout_col = st.columns([6, 1])
-        with identity_col:
-            label = user.get("display_name") or user.get("username")
-            st.caption(f"Signed in as **{label}** · **{user.get('role', 'USER')}**")
-        with logout_col:
-            if st.button("Logout", key="v2_logout_button", use_container_width=True):
-                logout()
+    identity_col, logout_col = st.columns([6, 1])
+    with identity_col:
+        label = user.get("display_name") or user.get("username")
+        st.caption(f"Signed in as **{label}** · **{user.get('role', 'USER')}**")
+    with logout_col:
+        if st.button("Logout", key="v2_logout_button", use_container_width=True):
+            logout()
