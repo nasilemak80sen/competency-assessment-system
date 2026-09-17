@@ -5,9 +5,16 @@ import streamlit as st
 
 from components.navigation import render_header, render_navigation
 from core.auth import current_user, require_roles
-from core.bootstrap import get_master_data
-from services.auth_service import ROLE_ADMIN, ROLE_USER, create_user, list_users, reset_password, set_active
 from core.bootstrap import open_session
+from models import Personnel
+from services.auth_service import (
+    ROLE_ADMIN,
+    ROLE_USER,
+    create_user,
+    list_users,
+    reset_password,
+    set_active,
+)
 
 require_roles(ROLE_ADMIN)
 render_navigation()
@@ -16,17 +23,44 @@ render_header("🔐 Admin: User Access Management", "Create and maintain POC USE
 user = current_user()
 st.caption(f"Signed in as **{user.get('display_name') or user.get('username')}** · **ADMIN**")
 
-personnel_df = get_master_data()
-personnel_options = {}
-if personnel_df is not None and not personnel_df.empty and "id" in personnel_df.columns:
-    for _, row in personnel_df.dropna(subset=["id"]).iterrows():
-        label = f"{row.get('Name', 'Unknown')} · {row.get('Staff ID', 'N/A')}"
-        personnel_options[label] = int(row["id"])
+
+def _load_personnel_options() -> tuple[dict[str, int], str | None]:
+    """Return active, non-deleted database personnel for USER account linking.
+
+    USER accounts must point at the SQLAlchemy Personnel primary key because
+    that is the identifier used by the authenticated session/RBAC layer.
+    The master workbook is an analytical source and does not contain the
+    database ``id`` column, so using ``get_master_data()`` here produced an
+    empty selector even when personnel existed in the application database.
+    """
+    session = open_session()
+    try:
+        rows = (
+            session.query(Personnel)
+            .filter(Personnel.is_deleted.is_(False))
+            .order_by(Personnel.name.asc(), Personnel.staff_id.asc())
+            .all()
+        )
+        options = {}
+        for person in rows:
+            label = f"{person.name} · {person.staff_id}"
+            options[label] = int(person.id)
+        return options, None
+    except Exception as exc:
+        return {}, str(exc)
+    finally:
+        session.close()
+
+
+personnel_options, personnel_error = _load_personnel_options()
 
 create_tab, users_tab = st.tabs(["➕ Create Account", "👥 Existing Accounts"])
 
 with create_tab:
     st.info("USER accounts must be linked to one personnel record. ADMIN accounts have full system access.")
+    if personnel_error:
+        st.error(f"Unable to load personnel records for account linking: {personnel_error}")
+
     with st.form("create_app_user_form"):
         c1, c2 = st.columns(2)
         with c1:
@@ -50,16 +84,18 @@ with create_tab:
         elif role == ROLE_USER and not personnel_label:
             st.error("Select the personnel record that owns this account.")
         else:
-            session = open_session()
-            try:
-                personnel_id = personnel_options.get(personnel_label) if personnel_label else None
-                ok, message, _ = create_user(username, password, role, personnel_id=personnel_id, display_name=display_name or username)
-                if ok:
-                    st.success(message)
-                else:
-                    st.error(message)
-            finally:
-                session.close()
+            personnel_id = personnel_options.get(personnel_label) if personnel_label else None
+            ok, message, _ = create_user(
+                username,
+                password,
+                role,
+                personnel_id=personnel_id,
+                display_name=display_name or username,
+            )
+            if ok:
+                st.success(message)
+            else:
+                st.error(message)
 
 with users_tab:
     users = list_users()
@@ -93,5 +129,7 @@ with users_tab:
                         st.error("Passwords do not match.")
                     else:
                         ok, message = reset_password(account["id"], new_password)
-                        if ok: st.success(message)
-                        else: st.error(message)
+                        if ok:
+                            st.success(message)
+                        else:
+                            st.error(message)
