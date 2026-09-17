@@ -15,6 +15,8 @@ from analytics.readiness import (
     _rg_sort_salary_grades,
     build_target_gap_dataframe,
     calculate_readiness_metrics,
+    classify_readiness_status,
+    recommend_readiness_action,
 )
 from components.competency_charts import render_actual_target_charts
 from components.navigation import render_header, render_navigation
@@ -51,7 +53,6 @@ def _date(value, fallback="Not Available"):
 
 
 def _controlled_value(workbook_value, db_value=None, fallback="Not Available"):
-    """Workbook-first for organisation-controlled analytical fields."""
     return _text(workbook_value, _text(db_value, fallback))
 
 
@@ -141,7 +142,7 @@ def _render_strength_section(person):
                 )
 
 
-def _personal_pdf(person, gap_df, metrics, target):
+def _personal_pdf(person, gap_df, metrics, target, readiness_status, recommended_action):
     """Generate a read-only personal assessment report."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -172,18 +173,22 @@ def _personal_pdf(person, gap_df, metrics, target):
             f"<b>Grade:</b> {html.escape(_text(person.get('SG')))}",
             styles["BodyText"],
         ),
+        Paragraph(f"<b>Target:</b> {html.escape(_text(target))}", styles["BodyText"]),
         Paragraph(
-            f"<b>Target:</b> {html.escape(_text(target))}",
+            f"<b>Readiness Status:</b> {html.escape(_text(readiness_status))} &nbsp;&nbsp; "
+            f"<b>Recommended Action:</b> {html.escape(_text(recommended_action))}",
             styles["BodyText"],
         ),
         Spacer(1, 4 * mm),
         Paragraph("Readiness Summary", styles["Heading2"]),
     ]
 
+    target_coverage = metrics["assessed"] / metrics["total"] * 100 if metrics["total"] else 0.0
     summary_table = Table(
         [
-            ["Weighted", "Strict", "Met", "Minor", "Major"],
+            ["Coverage", "Weighted", "Strict", "Met", "Minor", "Major"],
             [
+                f"{target_coverage:.1f}%",
                 f"{metrics['weighted_readiness']:.1f}%",
                 f"{metrics['strict_readiness']:.1f}%",
                 metrics["met"],
@@ -274,13 +279,6 @@ if mine.empty:
 
 person = mine.iloc[0]
 
-st.caption(f"Signed in as **{user.get('display_name') or user.get('username')}**")
-st.subheader(f"{person_db.name or person.get('Name')}")
-st.caption(
-    f"{person.get('Staff Position', 'N/A')} · {person.get('SG', 'N/A')} · "
-    f"{person.get('Department', 'N/A')} · Staff ID: {staff_id}"
-)
-
 assessment_records = []
 for ctype, info in COMP_TYPES.items():
     for code in info.get("cols", []):
@@ -296,16 +294,17 @@ for ctype, info in COMP_TYPES.items():
             }
         )
 assessment_df = pd.DataFrame(assessment_records)
-assessment_df["Gap"] = assessment_df["Stored Target"] - assessment_df["Actual"]
+assessment_df["Stored Gap"] = assessment_df["Stored Target"] - assessment_df["Actual"]
 
 assessed = assessment_df["Actual"].notna()
 coverage = float(assessed.mean() * 100) if len(assessment_df) else 0.0
 average_score = float(assessment_df.loc[assessed, "Actual"].mean()) if assessed.any() else 0.0
-stored_gap_count = int(((assessment_df["Gap"] > 0) & assessed).sum())
+stored_gap_count = int(((assessment_df["Stored Gap"] > 0) & assessed).sum())
 
 session = open_session()
 history = []
 summary = None
+db_assessment_dates = []
 try:
     summary = (
         session.query(SummaryScore)
@@ -313,8 +312,17 @@ try:
         .order_by(SummaryScore.updated_at.desc())
         .first()
     )
-    db_person = session.query(Personnel).filter(Personnel.id == linked_id).first()
+    db_person = (
+        session.query(Personnel)
+        .filter(Personnel.id == linked_id, Personnel.is_deleted.is_(False))
+        .first()
+    )
     if db_person:
+        db_assessment_dates = [
+            assessment.assessment_date
+            for assessment in db_person.assessments
+            if assessment.assessment_date is not None
+        ]
         for assessment in sorted(
             db_person.assessments,
             key=lambda value: value.assessment_date or datetime.min,
@@ -334,17 +342,26 @@ finally:
     session.close()
 
 metadata_last_assessment = person.get("Last Assesment Date") or person.get("Last Assessment Date")
-history_dates = [pd.Timestamp(item["date"]) for item in history if item.get("date")]
+assessment_dates = [pd.Timestamp(value) for value in db_assessment_dates if value is not None]
 metadata_timestamp = pd.to_datetime(metadata_last_assessment, errors="coerce")
 if pd.notna(metadata_timestamp):
-    history_dates.append(metadata_timestamp)
-last_assessment = max(history_dates) if history_dates else None
+    assessment_dates.append(metadata_timestamp)
+last_assessment = max(assessment_dates) if assessment_dates else None
 
 assessment_level = _controlled_value(person.get("Assessment Level"), person_db.assessment_level)
 potential = _controlled_value(person.get("Potential"), person_db.potential)
 recommendation = _controlled_value(person.get("Recommendation"), person_db.recommendation)
 supervisor = _controlled_value(person.get("Supervisor"), person_db.supervisor)
 sub_disciplines = _controlled_value(person.get("Sub-Disciplines"), person_db.sub_disciplines)
+comment = _controlled_value(person.get("Comment/Suggestion"), person_db.comment)
+remarks = _controlled_value(person.get("Remarks"), person_db.remarks)
+
+st.caption(f"Signed in as **{user.get('display_name') or user.get('username')}**")
+st.subheader(f"{person_db.name or person.get('Name')}")
+st.caption(
+    f"{person.get('Staff Position', 'N/A')} · {person.get('SG', 'N/A')} · "
+    f"{person.get('Department', 'N/A')} · Staff ID: {staff_id}"
+)
 
 metric_cols = st.columns(5)
 metric_cols[0].metric("Assessment Coverage", f"{coverage:.0f}%")
@@ -360,10 +377,15 @@ context_cols[0].info(f"**Potential**\n\n{potential}")
 context_cols[1].info(f"**Recommendation**\n\n{recommendation}")
 context_cols[2].info(f"**Supervisor**\n\n{supervisor}")
 context_cols[3].info(f"**Sub-Disciplines**\n\n{sub_disciplines}")
+with st.expander("📝 Assessment Feedback & Remarks"):
+    st.markdown(f"**Comment / Suggestion**\n\n{comment}")
+    st.markdown(f"**Remarks**\n\n{remarks}")
 
 st.markdown("---")
 st.subheader("🎯 Career Target & Readiness")
-st.caption("Stored targets reflect the current analytical dataset. The target selected below is a career-readiness view and does not modify the assessment record.")
+st.caption(
+    "Stored targets come from the analytical dataset. The selected target below is a read-only career-readiness view and does not modify your assessment record."
+)
 rulers = list(ruler_map.keys())
 personal_ruler = _rg_get_person_ruler(person, ruler_map) if rulers else None
 
@@ -416,21 +438,39 @@ metrics = calculate_readiness_metrics(gap_df)
 if gap_df.empty:
     st.info("No competency requirements could be matched to the selected target mode.")
 else:
-    readiness_cols = st.columns(5)
+    target_coverage = metrics["assessed"] / metrics["total"] * 100 if metrics["total"] else 0.0
+    readiness_status = classify_readiness_status(
+        metrics["weighted_readiness"],
+        metrics["strict_readiness"],
+        target_coverage,
+        metrics["major"],
+    )
+    recommended_action = recommend_readiness_action(
+        readiness_status,
+        target_coverage,
+        metrics["major"],
+        metrics["minor"],
+    )
+
+    status_labels = {
+        "Ready": "Ready ✅",
+        "Near Ready": "Near Ready 🟡",
+        "Development Required": "Development Required 🔴",
+        "Not Assessed": "Not Assessed ⚪",
+    }
+
+    readiness_cols = st.columns(6)
     readiness_cols[0].metric("Weighted Readiness", f"{metrics['weighted_readiness']:.0f}%")
     readiness_cols[1].metric("Strict Readiness", f"{metrics['strict_readiness']:.0f}%")
-    readiness_cols[2].metric("Met", metrics["met"])
-    readiness_cols[3].metric("Minor Gaps", metrics["minor"])
-    readiness_cols[4].metric("Major Gaps", metrics["major"])
+    readiness_cols[2].metric("Target Coverage", f"{target_coverage:.0f}%")
+    readiness_cols[3].metric("Met", metrics["met"])
+    readiness_cols[4].metric("Minor Gaps", metrics["minor"])
+    readiness_cols[5].metric("Major Gaps", metrics["major"])
 
-    readiness_status = (
-        "Ready ✅"
-        if metrics["weighted_readiness"] >= 80
-        else "On Track 🟡"
-        if metrics["weighted_readiness"] >= 60
-        else "Needs Work 🔴"
+    st.info(
+        f"**Readiness status:** {status_labels.get(readiness_status, readiness_status)} · "
+        f"**Target:** {target} · **Recommended action:** {recommended_action}"
     )
-    st.info(f"**Readiness status:** {readiness_status} · Target: **{target}**")
 
     priority = gap_df[gap_df["Status"].isin(["Major Gap", "Minor Gap"])].copy()
     st.markdown("### 🔥 Priority Development Areas")
@@ -484,7 +524,7 @@ else:
             mime="text/csv",
         )
     with export_cols[1]:
-        pdf_data = _personal_pdf(person, gap_df, metrics, target)
+        pdf_data = _personal_pdf(person, gap_df, metrics, target, readiness_status, recommended_action)
         st.download_button(
             "📄 Download My Assessment Report (PDF)",
             pdf_data,
@@ -527,7 +567,6 @@ with scorecard_tabs[1]:
 
 with scorecard_tabs[2]:
     stored_target_df = assessment_df.dropna(subset=["Stored Target"]).copy()
-    stored_target_df["Stored Gap"] = stored_target_df["Stored Target"] - stored_target_df["Actual"]
     stored_target_df["Status"] = stored_target_df.apply(
         lambda row: (
             "Not Assessed"
@@ -550,7 +589,7 @@ with scorecard_tabs[2]:
             column_config={
                 "Actual": st.column_config.NumberColumn("Actual", format="%.1f"),
                 "Stored Target": st.column_config.NumberColumn("Stored Target", format="%.1f"),
-                "Stored Gap": st.column_config.NumberColumn("Actual vs Stored Target", format="%.1f"),
+                "Stored Gap": st.column_config.NumberColumn("Remaining Gap", format="%.1f"),
             },
         )
 
