@@ -4,6 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from components.competency_charts import render_actual_target_charts
 from components.navigation import render_header, render_navigation
 from core.auth import ROLE_USER, personnel_id, require_roles
 from core.bootstrap import get_master_data, open_session
@@ -83,6 +84,9 @@ st.markdown("---")
 view_tab, gap_tab = st.tabs(["📊 Scorecard", "🎯 Development Gaps"])
 
 with view_tab:
+    st.markdown("### 📈 Actual vs Target Competency Scores")
+    st.caption("Actual scores are shown as PETRONAS emerald bars; target requirements are shown as a red reference line.")
+    render_actual_target_charts(assessment_df)
     st.dataframe(assessment_df, use_container_width=True, hide_index=True)
 
 with gap_tab:
