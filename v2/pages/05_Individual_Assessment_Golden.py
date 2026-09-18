@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
 import html
+import matplotlib.pyplot as plt
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -55,6 +56,73 @@ def _safe_name(value):
         character if character.isalnum() or character in "-_" else "_"
         for character in str(value)
     ).strip("_") or "personnel"
+
+
+
+def _all_competency_codes():
+    codes = []
+    for config in COMP_TYPES.values():
+        for code in config.get("cols", []):
+            if code not in codes:
+                codes.append(code)
+    return codes
+
+
+def _build_future_grade_gap_dataframe(person, requirements, current_sg):
+    """Build a complete forward-looking gap matrix for every higher P-grade."""
+    current_rank = _rg_grade_rank(current_sg)
+    if current_rank is None:
+        return pd.DataFrame()
+    grades = [
+        grade for grade in _rg_sort_salary_grades(requirements.keys())
+        if _rg_grade_rank(grade) is not None and _rg_grade_rank(grade) > current_rank
+    ]
+    records = []
+    for grade in grades:
+        grade_requirements = requirements.get(grade, {}) or {}
+        for code in _all_competency_codes():
+            actual = pd.to_numeric(person.get(code), errors="coerce")
+            target = pd.to_numeric(grade_requirements.get(code), errors="coerce")
+            if pd.isna(target):
+                gap = pd.NA
+                status = "Requirement Unavailable"
+            elif pd.isna(actual):
+                gap = pd.NA
+                status = "Not Assessed"
+            else:
+                gap = float(actual) - float(target)
+                status = "Met" if gap >= 0 else "Minor Gap" if gap >= -1 else "Major Gap"
+            records.append({
+                "Target SG": grade,
+                "Competency": code,
+                "Competency Name": COMPETENCY_FULLNAMES.get(code, code),
+                "Category": next(
+                    (config.get("label", key) for key, config in COMP_TYPES.items()
+                     if code in config.get("cols", [])),
+                    "Other",
+                ),
+                "Actual": actual,
+                "Target": target,
+                "Gap": gap,
+                "Status": status,
+            })
+    return pd.DataFrame(records)
+
+
+def _future_grade_summary(future_gap):
+    if future_gap is None or future_gap.empty:
+        return pd.DataFrame()
+    rows = []
+    for grade, part in future_gap.groupby("Target SG", sort=False):
+        rows.append({
+            "Target SG": grade,
+            "Met": int((part["Status"] == "Met").sum()),
+            "Minor Gaps": int((part["Status"] == "Minor Gap").sum()),
+            "Major Gaps": int((part["Status"] == "Major Gap").sum()),
+            "Not Assessed": int((part["Status"] == "Not Assessed").sum()),
+            "Requirement Unavailable": int((part["Status"] == "Requirement Unavailable").sum()),
+        })
+    return pd.DataFrame(rows)
 
 
 def _strength_frame(person, competency_type):
@@ -141,82 +209,149 @@ def _render_competency_strength_class(person, competency_type):
         )
 
 
-def _pdf(person, gap, metrics):
+
+def _pdf(person, gap, metrics, future_gap=None, target=None):
+    """Generate the complete assessment report with chart and future-grade gaps."""
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 
     buffer = BytesIO()
     document = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=12 * mm,
-        rightMargin=12 * mm,
-        topMargin=12 * mm,
-        bottomMargin=12 * mm,
+        buffer, pagesize=landscape(A4),
+        leftMargin=10 * mm, rightMargin=10 * mm,
+        topMargin=10 * mm, bottomMargin=10 * mm,
     )
     styles = getSampleStyleSheet()
+    styles["BodyText"].fontSize = 8
     story = [
         Paragraph("DPE Reservoir Engineering — Individual Competency Assessment", styles["Title"]),
-        Spacer(1, 5 * mm),
+        Spacer(1, 3 * mm),
         Paragraph(
             f"<b>Name:</b> {html.escape(_text(person.get('Name')))} &nbsp;&nbsp; "
-            f"<b>Staff ID:</b> {html.escape(_text(person.get('Staff ID')))}",
+            f"<b>Staff ID:</b> {html.escape(_text(person.get('Staff ID')))} &nbsp;&nbsp; "
+            f"<b>Nationality:</b> {html.escape(_text(person.get('Nationality')))}",
             styles["BodyText"],
         ),
         Paragraph(
             f"<b>Position:</b> {html.escape(_text(person.get('Staff Position')))} &nbsp;&nbsp; "
-            f"<b>Grade:</b> {html.escape(_text(person.get('SG')))}",
+            f"<b>Current Grade:</b> {html.escape(_text(person.get('SG')))} &nbsp;&nbsp; "
+            f"<b>Department:</b> {html.escape(_text(person.get('Department')))} &nbsp;&nbsp; "
+            f"<b>Section:</b> {html.escape(_text(person.get('Section Name')))}",
             styles["BodyText"],
         ),
-        Spacer(1, 4 * mm),
+        Spacer(1, 3 * mm),
         Paragraph("Assessment Summary", styles["Heading2"]),
-        Table(
-            [["Weighted", "Strict", "Met", "Minor", "Major"],
-             [
-                 f"{metrics['weighted_readiness']:.1f}%",
-                 f"{metrics['strict_readiness']:.1f}%",
-                 metrics["met"],
-                 metrics["minor"],
-                 metrics["major"],
-             ]]
-        ),
     ]
+    summary_rows = [
+        ["Target SG", "Weighted Readiness", "Strict Readiness", "Met", "Minor Gaps", "Major Gaps", "Not Assessed"],
+        [_text(target), f"{metrics['weighted_readiness']:.1f}%", f"{metrics['strict_readiness']:.1f}%",
+         metrics["met"], metrics["minor"], metrics["major"], metrics["not_assessed"]],
+    ]
+    t = Table(summary_rows, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+    ]))
+    story.extend([t, Spacer(1, 4 * mm)])
 
-    rows = [["Code", "Competency", "Actual", "Target", "Gap", "Status"]]
-    gap_rows = gap[gap["Status"].isin(["Major Gap", "Minor Gap"])]
-    for _, record in gap_rows.iterrows():
-        rows.append(
-            [
-                record["Competency"],
-                record["Competency Name"],
-                "—" if pd.isna(record["Actual"]) else f"{record['Actual']:.1f}",
-                "—" if pd.isna(record["Target"]) else f"{record['Target']:.1f}",
-                "—" if pd.isna(record["Gap"]) else f"{record['Gap']:.1f}",
-                record["Status"],
-            ]
-        )
-    if len(rows) == 1:
-        rows.append(["—", "No assessed gaps", "—", "—", "—", "—"])
+    chart_gap = gap.dropna(subset=["Target"]).copy()
+    if not chart_gap.empty:
+        fig, ax = plt.subplots(figsize=(10.5, 3.4))
+        positions = list(range(len(chart_gap)))
+        actual = pd.to_numeric(chart_gap["Actual"], errors="coerce").fillna(0)
+        targets = pd.to_numeric(chart_gap["Target"], errors="coerce")
+        ax.bar(positions, actual, label="Actual")
+        ax.plot(positions, targets, marker="o", linewidth=2, label="Target")
+        ax.set_xticks(positions)
+        ax.set_xticklabels(chart_gap["Competency"].astype(str), rotation=45, ha="right", fontsize=7)
+        ax.set_ylim(0, 5)
+        ax.set_ylabel("Score")
+        ax.set_title(f"Actual vs Target Competency Scores — {target}")
+        ax.grid(axis="y", alpha=0.2)
+        ax.legend(loc="upper right")
+        fig.tight_layout()
+        image_buffer = BytesIO()
+        fig.savefig(image_buffer, format="png", dpi=160, bbox_inches="tight")
+        plt.close(fig)
+        image_buffer.seek(0)
+        story.extend([Image(image_buffer, width=250 * mm, height=78 * mm), Spacer(1, 3 * mm)])
 
-    table = Table(rows, repeatRows=1)
-    table.setStyle(
-        TableStyle(
-            [
+    story.append(Paragraph("Full Competency Breakdown", styles["Heading2"]))
+    current_rows = [["Code", "Competency", "Current SG", "Target SG", "Actual", "Target", "Gap", "Status"]]
+    for _, record in gap.iterrows():
+        current_rows.append([
+            record["Competency"], record["Competency Name"], _text(record["Current Grade"]),
+            _text(record["Target Grade"]),
+            "—" if pd.isna(record["Actual"]) else f"{float(record['Actual']):.1f}",
+            "—" if pd.isna(record["Target"]) else f"{float(record['Target']):.1f}",
+            "—" if pd.isna(record["Gap"]) else f"{float(record['Gap']):.1f}",
+            record["Status"],
+        ])
+    current_table = Table(current_rows, repeatRows=1,
+        colWidths=[18*mm, 67*mm, 22*mm, 22*mm, 18*mm, 18*mm, 18*mm, 35*mm])
+    current_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.extend([current_table, PageBreak()])
+
+    if future_gap is not None and not future_gap.empty:
+        story.append(Paragraph(
+            f"Forward-Looking Promotion Gap Matrix — Current {html.escape(_text(person.get('SG')))} to Higher Salary Grades",
+            styles["Heading2"],
+        ))
+        story.append(Paragraph(
+            "Actual scores are held constant and compared with each higher salary-grade requirement. "
+            "All competency codes are retained so the promotion path is visible end-to-end.",
+            styles["BodyText"],
+        ))
+        future_summary = _future_grade_summary(future_gap)
+        if not future_summary.empty:
+            matrix = [list(future_summary.columns)] + future_summary.fillna("—").astype(str).values.tolist()
+            summary_table = Table(matrix, repeatRows=1)
+            summary_table.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
-            ]
-        )
-    )
-    story.extend(
-        [Spacer(1, 4 * mm), Paragraph("Competency Gaps", styles["Heading2"]), table]
-    )
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ]))
+            story.extend([summary_table, Spacer(1, 4 * mm)])
+
+        future_rows = [["Target SG", "Code", "Competency", "Category", "Actual", "Target", "Gap", "Status"]]
+        for _, record in future_gap.iterrows():
+            future_rows.append([
+                record["Target SG"], record["Competency"], record["Competency Name"], record["Category"],
+                "—" if pd.isna(record["Actual"]) else f"{float(record['Actual']):.1f}",
+                "—" if pd.isna(record["Target"]) else f"{float(record['Target']):.1f}",
+                "—" if pd.isna(record["Gap"]) else f"{float(record['Gap']):.1f}",
+                record["Status"],
+            ])
+        future_table = Table(future_rows, repeatRows=1,
+            colWidths=[18*mm, 15*mm, 65*mm, 25*mm, 18*mm, 18*mm, 18*mm, 40*mm])
+        future_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(future_table)
+
     document.build(story)
     buffer.seek(0)
     return buffer.getvalue()
+
+
 
 
 def render_page():
@@ -311,19 +446,20 @@ def render_page():
 
     with overview:
         st.subheader("📋 Personnel Profile")
+        st.caption("Core identity and employment profile")
         first_row = st.columns(5)
         first_row[0].metric("Position / Grade", f"{_text(person.get('Staff Position'))} ({_text(person.get('SG'))})")
         first_row[1].metric("Department / Section", f"{_text(person.get('Department'))} ({_text(person.get('Section Name'))})")
-        first_row[2].metric("Current Assignment", _text(person.get("Current Location:"), "Not available"))
-        first_row[3].metric("Years in PETRONAS", _int(person.get("Years in PET")))
-        first_row[4].metric("Years of RE Experiences", _int(person.get("Years of RE Experience")))
+        first_row[2].metric("Nationality", _text(person.get("Nationality")))
+        first_row[3].metric("Current Assignment", _text(person.get("Current Location:"), "Not available"))
+        first_row[4].metric("Employment Type", _text(person.get("Employment Category")))
 
         second_row = st.columns(5)
         second_row[0].metric("Age", _int(person.get("Age"), "N/A"))
-        second_row[1].metric("Employment Type", _text(person.get("Employment Category")))
-        second_row[2].metric("Contract Expiry Date", _date(person.get("Contract Expire Date")))
-        second_row[3].metric("Length in Grade", _int(person.get("Years in Salary Grade")))
-        second_row[4].metric("Assessment Type", _text(person.get("Assessment Level")))
+        second_row[1].metric("Years in PETRONAS", _int(person.get("Years in PET")))
+        second_row[2].metric("Years of RE Experiences", _int(person.get("Years of RE Experience")))
+        second_row[3].metric("Contract Expiry Date", _date(person.get("Contract Expire Date")))
+        second_row[4].metric("Length in Grade", _int(person.get("Years in Salary Grade")))
 
         st.markdown("### 💪 Talent Profile")
         talent_cols = st.columns(3)
@@ -555,6 +691,27 @@ def render_page():
         st.markdown("### 📈 Gap Analysis Visualizations")
         render_actual_target_charts(gap)
 
+        future_gap = _build_future_grade_gap_dataframe(person, requirements, person.get("SG"))
+        if not future_gap.empty:
+            st.markdown("### 🚀 Forward-Looking Promotion Gap Matrix")
+            st.caption(
+                "Current assessment scores are compared against every higher salary grade. "
+                "For example, a P3 personnel will see the complete P4–P10 competency path."
+            )
+            st.dataframe(_future_grade_summary(future_gap), width="stretch", hide_index=True)
+            with st.expander("📋 Full competency gaps for all future salary grades", expanded=True):
+                st.dataframe(
+                    future_gap[[
+                        "Target SG", "Competency", "Competency Name",
+                        "Category", "Actual", "Target", "Gap", "Status"
+                    ]],
+                    width="stretch",
+                    hide_index=True,
+                )
+        else:
+            future_gap = pd.DataFrame()
+            st.info("No higher P-grade requirements are available for this personnel's current grade/ruler.")
+
     if summary:
         with st.expander("📊 Summary Personnel Scores and Competencies", expanded=True):
             groups = {
@@ -604,7 +761,7 @@ def render_page():
     if not gap.empty:
         st.download_button(
             "📥 Download PDF Report",
-            _pdf(person, gap, metrics),
+            _pdf(person, gap, metrics, future_gap=future_gap, target=target),
             f"Assessment_{_safe_name(selected_name)}_{target or 'target'}_{datetime.now():%Y%m%d}.pdf",
             "application/pdf",
             width="stretch",
