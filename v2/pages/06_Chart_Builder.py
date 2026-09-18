@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from chart_builder import ChartBuilder, ChartCompatibility
+from chart_builder import ChartBuilder, ChartCompatibility, DataType
 from components.navigation import render_navigation
 from config import SCORE_COLS
 from core.bootstrap import get_master_data
@@ -96,7 +96,7 @@ with st.expander("🔎 Filters", expanded=False):
     numeric_candidates = []
     for column in builder.get_selectable_columns():
         info = ChartCompatibility.analyze_data_element(df[column], column)
-        if info.data_type == ChartCompatibility.detect_data_type(df[column]) == info.data_type == info.data_type.NUMERIC:
+        if info.data_type == DataType.NUMERIC:
             numeric_candidates.append(column)
 
     numeric_filter = st.selectbox(
@@ -135,16 +135,15 @@ builder = ChartBuilder(working_df)
 selectable = builder.get_selectable_columns()
 numeric_cols = [
     c for c in selectable
-    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type == ChartCompatibility.detect_data_type(working_df[c])
-    and ChartCompatibility.analyze_data_element(working_df[c], c).data_type.name == "NUMERIC"
+    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type == DataType.NUMERIC
 ]
 categorical_cols = [
     c for c in selectable
-    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type.name == "CATEGORICAL"
+    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type == DataType.CATEGORICAL
 ]
 datetime_cols = [
     c for c in selectable
-    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type.name == "DATETIME"
+    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type == DataType.DATETIME
 ]
 
 dimension_options = categorical_cols + datetime_cols + numeric_cols
@@ -215,7 +214,7 @@ if measure is None:
     available_charts = [
         name for name in ("Bar Chart", "Stacked Bar Chart", "Pie Chart")
         if name in ChartCompatibility.CHART_TYPES
-        and x_info.data_type == __import__("chart_builder").DataType.CATEGORICAL
+        and x_info.data_type == DataType.CATEGORICAL
     ]
 
 if not available_charts:
