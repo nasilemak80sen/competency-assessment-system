@@ -282,22 +282,37 @@ class ChartBuilder:
                 return self._finish(fig)
 
         if chart_type == "Histogram":
-            fig = px.histogram(self.df, x=x_col, color=color_col, nbins=kwargs.get("nbins", 30),
-                               title=title, hover_data=self._hover_columns(self.df))
+            plot_df = self.df.copy()
+            plot_df[x_col] = pd.to_numeric(plot_df[x_col], errors="coerce")
+            plot_df = plot_df.dropna(subset=[x_col])
+            fig = px.histogram(plot_df, x=x_col, color=color_col, nbins=kwargs.get("nbins", 30),
+                               title=title, hover_data=self._hover_columns(plot_df))
         elif chart_type == "Box Plot":
-            fig = px.box(self.df, x=x_col, y=y_col, color=color_col, title=title,
-                         hover_data=self._hover_columns())
+            plot_df = self.df.dropna(subset=[x_col, y_col]).copy()
+            fig = px.box(plot_df, x=x_col, y=y_col, color=color_col, title=title,
+                         hover_data=self._hover_columns(plot_df))
         elif chart_type == "Scatter Plot":
-            fig = px.scatter(self.df, x=x_col, y=y_col, color=color_col, size=size_col,
-                             title=title, hover_data=self._hover_columns())
+            required = [x_col, y_col] + ([size_col] if size_col else [])
+            plot_df = self.df.dropna(subset=required).copy()
+            if size_col:
+                plot_df[size_col] = pd.to_numeric(plot_df[size_col], errors="coerce")
+                plot_df = plot_df.dropna(subset=[size_col])
+            fig = px.scatter(plot_df, x=x_col, y=y_col, color=color_col, size=size_col,
+                             title=title, hover_data=self._hover_columns(plot_df))
         elif chart_type == "Bubble Chart":
             if not size_col:
                 raise ValueError("Bubble Chart requires a numeric bubble-size measure.")
-            fig = px.scatter(self.df, x=x_col, y=y_col, size=size_col, color=color_col,
-                             title=title, hover_data=self._hover_columns())
+            plot_df = self.df.dropna(subset=[x_col, y_col]).copy()
+            plot_df[size_col] = pd.to_numeric(plot_df[size_col], errors="coerce")
+            plot_df = plot_df.dropna(subset=[size_col])
+            if plot_df.empty:
+                raise ValueError(f"No valid records remain after removing missing values from '{size_col}'.")
+            fig = px.scatter(plot_df, x=x_col, y=y_col, size=size_col, color=color_col,
+                             title=title, hover_data=self._hover_columns(plot_df))
         elif chart_type == "Line Chart":
-            fig = px.line(self.df.sort_values(x_col), x=x_col, y=y_col, color=color_col,
-                          markers=True, title=title, hover_data=self._hover_columns())
+            plot_df = self.df.dropna(subset=[x_col, y_col]).copy()
+            fig = px.line(plot_df.sort_values(x_col), x=x_col, y=y_col, color=color_col,
+                          markers=True, title=title, hover_data=self._hover_columns(plot_df))
         else:
             raise ValueError(f"Chart type '{chart_type}' requires a compatible dimension/measure selection.")
         return self._finish(fig)
