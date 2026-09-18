@@ -118,7 +118,7 @@ else:
         },
     )
     st.caption(
-        "Country shading and marker size represent personnel concentration by nationality. "
+        "Marker size represents personnel concentration by nationality. "
         "Markers use approximate country-centroid coordinates."
     )
 
