@@ -321,11 +321,91 @@ if st.button("📊 Generate Chart", type="primary", width="stretch"):
             st.exception(exc)
 
 if "cb_last_chart" in st.session_state:
+    figure = st.session_state["cb_last_chart"]
     st.plotly_chart(
-        st.session_state["cb_last_chart"],
+        figure,
         width="stretch",
         config={"displaylogo": False, "responsive": True},
     )
+
+    # Phase F — export and presentation controls.
+    with st.expander("🎨 Customise & export", expanded=False):
+        custom_title = st.text_input(
+            "Chart title",
+            value=figure.layout.title.text or "Workforce chart",
+            key="cb_custom_title",
+        )
+        x_label = st.text_input("X-axis label", value=str(dimension), key="cb_x_label")
+        y_label = st.text_input(
+            "Y-axis label",
+            value="Count" if measure is None else f"{aggregation} of {measure}",
+            key="cb_y_label",
+        )
+        chart_height = st.slider("Chart height", 400, 900, 600, 50, key="cb_chart_height")
+        if st.button("Apply presentation settings", key="cb_apply_style"):
+            figure.update_layout(
+                title=custom_title.strip() or "Workforce chart",
+                height=chart_height,
+                xaxis_title=x_label,
+                yaxis_title=y_label,
+            )
+            st.session_state["cb_last_chart"] = figure
+            st.rerun()
+
+        export_col1, export_col2 = st.columns(2)
+        with export_col1:
+            st.download_button(
+                "⬇️ Download filtered data",
+                data=working_df.to_csv(index=False).encode("utf-8"),
+                file_name="chart_builder_filtered_data.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+        with export_col2:
+            st.download_button(
+                "🌐 Download chart HTML",
+                data=figure.to_html(include_plotlyjs="cdn").encode("utf-8"),
+                file_name="chart_builder_chart.html",
+                mime="text/html",
+                width="stretch",
+            )
+
+    # Phase G — drill-down and competency intelligence.
+    with st.expander("🔬 Drill-down / workforce intelligence", expanded=False):
+        drill_columns = [dimension] + [c for c in categorical_cols if c != dimension]
+        drill_dimension = st.selectbox("Drill-down dimension", drill_columns, key="cb_drill_dimension")
+        drill_values = sorted(working_df[drill_dimension].dropna().astype(str).unique().tolist())
+        drill_value = st.selectbox(
+            "Drill-down value",
+            ["(All)"] + drill_values,
+            key="cb_drill_value",
+        )
+        drill_df = (
+            working_df
+            if drill_value == "(All)"
+            else working_df[working_df[drill_dimension].astype(str) == drill_value]
+        )
+        st.caption(f"{len(drill_df):,} personnel records in this drill-down.")
+        display_cols = [
+            c for c in ("Name", "Staff ID", "Department", "Staff Position", "SG", "Nationality")
+            if c in drill_df.columns
+        ]
+        st.dataframe(
+            drill_df[display_cols] if display_cols else drill_df,
+            width="stretch",
+            hide_index=True,
+        )
+
+        competency_cols = [c for c in SCORE_COLS if c in drill_df.columns]
+        if competency_cols and not drill_df.empty:
+            score_frame = drill_df[competency_cols].apply(pd.to_numeric, errors="coerce")
+            summary = pd.DataFrame({
+                "Competency": competency_cols,
+                "Average Score": score_frame.mean().round(2).values,
+                "Assessed Personnel": score_frame.notna().sum().values,
+            })
+            st.dataframe(summary, width="stretch", hide_index=True)
+
 else:
     st.info("Configure the dimension, measure and visualization, then generate the chart.")
 
