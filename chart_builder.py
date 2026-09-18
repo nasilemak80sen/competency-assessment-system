@@ -207,11 +207,20 @@ class ChartBuilder:
         ]
 
     def get_filter_options(self, max_categories: int = 100) -> Dict[str, List[Any]]:
-        options = {}
+        """Return stable categorical filter values, including mixed int/string columns."""
+        options: Dict[str, List[Any]] = {}
         for col in self.get_selectable_columns():
             info = ChartCompatibility.analyze_data_element(self.df[col], col)
-            if info.data_type == DataType.CATEGORICAL and info.unique_count <= max_categories:
-                options[col] = sorted(self.df[col].dropna().unique().tolist(), key=str)
+            if info.data_type != DataType.CATEGORICAL or info.unique_count > max_categories:
+                continue
+
+            values = self.df[col].dropna().unique().tolist()
+            # Pandas/Python cannot directly order heterogeneous values such as
+            # [14, 15, "16"]. Sort by a display key while preserving raw values.
+            options[col] = sorted(
+                values,
+                key=lambda value: (str(type(value).__name__), str(value)),
+            )
         return options
 
     def aggregate(self, dimension: str, measure: Optional[str] = None,
