@@ -69,7 +69,7 @@ builder = ChartBuilder(df)
 # Phase E — dynamic filters
 # -----------------------------------------------------------------------------
 with st.expander("🔎 Filters", expanded=False):
-    filter_options = builder.get_filter_options(max_categories=100)
+    filter_options = builder.get_filter_options()
     filter_columns = [
         c for c in filter_options
         if c not in {"Name", "Staff ID"} and c not in {"id", "ID", "Id"}
