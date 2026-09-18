@@ -99,7 +99,33 @@ if nationality_map_df.empty:
         "No valid nationality data is available for the geographical visualization."
     )
 else:
-    nationality_fig = create_nationality_distribution_map(nationality_map_df)
+    style_col, _ = st.columns([1, 4])
+    with style_col:
+        globe_style = st.selectbox(
+            "🌍 Globe Style",
+            options=[
+                "Orthographic Globe",
+                "Natural Earth",
+                "Equirectangular",
+                "Robinson",
+                "Winkel Tripel",
+            ],
+            index=0,
+            key="nationality_globe_style",
+        )
+
+    projection_map = {
+        "Orthographic Globe": "orthographic",
+        "Natural Earth": "natural earth",
+        "Equirectangular": "equirectangular",
+        "Robinson": "robinson",
+        "Winkel Tripel": "winkel tripel",
+    }
+
+    nationality_fig = create_nationality_distribution_map(
+        nationality_map_df,
+        projection_type=projection_map[globe_style],
+    )
     st.plotly_chart(
         nationality_fig,
         width="stretch",
