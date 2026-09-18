@@ -11,6 +11,7 @@ import streamlit as st
 
 from analytics.readiness import (
     _rg_determine_target_sg,
+    _rg_grade_rank,
     _rg_get_person_ruler,
     _rg_sort_salary_grades,
     build_target_gap_dataframe,
