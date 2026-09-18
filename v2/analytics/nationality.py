@@ -106,19 +106,35 @@ def prepare_nationality_map_data(
     return map_df, unmatched
 
 
-def create_nationality_distribution_map(map_df: pd.DataFrame):
-    """Build the responsive Plotly nationality distribution map.
+def create_nationality_distribution_map(
+    map_df: pd.DataFrame,
+    projection_type: str = "orthographic",
+):
+    """Build a responsive Plotly geographic nationality map.
 
-    The visual intentionally stays as a native Plotly geographic chart:
-      - country-filled choropleth for geographic context;
-      - proportional centroid bubbles for personnel concentration;
-      - no external MapLibre tiles;
-      - no secondary bar chart;
-      - responsive width so Streamlit can stretch the chart to the page.
+    The default presentation is an orthographic globe, matching Plotly's
+    native Scattergeo globe style. The map uses only Plotly's built-in
+    geographic renderer, so there are no external map tiles or Basemap
+    dependencies.
 
-    The initial view is centred around Southeast Asia while retaining a
-    global geographic context. projection_scale controls the initial zoom.
+    projection_type can be changed to another Plotly Geo projection such as
+    "natural earth", "equirectangular", "mercator", "robinson",
+    "winkel tripel" or "orthographic".
     """
+    supported_projections = {
+        "orthographic",
+        "natural earth",
+        "equirectangular",
+        "mercator",
+        "robinson",
+        "winkel tripel",
+    }
+    if projection_type not in supported_projections:
+        raise ValueError(
+            f"Unsupported Plotly Geo projection: {projection_type!r}. "
+            f"Choose from {sorted(supported_projections)}."
+        )
+
     if map_df is None or map_df.empty:
         raise ValueError("Nationality map data cannot be empty.")
 
@@ -135,53 +151,8 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
 
     fig = go.Figure()
 
-    # Country-level fill: only countries represented in the personnel data
-    # receive a count-based colour; all other countries stay neutral.
-    fig.add_trace(
-        go.Choropleth(
-            locations=chart_df["ISO3"],
-            z=chart_df["Personnel Count"],
-            text=chart_df["Nationality"],
-            customdata=chart_df[
-                ["Personnel Count", "Representation Display"]
-            ],
-            locationmode="ISO-3",
-            colorscale=_MAP_COLORSCALE,
-            zmin=0,
-            zmax=max(float(chart_df["Personnel Count"].max()), 1.0),
-            marker={
-                "line": {
-                    "color": "#FFFFFF",
-                    "width": 0.7,
-                }
-            },
-            colorbar={
-                "title": {
-                    "text": "Personnel",
-                    "side": "top",
-                },
-                "orientation": "h",
-                "x": 0.5,
-                "xanchor": "center",
-                "y": -0.025,
-                "yanchor": "top",
-                "len": 0.34,
-                "thickness": 10,
-                "tickfont": {"size": 10},
-                "title_font": {"size": 10},
-            },
-            hovertemplate=(
-                "<b>%{text}</b><br>"
-                "Personnel: %{customdata[0]:.0f}<br>"
-                "Representation: %{customdata[1]}"
-                "<extra></extra>"
-            ),
-            showscale=True,
-        )
-    )
-
-    # Centroid bubbles retain the original dashboard's intended visual
-    # language, but sqrt scaling keeps smaller nationalities visible.
+    # Native Scattergeo bubbles are the primary visual, keeping the map close
+    # to Plotly's standard globe example while retaining personnel counts.
     bubble_sizes = (
         chart_df["Personnel Count"].pow(0.5) * 6.0
     ).clip(lower=8, upper=38)
@@ -198,10 +169,10 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
             marker={
                 "size": bubble_sizes,
                 "color": "#00A19C",
-                "opacity": 0.78,
+                "opacity": 0.82,
                 "line": {
                     "color": "#FFFFFF",
-                    "width": 1.2,
+                    "width": 1.4,
                 },
             },
             hovertemplate=(
@@ -214,13 +185,13 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         )
     )
 
-    # Native Plotly Geo renderer: no external tiles, no Cartesian axes,
-    # and a clean world map that can be stretched by Streamlit.
+    # Native Plotly Geo renderer: no external tiles and no Cartesian axes.
+    # Streamlit controls the chart width responsively.
     fig.update_geos(
         scope="world",
         projection={
-            "type": "natural earth",
-            "scale": 1.18,
+            "type": projection_type,
+            "scale": 1.08 if projection_type == "orthographic" else 1.18,
         },
         center={
             "lat": 12,
@@ -228,16 +199,16 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
         },
         showframe=False,
         showland=True,
-        landcolor="#F4F6F7",
+        landcolor="#DDE7E9",
         showocean=True,
-        oceancolor="#EAF2F4",
+        oceancolor="#F7FAFA",
         showlakes=True,
-        lakecolor="#EAF2F4",
+        lakecolor="#F7FAFA",
         showcountries=True,
-        countrycolor="#C6CFD4",
+        countrycolor="#AAB5BA",
         countrywidth=0.65,
         showcoastlines=True,
-        coastlinecolor="#AAB5BA",
+        coastlinecolor="#87969B",
         coastlinewidth=0.8,
         showrivers=False,
         bgcolor="rgba(0,0,0,0)",
@@ -245,12 +216,13 @@ def create_nationality_distribution_map(map_df: pd.DataFrame):
 
     fig.update_layout(
         autosize=True,
-        height=560,
+        width=None,
+        height=500,
         margin={
             "l": 0,
             "r": 0,
-            "t": 8,
-            "b": 42,
+            "t": 0,
+            "b": 28,
         },
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
