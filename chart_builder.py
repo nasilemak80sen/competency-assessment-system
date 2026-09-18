@@ -1,19 +1,27 @@
 """
-chart_builder.py - Dynamic chart generation with smart data element selection
-Detects data types, recommends compatible chart types, and handles filtering
-"""
+Dynamic Chart Builder engine.
 
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from typing import Dict, List, Tuple, Optional, Any
+Phase A-E:
+- robust data typing and missing-value analysis
+- single chart factory and centralised filtering
+- dimension/measure/aggregation model
+- virtual row-count measure
+- recommendation engine
+- dynamic categorical/numeric filters and Top-N
+"""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 
 class DataType(Enum):
-    """Detected data types for chart compatibility"""
     NUMERIC = "numeric"
     CATEGORICAL = "categorical"
     DATETIME = "datetime"
@@ -23,471 +31,289 @@ class DataType(Enum):
 
 @dataclass
 class DataElementInfo:
-    """Information about a data element for chart compatibility"""
     name: str
     data_type: DataType
     unique_count: int
     null_count: int
+    row_count: int
     sample_values: List[Any]
     numeric_range: Optional[Tuple[float, float]] = None
     is_empty: bool = False
 
+    @property
+    def missing_ratio(self) -> float:
+        return self.null_count / max(1, self.row_count)
+
 
 class ChartCompatibility:
-    """Manages chart type compatibility with data elements"""
-
-    # Chart type definitions with compatible data types
     CHART_TYPES = {
-        "Scatter Plot": {
-            "x_required": DataType.NUMERIC,
-            "y_required": DataType.NUMERIC,
-            "description": "Best for showing relationship between two numeric variables",
-            "icon": "📍"
-        },
-        "Line Chart": {
-            "x_required": [DataType.NUMERIC, DataType.DATETIME],
-            "y_required": DataType.NUMERIC,
-            "description": "Best for showing trends over time or continuous numeric values",
-            "icon": "📈"
-        },
-        "Bar Chart": {
-            "x_required": [DataType.CATEGORICAL, DataType.NUMERIC],
-            "y_required": DataType.NUMERIC,
-            "description": "Best for comparing categories or groups",
-            "icon": "📊"
-        },
-        "Stacked Bar Chart": {
-            "x_required": [DataType.CATEGORICAL, DataType.NUMERIC],
-            "y_required": DataType.NUMERIC,
-            "description": "Best for showing composition across categories",
-            "icon": "📚"
-        },
-        "Histogram": {
-            "x_required": DataType.NUMERIC,
-            "y_required": None,
-            "description": "Best for showing distribution of a single numeric variable",
-            "icon": "📉"
-        },
-        "Box Plot": {
-            "x_required": DataType.CATEGORICAL,
-            "y_required": DataType.NUMERIC,
-            "description": "Best for comparing distributions across categories",
-            "icon": "📦"
-        },
-        "Pie Chart": {
-            "x_required": DataType.CATEGORICAL,
-            "y_required": DataType.NUMERIC,
-            "description": "Best for showing parts of a whole (max 10 categories)",
-            "icon": "🥧"
-        },
-        "Bubble Chart": {
-            "x_required": DataType.NUMERIC,
-            "y_required": DataType.NUMERIC,
-            "description": "Best for showing relationship between 3 numeric variables (bubble size)",
-            "icon": "🫧"
-        },
+        "Scatter Plot": {"x": {DataType.NUMERIC}, "y": {DataType.NUMERIC}, "icon": "📍",
+                         "description": "Relationship between two numeric variables."},
+        "Line Chart": {"x": {DataType.NUMERIC, DataType.DATETIME}, "y": {DataType.NUMERIC}, "icon": "📈",
+                       "description": "Trend across ordered or time-based values."},
+        "Bar Chart": {"x": {DataType.CATEGORICAL, DataType.NUMERIC, DataType.DATETIME},
+                      "y": {DataType.NUMERIC}, "icon": "📊", "description": "Compare aggregated values by category."},
+        "Stacked Bar Chart": {"x": {DataType.CATEGORICAL, DataType.NUMERIC, DataType.DATETIME},
+                              "y": {DataType.NUMERIC}, "icon": "📚", "description": "Composition across groups."},
+        "Histogram": {"x": {DataType.NUMERIC}, "y": None, "icon": "📉",
+                      "description": "Distribution of a numeric variable."},
+        "Box Plot": {"x": {DataType.CATEGORICAL}, "y": {DataType.NUMERIC}, "icon": "📦",
+                     "description": "Distribution of a numeric measure across groups."},
+        "Pie Chart": {"x": {DataType.CATEGORICAL}, "y": {DataType.NUMERIC}, "icon": "🥧",
+                      "description": "Part-to-whole composition; best with a small number of categories."},
+        "Bubble Chart": {"x": {DataType.NUMERIC}, "y": {DataType.NUMERIC}, "icon": "🫧",
+                         "description": "Numeric relationship with a third measure controlling size."},
     }
 
     @staticmethod
     def detect_data_type(series: pd.Series) -> DataType:
-        """Detect the data type of a pandas Series"""
-        if series.isna().all():
+        if series is None or series.dropna().empty:
             return DataType.UNKNOWN
-
-        # Check if datetime
         if pd.api.types.is_datetime64_any_dtype(series):
             return DataType.DATETIME
-
-        # Check if numeric
+        if pd.api.types.is_bool_dtype(series):
+            return DataType.CATEGORICAL
         if pd.api.types.is_numeric_dtype(series):
             return DataType.NUMERIC
 
-        # Try to infer from values
         non_null = series.dropna()
-        if len(non_null) == 0:
-            return DataType.UNKNOWN
-
-        # Sample values
         sample = non_null.head(100).astype(str)
+        numeric_ratio = pd.to_numeric(sample, errors="coerce").notna().mean()
+        if numeric_ratio >= 0.95:
+            return DataType.NUMERIC
 
-        # Check if can be converted to numeric
-        try:
-            numeric_count = pd.to_numeric(sample, errors="coerce").notna().sum()
-            if numeric_count / len(sample) > 0.8:  # 80% numeric
-                return DataType.NUMERIC
-
-        except (ValueError, TypeError) as e:
-            print(f"Warning: Could not compute range: {e}")
-
-        # Otherwise categorical
-        unique_ratio = len(non_null.unique()) / len(non_null)
-        if unique_ratio > 0.5:  # More than 50% unique = likely categorical or mixed
-            return DataType.CATEGORICAL if unique_ratio < 0.95 else DataType.MIXED
-        else:
-            return DataType.CATEGORICAL
+        unique_ratio = non_null.nunique(dropna=True) / max(1, len(non_null))
+        return DataType.MIXED if unique_ratio >= 0.95 else DataType.CATEGORICAL
 
     @staticmethod
     def analyze_data_element(series: pd.Series, name: str) -> DataElementInfo:
-        """Analyze a data element and return its characteristics"""
         data_type = ChartCompatibility.detect_data_type(series)
         non_null = series.dropna()
-
         numeric_range = None
         if data_type == DataType.NUMERIC:
-            try:
-                numeric_vals = pd.to_numeric(non_null, errors="coerce").dropna()
-                if len(numeric_vals) > 0:
-                    numeric_range = (float(numeric_vals.min()), float(numeric_vals.max()))
-            except:
-                pass
-
-        sample_values = non_null.head(3).tolist() if len(non_null) > 0 else []
-
+            values = pd.to_numeric(non_null, errors="coerce").dropna()
+            if not values.empty:
+                numeric_range = (float(values.min()), float(values.max()))
         return DataElementInfo(
             name=name,
             data_type=data_type,
-            unique_count=len(non_null.unique()),
-            null_count=series.isna().sum(),
-            sample_values=sample_values,
+            unique_count=int(non_null.nunique()),
+            null_count=int(series.isna().sum()),
+            row_count=int(len(series)),
+            sample_values=non_null.head(3).tolist(),
             numeric_range=numeric_range,
-            is_empty=len(non_null) == 0
+            is_empty=non_null.empty,
         )
 
-    @staticmethod
-    def get_compatible_charts(x_element: DataElementInfo, y_element: Optional[DataElementInfo] = None) -> Dict[str, Any]:
-        """Get compatible chart types for given data elements"""
-        compatible = {}
-
-        for chart_name, requirements in ChartCompatibility.CHART_TYPES.items():
-            is_compatible = False
-            reason = ""
-
-            # Check if y-axis is required
-            if requirements["y_required"] is None:
-                # Chart only needs x-axis (e.g., Histogram)
-                x_required = requirements.get("x_required")
-                if isinstance(x_required, list):
-                    is_compatible = x_element.data_type in x_required
-                else:
-                    is_compatible = x_element.data_type == x_required
-
-                if not is_compatible:
-                    reason = f"Requires {x_required.value if isinstance(x_required, DataType) else 'compatible'} data for X-axis"
+    @classmethod
+    def get_compatible_charts(cls, x_element: DataElementInfo,
+                              y_element: Optional[DataElementInfo] = None) -> Dict[str, Any]:
+        result = {}
+        for name, req in cls.CHART_TYPES.items():
+            x_ok = x_element.data_type in req["x"]
+            y_ok = req["y"] is None or (y_element is not None and y_element.data_type in req["y"])
+            if req["y"] is None:
+                reason = "" if x_ok else "X-axis must be numeric."
+            elif y_element is None:
+                reason = "Requires a numeric Y-axis measure."
+            elif not x_ok:
+                reason = "X-axis data type is not compatible."
+            elif not y_ok:
+                reason = "Y-axis must be numeric."
             else:
-                # Chart requires both axes
-                if y_element is None:
-                    reason = "Requires Y-axis selection"
-                else:
-                    x_required = requirements.get("x_required")
-                    y_required = requirements.get("y_required")
-
-                    x_match = False
-                    y_match = False
-
-                    # Check X
-                    if isinstance(x_required, list):
-                        x_match = x_element.data_type in x_required
-                    else:
-                        x_match = x_element.data_type == x_required
-
-                    # Check Y
-                    if isinstance(y_required, list):
-                        y_match = y_element.data_type in y_required
-                    else:
-                        y_match = y_element.data_type == y_required
-
-                    is_compatible = x_match and y_match
-
-                    if not is_compatible:
-                        if not x_match:
-                            reason = f"X-axis requires different data type"
-                        elif not y_match:
-                            reason = f"Y-axis requires numeric data"
-
-            compatible[chart_name] = {
-                "is_compatible": is_compatible,
+                reason = ""
+            result[name] = {
+                "is_compatible": x_ok and y_ok,
                 "reason": reason,
-                "requirements": requirements
+                "requirements": req,
             }
+        return result
 
-        return compatible
+    @classmethod
+    def get_suggestions(cls, x_element: DataElementInfo,
+                        y_element: Optional[DataElementInfo] = None) -> Dict[str, Any]:
+        issues: List[str] = []
+        suggestions: List[str] = []
+        for element, axis in ((x_element, "X"), (y_element, "Y")):
+            if element is None:
+                continue
+            if element.is_empty:
+                issues.append(f"❌ {axis}-axis '{element.name}' has no valid data.")
+            if element.missing_ratio > 0.5:
+                issues.append(f"⚠️ {axis}-axis '{element.name}' has {element.missing_ratio:.0%} missing values.")
+        if y_element and y_element.data_type != DataType.NUMERIC:
+            issues.append(f"❌ Y-axis '{y_element.name}' is not numeric.")
+            suggestions.append("Select a numeric measure or use Count as the measure.")
+        if x_element.data_type == DataType.CATEGORICAL and y_element:
+            suggestions.append("Bar charts are suitable for grouped categorical comparisons.")
+        if x_element.data_type == DataType.NUMERIC and y_element and y_element.data_type == DataType.NUMERIC:
+            suggestions.append("Scatter plots are suitable for exploring numeric relationships.")
+        if x_element.data_type == DataType.DATETIME and y_element:
+            suggestions.append("Line charts are suitable for ordered time-based trends.")
+        return {"has_issues": bool(issues), "issues": issues, "suggestions": suggestions}
 
-    @staticmethod
-    def get_suggestions(x_element: DataElementInfo, y_element: Optional[DataElementInfo] = None) -> Dict[str, Any]:
-        """Get suggestions for incompatible selections"""
-        issues = []
-        suggestions = []
-
-        # Check for empty data
-        if x_element.is_empty:
-            issues.append(f"❌ X-axis '{x_element.name}' has no valid data")
-        if y_element and y_element.is_empty:
-            issues.append(f"❌ Y-axis '{y_element.name}' has no valid data")
-
-        # Check for too many nulls
-        if x_element.null_count / max(1, x_element.unique_count) > 0.5:
-            issues.append(f"⚠️ X-axis '{x_element.name}' has >50% missing values")
-        if y_element and y_element.null_count / max(1, y_element.unique_count) > 0.5:
-            issues.append(f"⚠️ Y-axis '{y_element.name}' has >50% missing values")
-
-        # Chart-specific suggestions
-        if y_element:
-            if y_element.data_type != DataType.NUMERIC:
-                issues.append(f"❌ Y-axis '{y_element.name}' is not numeric")
-                suggestions.append("💡 For Y-axis, select a numeric column (scores, counts, measurements)")
-
-            if x_element.data_type == DataType.NUMERIC and y_element.data_type == DataType.NUMERIC:
-                suggestions.append("✅ Good selection! Scatter plot is ideal for exploring relationships")
-
-            if x_element.data_type == DataType.CATEGORICAL:
-                suggestions.append("✅ Good selection! Bar chart is ideal for categorical comparisons")
-
-        return {
-            "has_issues": len(issues) > 0,
-            "issues": issues,
-            "suggestions": suggestions
-        }
+    @classmethod
+    def recommend(cls, x_info: DataElementInfo, y_info: Optional[DataElementInfo],
+                   aggregation: str = "Average", color_col: Optional[str] = None) -> List[Dict[str, Any]]:
+        ranked: List[Dict[str, Any]] = []
+        if x_info.data_type == DataType.DATETIME and y_info and y_info.data_type == DataType.NUMERIC:
+            ranked.append({"chart": "Line Chart", "reason": "Time-based dimension with a numeric measure."})
+        if x_info.data_type == DataType.CATEGORICAL and y_info and y_info.data_type == DataType.NUMERIC:
+            ranked.append({"chart": "Bar Chart", "reason": f"{aggregation} by category is easy to compare."})
+            if color_col:
+                ranked.append({"chart": "Stacked Bar Chart", "reason": "A breakdown is available for grouped composition."})
+            if x_info.unique_count <= 10:
+                ranked.append({"chart": "Pie Chart", "reason": "A small categorical set can show composition."})
+            if aggregation in {"Average", "Median"}:
+                ranked.append({"chart": "Box Plot", "reason": "Useful for comparing score distributions by category."})
+        if x_info.data_type == DataType.NUMERIC and y_info and y_info.data_type == DataType.NUMERIC:
+            ranked.insert(0, {"chart": "Scatter Plot", "reason": "Both axes are numeric."})
+            if color_col:
+                ranked.append({"chart": "Bubble Chart", "reason": "A third dimension can be encoded by size."})
+        return ranked
 
 
 class ChartBuilder:
-    """Builds charts with data filtering and customization"""
+    AGGREGATIONS = ("Count", "Sum", "Average", "Median", "Minimum", "Maximum")
 
     def __init__(self, dataframe: pd.DataFrame):
         if dataframe is None or dataframe.empty:
-            raise ValueError("Cannot create ChartBuilder with empty or None dataframe")
-        
-        self.df = dataframe.copy()
+            raise ValueError("Cannot create ChartBuilder with empty or None dataframe.")
         self.original_df = dataframe.copy()
+        self.df = dataframe.copy()
         self.filters: Dict[str, Any] = {}
 
-    def apply_filters(self, filters: Dict[str, List[Any]]) -> pd.DataFrame:
+    def apply_filters(self, filters: Optional[Dict[str, Sequence[Any]]] = None,
+                      numeric_ranges: Optional[Dict[str, Tuple[float, float]]] = None) -> pd.DataFrame:
         df = self.original_df.copy()
-        applied_count = 0
-        
-        for column, values in filters.items():
-            if not values:
-                continue
-            if column not in df.columns:
-                print(f"Warning: Column '{column}' not found")
-                continue
-            
-            df = df[df[column].isin(values)]
-            applied_count += 1
-        
-        if applied_count > 0 and df.empty:
-            print(f"Warning: All records filtered out. Showing original data.")
-            df = self.original_df.copy()
-        
+        self.filters = filters or {}
+        for column, values in self.filters.items():
+            if values and column in df.columns:
+                df = df[df[column].isin(values)]
+        for column, bounds in (numeric_ranges or {}).items():
+            if column in df.columns and bounds:
+                numeric = pd.to_numeric(df[column], errors="coerce")
+                df = df[numeric.between(bounds[0], bounds[1], inclusive="both")]
         self.df = df
-        return df
+        return self.df
 
-    def create_scatter_plot(self, x_col: str, y_col: str, color_col: Optional[str] = None, 
-                           size_col: Optional[str] = None, title: str = None) -> go.Figure:
-        """Create scatter plot"""
-        title = title or f"{x_col} vs {y_col}"
+    def get_selectable_columns(self) -> List[str]:
+        id_columns = {"id", "ID", "Id"}
+        return [
+            col for col in self.df.columns
+            if col not in id_columns
+            and not ChartCompatibility.analyze_data_element(self.df[col], col).is_empty
+            and ChartCompatibility.analyze_data_element(self.df[col], col).data_type != DataType.MIXED
+        ]
 
-        fig = px.scatter(
-            self.df,
-            x=x_col,
-            y=y_col,
-            color=color_col,
-            size=size_col,
-            title=title,
-            hover_data=self.df.columns[:5]  # Show first 5 columns on hover
-        )
-
-        fig.update_layout(
-            hovermode="closest",
-            template="plotly_white",
-            height=600,
-            xaxis_title=x_col,
-            yaxis_title=y_col
-        )
-
-        return fig
-
-    def create_bar_chart(self, x_col: str, y_col: str, color_col: Optional[str] = None,
-                        title: str = None, stacked: bool = False) -> go.Figure:
-        """Create bar chart"""
-        title = title or f"{y_col} by {x_col}"
-        barmode = "stack" if stacked else "group"
-
-        fig = px.bar(
-            self.df,
-            x=x_col,
-            y=y_col,
-            color=color_col,
-            title=title,
-            barmode=barmode,
-            hover_data=self.df.columns[:5]
-        )
-
-        fig.update_layout(
-            template="plotly_white",
-            height=600,
-            xaxis_title=x_col,
-            yaxis_title=y_col
-        )
-
-        return fig
-
-    def create_line_chart(self, x_col: str, y_col: str, color_col: Optional[str] = None,
-                         title: str = None) -> go.Figure:
-        """Create line chart"""
-        title = title or f"Trend of {y_col}"
-
-        fig = px.line(
-            self.df,
-            x=x_col,
-            y=y_col,
-            color=color_col,
-            markers=True,
-            title=title,
-            hover_data=self.df.columns[:5]
-        )
-
-        fig.update_layout(
-            template="plotly_white",
-            height=600,
-            xaxis_title=x_col,
-            yaxis_title=y_col
-        )
-
-        return fig
-
-    def create_histogram(self, x_col: str, color_col: Optional[str] = None,
-                        nbins: int = 30, title: str = None) -> go.Figure:
-        """Create histogram"""
-        title = title or f"Distribution of {x_col}"
-
-        fig = px.histogram(
-            self.df,
-            x=x_col,
-            color=color_col,
-            nbins=nbins,
-            title=title,
-            hover_data=self.df.columns[:5]
-        )
-
-        fig.update_layout(
-            template="plotly_white",
-            height=600,
-            xaxis_title=x_col,
-            yaxis_title="Count"
-        )
-
-        return fig
-
-    def create_box_plot(self, x_col: str, y_col: str, color_col: Optional[str] = None,
-                       title: str = None) -> go.Figure:
-        """Create box plot"""
-        title = title or f"Distribution of {y_col} by {x_col}"
-
-        fig = px.box(
-            self.df,
-            x=x_col,
-            y=y_col,
-            color=color_col,
-            title=title,
-            hover_data=self.df.columns[:5]
-        )
-
-        fig.update_layout(
-            template="plotly_white",
-            height=600,
-            xaxis_title=x_col,
-            yaxis_title=y_col
-        )
-
-        return fig
-
-    def create_pie_chart(self, x_col: str, y_col: str, title: str = None) -> go.Figure:
-        """Create pie chart"""
-        title = title or f"Distribution of {x_col}"
-
-        # Group by x_col and sum y_col
-        grouped = self.df.groupby(x_col)[y_col].sum().head(10)
-
-        fig = px.pie(
-            values=grouped.values,
-            names=grouped.index,
-            title=title
-        )
-
-        fig.update_layout(
-            template="plotly_white",
-            height=600
-        )
-
-        return fig
-
-    def create_bubble_chart(self, x_col: str, y_col: str, size_col: str, 
-                           color_col: Optional[str] = None, title: str = None) -> go.Figure:
-        """Create bubble chart"""
-        title = title or f"{x_col} vs {y_col} (bubble size: {size_col})"
-
-        fig = px.scatter(
-            self.df,
-            x=x_col,
-            y=y_col,
-            size=size_col,
-            color=color_col,
-            title=title,
-            hover_data=self.df.columns[:5]
-        )
-
-        fig.update_layout(
-            template="plotly_white",
-            height=600,
-            xaxis_title=x_col,
-            yaxis_title=y_col
-        )
-
-        return fig
-
-    def create_chart(self, chart_type: str, x_col: str, y_col: Optional[str] = None,
-                    color_col: Optional[str] = None, size_col: Optional[str] = None,
-                    title: Optional[str] = None, **kwargs) -> go.Figure:
-        """Factory method to create any chart type"""
-
-        chart_map = {
-            "Scatter Plot": self.create_scatter_plot,
-            "Line Chart": self.create_line_chart,
-            "Bar Chart": self.create_bar_chart,
-            "Stacked Bar Chart": lambda **kw: self.create_bar_chart(stacked=True, **kw),
-            "Histogram": self.create_histogram,
-            "Box Plot": self.create_box_plot,
-            "Pie Chart": self.create_pie_chart,
-            "Bubble Chart": self.create_bubble_chart,
-        }
-
-        if chart_type not in chart_map:
-            raise ValueError(f"Unknown chart type: {chart_type}")
-
-        creator = chart_map[chart_type]
-        return creator(x_col=x_col, y_col=y_col, color_col=color_col, 
-                      size_col=size_col, title=title, **kwargs)
-
-    def get_filter_options(self) -> Dict[str, List[Any]]:
-        """Get available filter options for each column"""
+    def get_filter_options(self, max_categories: int = 100) -> Dict[str, List[Any]]:
         options = {}
-        for col in self.original_df.columns:
-            if self.original_df[col].dtype == "object" or len(self.original_df[col].unique()) <= 20:
-                options[col] = sorted(self.original_df[col].dropna().unique().tolist())
+        for col in self.get_selectable_columns():
+            info = ChartCompatibility.analyze_data_element(self.df[col], col)
+            if info.data_type == DataType.CATEGORICAL and info.unique_count <= max_categories:
+                options[col] = sorted(self.df[col].dropna().unique().tolist(), key=str)
         return options
 
-    @staticmethod
-    def get_selectable_columns(self) -> List[str]:
-        """Get all columns suitable for charting (non-empty, not IDs)"""
-        selectable = []
-        id_columns = ["id", "ID", "Id"]
-        
-        for col in self.df.columns:
-            if col in id_columns:
-                continue
-            element = ChartCompatibility.analyze_data_element(self.df[col], col)
-            if not element.is_empty and element.data_type != DataType.MIXED:
-                selectable.append(col)
-        return selectable
+    def aggregate(self, dimension: str, measure: Optional[str] = None,
+                  aggregation: str = "Count", color_col: Optional[str] = None,
+                  top_n: Optional[int] = None) -> pd.DataFrame:
+        if dimension not in self.df.columns:
+            raise KeyError(dimension)
+        if aggregation not in self.AGGREGATIONS:
+            raise ValueError(f"Unsupported aggregation: {aggregation}")
 
-    
+        group_cols = [dimension] + ([color_col] if color_col and color_col in self.df.columns and color_col != dimension else [])
+        work = self.df.copy()
+        if aggregation == "Count":
+            grouped = work.groupby(group_cols, dropna=False).size().reset_index(name="value")
+        else:
+            if not measure or measure not in work.columns:
+                raise ValueError("A numeric measure is required for this aggregation.")
+            numeric = pd.to_numeric(work[measure], errors="coerce")
+            work = work.assign(__measure=numeric)
+            grouped_series = work.groupby(group_cols, dropna=False)["__measure"]
+            operation = {
+                "Sum": "sum", "Average": "mean", "Median": "median",
+                "Minimum": "min", "Maximum": "max",
+            }[aggregation]
+            grouped = getattr(grouped_series, operation)().reset_index(name="value")
+
+        if top_n:
+            ranked = grouped.groupby(dimension, dropna=False)["value"].sum().sort_values(ascending=False).head(top_n)
+            grouped = grouped[grouped[dimension].isin(ranked.index)]
+
+        return grouped
+
+    def _hover_columns(self) -> List[str]:
+        return list(self.df.columns[:8])
+
+    def create_chart(self, chart_type: str, x_col: str, y_col: Optional[str] = None,
+                     color_col: Optional[str] = None, size_col: Optional[str] = None,
+                     title: Optional[str] = None, aggregation: str = "Average",
+                     top_n: Optional[int] = None, **kwargs) -> go.Figure:
+        if chart_type not in ChartCompatibility.CHART_TYPES:
+            raise ValueError(f"Unknown chart type: {chart_type}")
+
+        title = title or f"{chart_type}: {x_col}"
+        if chart_type in {"Bar Chart", "Stacked Bar Chart", "Pie Chart"} and aggregation:
+            if aggregation == "Count" or y_col:
+                grouped = self.aggregate(x_col, y_col, aggregation, color_col,
+                                         top_n if chart_type != "Pie Chart" else (top_n or 10))
+                if chart_type == "Pie Chart":
+                    grouped = grouped.groupby(x_col, dropna=False)["value"].sum().reset_index()
+                    fig = px.pie(grouped, names=x_col, values="value", title=title)
+                else:
+                    fig = px.bar(grouped, x=x_col, y="value", color=color_col,
+                                 title=title,
+                                 barmode="stack" if chart_type == "Stacked Bar Chart" else "group",
+                                 hover_data=self._hover_columns())
+                fig.update_layout(xaxis_title=x_col, yaxis_title=f"{aggregation} of {y_col}" if y_col else "Count")
+                return self._finish(fig)
+
+        if chart_type == "Histogram":
+            fig = px.histogram(self.df, x=x_col, color=color_col, nbins=kwargs.get("nbins", 30),
+                               title=title, hover_data=self._hover_columns())
+        elif chart_type == "Box Plot":
+            fig = px.box(self.df, x=x_col, y=y_col, color=color_col, title=title,
+                         hover_data=self._hover_columns())
+        elif chart_type == "Scatter Plot":
+            fig = px.scatter(self.df, x=x_col, y=y_col, color=color_col, size=size_col,
+                             title=title, hover_data=self._hover_columns())
+        elif chart_type == "Bubble Chart":
+            if not size_col:
+                raise ValueError("Bubble Chart requires a numeric bubble-size measure.")
+            fig = px.scatter(self.df, x=x_col, y=y_col, size=size_col, color=color_col,
+                             title=title, hover_data=self._hover_columns())
+        elif chart_type == "Line Chart":
+            fig = px.line(self.df.sort_values(x_col), x=x_col, y=y_col, color=color_col,
+                          markers=True, title=title, hover_data=self._hover_columns())
+        else:
+            raise ValueError(f"Chart type '{chart_type}' requires a compatible dimension/measure selection.")
+        return self._finish(fig)
+
+    @staticmethod
+    def _finish(fig: go.Figure) -> go.Figure:
+        fig.update_layout(template="plotly_white", height=600, margin=dict(l=40, r=30, t=70, b=50))
+        return fig
+
+    # Backward-compatible helpers
+    def create_scatter_plot(self, x_col, y_col, color_col=None, size_col=None, title=None):
+        return self.create_chart("Scatter Plot", x_col, y_col, color_col, size_col, title)
+
+    def create_line_chart(self, x_col, y_col, color_col=None, title=None):
+        return self.create_chart("Line Chart", x_col, y_col, color_col, title=title)
+
+    def create_bar_chart(self, x_col, y_col, color_col=None, title=None, stacked=False):
+        return self.create_chart("Stacked Bar Chart" if stacked else "Bar Chart", x_col, y_col, color_col, title=title)
+
+    def create_histogram(self, x_col, color_col=None, nbins=30, title=None):
+        return self.create_chart("Histogram", x_col, color_col=color_col, title=title, nbins=nbins)
+
+    def create_box_plot(self, x_col, y_col, color_col=None, title=None):
+        return self.create_chart("Box Plot", x_col, y_col, color_col, title=title)
+
+    def create_pie_chart(self, x_col, y_col, title=None):
+        return self.create_chart("Pie Chart", x_col, y_col, title=title, aggregation="Sum", top_n=10)
+
+    def create_bubble_chart(self, x_col, y_col, size_col, color_col=None, title=None):
+        return self.create_chart("Bubble Chart", x_col, y_col, color_col, size_col, title)
