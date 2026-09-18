@@ -9,6 +9,22 @@ from datetime import datetime
 from typing import Optional
 from config import DATABASE_PATH
 
+def _streamlit_admin_credentials() -> tuple[str, str, str]:
+    """Read deployment credentials from Streamlit Secrets without exposing them in Git."""
+    try:
+        import streamlit as st
+        admin = st.secrets.get("admin", {})
+        username = str(admin.get("username", "")).strip()
+        password = str(admin.get("password", ""))
+        display_name = str(admin.get("display_name", "POC Administrator")).strip() or "POC Administrator"
+        if username and password:
+            return username, password, display_name
+    except Exception:
+        # Streamlit Secrets may be unavailable during local/unit-test execution.
+        pass
+    return "", "", ""
+
+
 ROLE_USER = "USER"
 ROLE_ADMIN = "ADMIN"
 ROLES = (ROLE_USER, ROLE_ADMIN)
@@ -88,12 +104,26 @@ def create_user(username: str, password: str, role: str, personnel_id: int | Non
 
 
 def bootstrap_admin_from_environment() -> bool:
+    """Create the first ADMIN from Streamlit Secrets, with env vars as a local fallback.
+
+    The bootstrap is intentionally one-time: if any application user already
+    exists, no account is created or overwritten.
+    """
     ensure_auth_table()
     with _connect() as conn:
-        if conn.execute("SELECT 1 FROM app_users LIMIT 1").fetchone(): return False
-    username, password = os.getenv("POC_ADMIN_USERNAME", "").strip(), os.getenv("POC_ADMIN_PASSWORD", "")
-    if not username or not password: return False
-    ok, _, _ = create_user(username, password, ROLE_ADMIN, display_name=os.getenv("POC_ADMIN_DISPLAY_NAME", "POC Administrator"))
+        if conn.execute("SELECT 1 FROM app_users LIMIT 1").fetchone():
+            return False
+
+    username, password, display_name = _streamlit_admin_credentials()
+    if not username or not password:
+        username = os.getenv("POC_ADMIN_USERNAME", "").strip()
+        password = os.getenv("POC_ADMIN_PASSWORD", "")
+        display_name = os.getenv("POC_ADMIN_DISPLAY_NAME", "POC Administrator").strip() or "POC Administrator"
+
+    if not username or not password:
+        return False
+
+    ok, _, _ = create_user(username, password, ROLE_ADMIN, display_name=display_name)
     return ok
 
 
