@@ -28,9 +28,16 @@ def test_prepare_nationality_map_data_normalizes_counts_and_coordinates():
 
     assert not map_df.empty
     assert unmatched == []
-    assert set(map_df["Nationality"]) >= {"Malaysian", "British", "Indonesian"}
+    assert set(map_df["Nationality"]) >= {
+        "Malaysian",
+        "British",
+        "Indonesian",
+    }
 
-    malaysia = map_df.loc[map_df["Nationality"] == "Malaysian"].iloc[0]
+    malaysia = map_df.loc[
+        map_df["Nationality"] == "Malaysian"
+    ].iloc[0]
+
     assert int(malaysia["Personnel Count"]) == 2
     assert pd.notna(malaysia["Latitude"])
     assert pd.notna(malaysia["Longitude"])
@@ -52,28 +59,35 @@ def _sample_map_df():
     )
 
 
-def test_create_nationality_distribution_map_has_interactive_orthographic_globe():
+def test_create_nationality_distribution_map_is_responsive_plotly_geo_map():
     fig = create_nationality_distribution_map(_sample_map_df())
 
-    assert len(fig.data) == 3
+    # The dashboard now contains only the geographic layers:
+    # 1) country fill and 2) personnel centroid bubbles.
+    assert len(fig.data) == 2
     assert fig.data[0].type == "choropleth"
     assert fig.data[0].locationmode == "ISO-3"
     assert fig.data[1].type == "scattergeo"
-    assert fig.data[2].type == "bar"
-    assert fig.layout.geo.projection.type == "orthographic"
-    assert fig.layout.geo.projection.scale == 1.55
-    assert fig.layout.geo.projection.rotation.lon == 105
-    assert fig.layout.geo.projection.rotation.lat == 8
+
+    assert fig.layout.geo.scope == "world"
+    assert fig.layout.geo.projection.type == "natural earth"
+    assert fig.layout.geo.projection.scale == 1.18
+    assert fig.layout.geo.center.lat == 12
+    assert fig.layout.geo.center.lon == 70
     assert fig.layout.geo.showcountries is True
     assert fig.layout.geo.showland is True
-    assert fig.layout.height == 790
+
+    # No fixed square canvas or secondary chart.
+    assert fig.layout.autosize is True
+    assert fig.layout.width is None
+    assert fig.layout.height == 560
 
 
 def test_create_nationality_bubble_map_remains_backward_compatible():
     fig = create_nationality_bubble_map(_sample_map_df())
 
-    assert len(fig.data) == 3
+    assert len(fig.data) == 2
     assert fig.data[0].type == "choropleth"
     assert fig.data[1].type == "scattergeo"
-    assert fig.data[2].type == "bar"
-    assert fig.layout.geo.projection.type == "orthographic"
+    assert fig.layout.geo.projection.type == "natural earth"
+    assert fig.layout.autosize is True
