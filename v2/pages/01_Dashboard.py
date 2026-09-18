@@ -99,12 +99,13 @@ if nationality_map_df.empty:
 else:
     render_nationality_globe(
         nationality_map_df,
-        height=560,
+        personnel_df=df,
+        height=620,
     )
     st.caption(
-        "OpenGlobus WebGL globe with interactive rotation, zoom and proportional "
-        "nationality markers. Marker size represents personnel concentration; "
-        "coordinates use approximate country centroids."
+        "OpenGlobus WebGL nationality intelligence: proportional pins, click-to-detail, "
+        "camera fly-to and client-side workforce filters. Coordinates use approximate "
+        "country centroids."
     )
 
 if unmatched_nationalities:
