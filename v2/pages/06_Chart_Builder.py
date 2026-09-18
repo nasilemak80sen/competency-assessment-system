@@ -141,6 +141,13 @@ datetime_cols = [c for c, info in infos.items() if info.data_type == DataType.DA
 # X and Y intentionally use the same source column pool. Chart compatibility
 # determines which visualisations are valid for the selected pair.
 dimension_options = selectable
+
+# Apply a pending axis swap before creating the widgets. This is the safe
+# Streamlit pattern because widget keys must be initialised before instantiation.
+pending_swap = st.session_state.pop("cb_swap_pending", None)
+if pending_swap:
+    st.session_state["cb_dimension"] = pending_swap["dimension"]
+    st.session_state["cb_measure"] = pending_swap["measure"]
 if not dimension_options:
     st.error("No suitable dimensions were found.")
     st.stop()
@@ -165,12 +172,14 @@ with col2:
         key="cb_measure",
     )
 
-# Count is a virtual measure and therefore cannot become an X-axis.
+# Streamlit locks a widget's keyed session-state value once the widget
+# has been instantiated in the current run. Therefore the swap is applied
+# through widget defaults on the *next* run, not by mutating those keys here.
 if swap_clicked and measure_selection != "Count of rows":
-    old_x = dimension
-    old_y = measure_selection
-    st.session_state["cb_dimension"] = old_y
-    st.session_state["cb_measure"] = old_x
+    st.session_state["cb_swap_pending"] = {
+        "dimension": measure_selection,
+        "measure": dimension,
+    }
     st.rerun()
 
 measure = None if measure_selection == "Count of rows" else measure_selection
