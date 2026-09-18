@@ -10,7 +10,7 @@ from config import SG_HIERARCHY, SG_TO_POSITION_BRACKET, POSITION_HIERARCHY_ORDE
 from core.bootstrap import get_master_data
 from analytics.nationality import (
     prepare_nationality_map_data,
-    create_nationality_bubble_map,
+    create_nationality_distribution_map,
 )
 from analytics.workforce import scatter_age_vs_grade
 from components.navigation import render_navigation
@@ -99,10 +99,10 @@ if nationality_map_df.empty:
         "No valid nationality data is available for the geographical visualization."
     )
 else:
-    nationality_fig = create_nationality_bubble_map(nationality_map_df)
+    nationality_fig = create_nationality_distribution_map(nationality_map_df)
     st.plotly_chart(
         nationality_fig,
-        use_container_width=True,
+        width="stretch",
         config={
             "displaylogo": True,
             "scrollZoom": True,
@@ -118,7 +118,7 @@ else:
         },
     )
     st.caption(
-        "Bubble size and color represent the number of personnel associated with each nationality. "
+        "Country shading and marker size represent personnel concentration by nationality. "
         "Markers use approximate country-centroid coordinates."
     )
 
