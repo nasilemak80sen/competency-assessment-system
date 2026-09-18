@@ -59,35 +59,55 @@ def _sample_map_df():
     )
 
 
-def test_create_nationality_distribution_map_is_responsive_plotly_geo_map():
+def test_create_nationality_distribution_map_is_responsive_orthographic_globe():
     fig = create_nationality_distribution_map(_sample_map_df())
 
-    # The dashboard now contains only the geographic layers:
-    # 1) country fill and 2) personnel centroid bubbles.
-    assert len(fig.data) == 2
-    assert fig.data[0].type == "choropleth"
-    assert fig.data[0].locationmode == "ISO-3"
-    assert fig.data[1].type == "scattergeo"
+    # The dashboard uses a native Plotly Scattergeo globe with proportional
+    # personnel bubbles and no secondary chart.
+    assert len(fig.data) == 1
+    assert fig.data[0].type == "scattergeo"
 
     assert fig.layout.geo.scope == "world"
-    assert fig.layout.geo.projection.type == "natural earth"
-    assert fig.layout.geo.projection.scale == 1.18
+    assert fig.layout.geo.projection.type == "orthographic"
+    assert fig.layout.geo.projection.scale == 1.08
     assert fig.layout.geo.center.lat == 12
     assert fig.layout.geo.center.lon == 70
     assert fig.layout.geo.showcountries is True
     assert fig.layout.geo.showland is True
+    assert fig.layout.geo.showocean is True
 
-    # No fixed square canvas or secondary chart.
+    # Streamlit owns the responsive width; Plotly does not impose a fixed
+    # width, avoiding the old square-canvas behaviour.
     assert fig.layout.autosize is True
     assert fig.layout.width is None
-    assert fig.layout.height == 560
+    assert fig.layout.height == 500
+
+
+def test_create_nationality_distribution_map_supports_other_plotly_projections():
+    fig = create_nationality_distribution_map(
+        _sample_map_df(),
+        projection_type="natural earth",
+    )
+    assert fig.data[0].type == "scattergeo"
+    assert fig.layout.geo.projection.type == "natural earth"
+
+
+def test_create_nationality_distribution_map_rejects_unknown_projection():
+    try:
+        create_nationality_distribution_map(
+            _sample_map_df(),
+            projection_type="not-a-real-projection",
+        )
+    except ValueError as exc:
+        assert "Unsupported Plotly Geo projection" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for unsupported projection.")
 
 
 def test_create_nationality_bubble_map_remains_backward_compatible():
     fig = create_nationality_bubble_map(_sample_map_df())
 
-    assert len(fig.data) == 2
-    assert fig.data[0].type == "choropleth"
-    assert fig.data[1].type == "scattergeo"
-    assert fig.layout.geo.projection.type == "natural earth"
+    assert len(fig.data) == 1
+    assert fig.data[0].type == "scattergeo"
+    assert fig.layout.geo.projection.type == "orthographic"
     assert fig.layout.autosize is True
