@@ -133,41 +133,66 @@ builder = ChartBuilder(working_df)
 # Phase C — dimension / measure / aggregation
 # -----------------------------------------------------------------------------
 selectable = builder.get_selectable_columns()
-numeric_cols = [
-    c for c in selectable
-    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type == DataType.NUMERIC
-]
-categorical_cols = [
-    c for c in selectable
-    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type == DataType.CATEGORICAL
-]
-datetime_cols = [
-    c for c in selectable
-    if ChartCompatibility.analyze_data_element(working_df[c], c).data_type == DataType.DATETIME
-]
+infos = {c: ChartCompatibility.analyze_data_element(working_df[c], c) for c in selectable}
+numeric_cols = [c for c, info in infos.items() if info.data_type == DataType.NUMERIC]
+categorical_cols = [c for c, info in infos.items() if info.data_type == DataType.CATEGORICAL]
+datetime_cols = [c for c, info in infos.items() if info.data_type == DataType.DATETIME]
 
-dimension_options = categorical_cols + datetime_cols + numeric_cols
+# X and Y intentionally use the same source column pool. Chart compatibility
+# determines which visualisations are valid for the selected pair.
+dimension_options = selectable
 if not dimension_options:
     st.error("No suitable dimensions were found.")
     st.stop()
 
-col1, col2 = st.columns(2)
+col1, swap_col, col2 = st.columns([10, 1, 10])
 with col1:
     dimension = st.selectbox("Dimension / X-axis", dimension_options, key="cb_dimension")
 
+with swap_col:
+    st.markdown("<div style='height: 1.75rem'></div>", unsafe_allow_html=True)
+    swap_clicked = st.button(
+        "↔",
+        help="Swap the X-axis and Y-axis parameters.",
+        key="cb_swap_axes",
+    )
+
 with col2:
-    measure_options = ["Count of rows"] + [
-        c for c in numeric_cols if c != dimension
-    ]
-    measure_selection = st.selectbox("Measure / Y-axis", measure_options, key="cb_measure")
+    measure_options = ["Count of rows"] + dimension_options
+    measure_selection = st.selectbox(
+        "Dimension / Measure / Y-axis",
+        measure_options,
+        key="cb_measure",
+    )
+
+# Count is a virtual measure and therefore cannot become an X-axis.
+if swap_clicked and measure_selection != "Count of rows":
+    old_x = dimension
+    old_y = measure_selection
+    st.session_state["cb_dimension"] = old_y
+    st.session_state["cb_measure"] = old_x
+    st.rerun()
 
 measure = None if measure_selection == "Count of rows" else measure_selection
-aggregation_options = ["Count"] if measure is None else list(ChartBuilder.AGGREGATIONS)
+measure_info = infos.get(measure) if measure else None
+
+if measure is None:
+    aggregation_options = ["Count"]
+elif measure_info and measure_info.data_type == DataType.NUMERIC:
+    aggregation_options = list(ChartBuilder.AGGREGATIONS)
+else:
+    # A non-numeric Y can participate in row-count analysis, but not
+    # Sum/Average/Median/Minimum/Maximum.
+    aggregation_options = ["Count"]
+
+if st.session_state.get("cb_aggregation") not in aggregation_options:
+    st.session_state["cb_aggregation"] = aggregation_options[0]
+
 aggregation = st.selectbox("Aggregation", aggregation_options, key="cb_aggregation")
 
 breakdown_options = ["(None)"] + [
     c for c in categorical_cols
-    if c != dimension
+    if c not in {dimension, measure}
 ]
 breakdown = st.selectbox("Breakdown / Color (optional)", breakdown_options, key="cb_breakdown")
 color_col = None if breakdown == "(None)" else breakdown
