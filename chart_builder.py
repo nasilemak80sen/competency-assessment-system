@@ -253,8 +253,10 @@ class ChartBuilder:
 
         return grouped
 
-    def _hover_columns(self) -> List[str]:
-        return list(self.df.columns[:8])
+    def _hover_columns(self, data_frame: Optional[pd.DataFrame] = None) -> List[str]:
+        """Return only columns that actually exist in the dataframe being plotted."""
+        frame = data_frame if data_frame is not None else self.df
+        return [col for col in frame.columns[:8] if col in frame.columns]
 
     def create_chart(self, chart_type: str, x_col: str, y_col: Optional[str] = None,
                      color_col: Optional[str] = None, size_col: Optional[str] = None,
@@ -275,13 +277,13 @@ class ChartBuilder:
                     fig = px.bar(grouped, x=x_col, y="value", color=color_col,
                                  title=title,
                                  barmode="stack" if chart_type == "Stacked Bar Chart" else "group",
-                                 hover_data=self._hover_columns())
+                                 hover_data=self._hover_columns(grouped))
                 fig.update_layout(xaxis_title=x_col, yaxis_title=f"{aggregation} of {y_col}" if y_col else "Count")
                 return self._finish(fig)
 
         if chart_type == "Histogram":
             fig = px.histogram(self.df, x=x_col, color=color_col, nbins=kwargs.get("nbins", 30),
-                               title=title, hover_data=self._hover_columns())
+                               title=title, hover_data=self._hover_columns(self.df))
         elif chart_type == "Box Plot":
             fig = px.box(self.df, x=x_col, y=y_col, color=color_col, title=title,
                          hover_data=self._hover_columns())
