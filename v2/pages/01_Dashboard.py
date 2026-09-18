@@ -8,10 +8,8 @@ import streamlit as st
 
 from config import SG_HIERARCHY, SG_TO_POSITION_BRACKET, POSITION_HIERARCHY_ORDER
 from core.bootstrap import get_master_data
-from analytics.nationality import (
-    prepare_nationality_map_data,
-    create_nationality_distribution_map,
-)
+from analytics.nationality import prepare_nationality_map_data
+from components.openglobus import render_nationality_globe
 from analytics.workforce import scatter_age_vs_grade
 from components.navigation import render_navigation
 
@@ -99,53 +97,14 @@ if nationality_map_df.empty:
         "No valid nationality data is available for the geographical visualization."
     )
 else:
-    style_col, _ = st.columns([1, 4])
-    with style_col:
-        globe_style = st.selectbox(
-            "🌍 Globe Style",
-            options=[
-                "Orthographic Globe",
-                "Natural Earth",
-                "Equirectangular",
-                "Robinson",
-                "Winkel Tripel",
-            ],
-            index=0,
-            key="nationality_globe_style",
-        )
-
-    projection_map = {
-        "Orthographic Globe": "orthographic",
-        "Natural Earth": "natural earth",
-        "Equirectangular": "equirectangular",
-        "Robinson": "robinson",
-        "Winkel Tripel": "winkel tripel",
-    }
-
-    nationality_fig = create_nationality_distribution_map(
+    render_nationality_globe(
         nationality_map_df,
-        projection_type=projection_map[globe_style],
-    )
-    st.plotly_chart(
-        nationality_fig,
-        width="stretch",
-        config={
-            "displaylogo": True,
-            "scrollZoom": True,
-            "responsive": True,
-            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-            "toImageButtonOptions": {
-                "format": "png",
-                "filename": "RE_personnel_nationality_map",
-                "height": 800,
-                "width": 1400,
-                "scale": 2,
-            },
-        },
+        height=560,
     )
     st.caption(
-        "Marker size represents personnel concentration by nationality. "
-        "Markers use approximate country-centroid coordinates."
+        "OpenGlobus WebGL globe with interactive rotation, zoom and proportional "
+        "nationality markers. Marker size represents personnel concentration; "
+        "coordinates use approximate country centroids."
     )
 
 if unmatched_nationalities:
