@@ -100,3 +100,22 @@ def test_count_pie_chart_generation(workforce_df):
     )
     assert figure.data
     assert set(figure.data[0].labels) == {"MY", "UK"}
+
+
+def test_scatter_drops_missing_visual_encoding_values(workforce_df):
+    workforce_df.loc[1, "Score"] = None
+    workforce_df.loc[3, "SG"] = None
+    figure = ChartBuilder(workforce_df).create_chart(
+        "Scatter Plot", "SG", "Score", aggregation="Average"
+    )
+    assert figure.data
+    assert len(figure.data[0].x) == 4
+
+
+def test_bubble_drops_missing_size_values(workforce_df):
+    workforce_df["Size"] = [10, None, 20, 30, None, 40]
+    figure = ChartBuilder(workforce_df).create_chart(
+        "Bubble Chart", "SG", "Score", size_col="Size", aggregation="Average"
+    )
+    assert figure.data
+    assert len(figure.data[0].x) == 4
