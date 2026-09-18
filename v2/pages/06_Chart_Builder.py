@@ -68,39 +68,38 @@ builder = ChartBuilder(df)
 # -----------------------------------------------------------------------------
 # Phase E — dynamic filters
 # -----------------------------------------------------------------------------
-with st.expander("🔎 Filters", expanded=False):
+# Phase E — global filters live in a dedicated left-hand rail.
+left_filters, main_canvas = st.columns([1, 3], gap="large")
+
+with left_filters:
+    st.markdown("### 🔎 Filters")
     filter_options = builder.get_filter_options()
     filter_columns = [
         c for c in filter_options
         if c not in {"Name", "Staff ID"} and c not in {"id", "ID", "Id"}
     ]
     selected_filter_columns = st.multiselect(
-        "Add categorical filters",
+        "Categorical filters",
         filter_columns,
         default=[c for c in ("Department", "Staff Position", "SG") if c in filter_columns],
         key="cb_filter_columns",
     )
-
     filters = {}
-    filter_grid = st.columns(3) if selected_filter_columns else []
-    for idx, column in enumerate(selected_filter_columns):
-        with filter_grid[idx % 3]:
-            values = st.multiselect(
-                "Salary Grade (SG)" if column == "SG" else column,
-                filter_options[column],
-                key=f"cb_dynamic_filter_{column}",
-            )
-            if values:
-                filters[column] = values
+    for column in selected_filter_columns:
+        values = st.multiselect(
+            "Salary Grade (SG)" if column == "SG" else column,
+            filter_options[column],
+            key=f"cb_dynamic_filter_{column}",
+        )
+        if values:
+            filters[column] = values
 
-    numeric_candidates = []
-    for column in builder.get_selectable_columns():
-        info = ChartCompatibility.analyze_data_element(df[column], column)
-        if info.data_type == DataType.NUMERIC:
-            numeric_candidates.append(column)
-
+    numeric_candidates = [
+        c for c in builder.get_selectable_columns()
+        if ChartCompatibility.analyze_data_element(df[c], c).data_type == DataType.NUMERIC
+    ]
     numeric_filter = st.selectbox(
-        "Optional numeric range filter",
+        "Numeric range",
         ["(None)"] + numeric_candidates,
         key="cb_numeric_filter_column",
     )
@@ -109,14 +108,18 @@ with st.expander("🔎 Filters", expanded=False):
         info = ChartCompatibility.analyze_data_element(df[numeric_filter], numeric_filter)
         low, high = info.numeric_range or (0.0, 1.0)
         if low != high:
-            selected_range = st.slider(
+            numeric_ranges[numeric_filter] = st.slider(
                 f"{numeric_filter} range",
                 min_value=float(low),
                 max_value=float(high),
                 value=(float(low), float(high)),
                 key="cb_numeric_filter_range",
             )
-            numeric_ranges[numeric_filter] = selected_range
+    if st.button("↻ Reset filters", key="cb_reset_filters", width="stretch"):
+        for key in list(st.session_state):
+            if key.startswith("cb_dynamic_filter_") or key in {"cb_filter_columns", "cb_numeric_filter_column", "cb_numeric_filter_range"}:
+                del st.session_state[key]
+        st.rerun()
 
 working_df = builder.apply_filters(filters, numeric_ranges)
 if working_df.empty:
@@ -128,6 +131,8 @@ st.info(f"Showing {len(working_df):,} of {len(df):,} records after filters.")
 # Recreate builder around the filtered dataset so every downstream operation
 # uses one authoritative dataframe.
 builder = ChartBuilder(working_df)
+
+main_canvas.__enter__()
 
 # -----------------------------------------------------------------------------
 # Phase C — dimension / measure / aggregation
@@ -323,3 +328,5 @@ if "cb_last_chart" in st.session_state:
     )
 else:
     st.info("Configure the dimension, measure and visualization, then generate the chart.")
+
+main_canvas.__exit__(None, None, None)
