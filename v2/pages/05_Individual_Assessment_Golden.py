@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
 import html
-import matplotlib.pyplot as plt
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -17,7 +16,7 @@ from analytics.readiness import (
     build_target_gap_dataframe,
     calculate_readiness_metrics,
 )
-from components.competency_charts import render_actual_target_charts
+from components.competency_charts import build_actual_target_figures, render_actual_target_charts
 from components.navigation import render_header, render_navigation
 from config import COMPETENCY_FULLNAMES, COMP_TYPES
 from core.bootstrap import get_master_data, get_ruler_data, open_session
@@ -260,27 +259,18 @@ def _pdf(person, gap, metrics, future_gap=None, target=None):
     ]))
     story.extend([t, Spacer(1, 4 * mm)])
 
+    # Export the same Plotly Actual-vs-Target chart used by the page.
     chart_gap = gap.dropna(subset=["Target"]).copy()
     if not chart_gap.empty:
-        fig, ax = plt.subplots(figsize=(10.5, 3.4))
-        positions = list(range(len(chart_gap)))
-        actual = pd.to_numeric(chart_gap["Actual"], errors="coerce").fillna(0)
-        targets = pd.to_numeric(chart_gap["Target"], errors="coerce")
-        ax.bar(positions, actual, label="Actual")
-        ax.plot(positions, targets, marker="o", linewidth=2, label="Target")
-        ax.set_xticks(positions)
-        ax.set_xticklabels(chart_gap["Competency"].astype(str), rotation=45, ha="right", fontsize=7)
-        ax.set_ylim(0, 5)
-        ax.set_ylabel("Score")
-        ax.set_title(f"Actual vs Target Competency Scores — {target}")
-        ax.grid(axis="y", alpha=0.2)
-        ax.legend(loc="upper right")
-        fig.tight_layout()
-        image_buffer = BytesIO()
-        fig.savefig(image_buffer, format="png", dpi=160, bbox_inches="tight")
-        plt.close(fig)
+        comparison, _radar = build_actual_target_figures(chart_gap)
+        comparison.update_layout(height=330, margin={"l": 40, "r": 15, "t": 55, "b": 70})
+        image_bytes = comparison.to_image(format="png", width=1200, height=420, scale=1)
+        image_buffer = BytesIO(image_bytes)
         image_buffer.seek(0)
-        story.extend([Image(image_buffer, width=250 * mm, height=78 * mm), Spacer(1, 3 * mm)])
+        story.extend([
+            Image(image_buffer, width=250 * mm, height=82 * mm),
+            Spacer(1, 3 * mm),
+        ])
 
     story.append(Paragraph("Full Competency Breakdown", styles["Heading2"]))
     current_rows = [["Code", "Competency", "Current SG", "Target SG", "Actual", "Target", "Gap", "Status"]]
