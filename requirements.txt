@@ -1,9 +1,9 @@
 streamlit==1.52.0
 pandas==2.3.3
 numpy==2.2.0
-plotly==6.0.0
+plotly==6.1.1
 openpyxl==3.1.5
 SQLAlchemy==2.0.36
 pycountry==24.6.1
 reportlab
-kaleido
+kaleido==1.1.0
