@@ -3,6 +3,8 @@ name: Wake Streamlit App
 on:
   workflow_dispatch:
   schedule:
+    # Community Cloud hibernates apps after 12 hours without traffic.
+    # Run every 6 hours so the app receives regular traffic.
     - cron: "0 */6 * * *"
 
 jobs:
@@ -26,6 +28,6 @@ jobs:
 
       - name: Visit Streamlit application
         env:
-          STREAMLIT_APP_URL: ${{ secrets.STREAMLIT_APP_URL }}
+          STREAMLIT_APP_URL: https://beta-re-fraternity-dashboard-1.streamlit.app/
         run: |
           python scripts/wake_streamlit.py
