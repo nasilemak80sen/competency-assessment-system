@@ -265,13 +265,30 @@ def _pdf(person, gap, metrics, future_gap=None, target=None):
     if not chart_gap.empty:
         comparison, _radar = build_actual_target_figures(chart_gap)
         comparison.update_layout(height=330, margin={"l": 40, "r": 15, "t": 55, "b": 70})
-        image_bytes = comparison.to_image(format="png", width=1200, height=420, scale=1)
-        image_buffer = BytesIO(image_bytes)
-        image_buffer.seek(0)
-        story.extend([
-            Image(image_buffer, width=250 * mm, height=82 * mm),
-            Spacer(1, 3 * mm),
-        ])
+        try:
+            image_bytes = comparison.to_image(format="png", width=1200, height=420, scale=1)
+        except Exception:
+            # Kaleido v1 requires a system Chrome/Chromium binary. If the
+            # deployment environment has not finished provisioning Chromium,
+            # keep PDF generation alive rather than crashing the whole page.
+            image_bytes = None
+
+        if image_bytes:
+            image_buffer = BytesIO(image_bytes)
+            image_buffer.seek(0)
+            story.extend([
+                Image(image_buffer, width=250 * mm, height=82 * mm),
+                Spacer(1, 3 * mm),
+            ])
+        else:
+            story.extend([
+                Paragraph(
+                    "Actual vs Target chart image could not be rendered in the current "
+                    "deployment environment. The interactive chart remains available in the dashboard.",
+                    styles["BodyText"],
+                ),
+                Spacer(1, 3 * mm),
+            ])
 
     story.append(Paragraph("Full Competency Breakdown", styles["Heading2"]))
     current_rows = [["Code", "Competency", "Current SG", "Target SG", "Actual", "Target", "Gap", "Status"]]
