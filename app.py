@@ -283,13 +283,13 @@ def _get_all_competency_strengths(
 
     Gap is calculated as:
 
-        Gap = Actual Score - Target Score
+        Gap = Target Score - Actual Score
 
     Interpretation:
 
-        Gap > 0  → Above Target
+        Gap > 0  → Gap Remaining
         Gap = 0  → Gap Closed
-        Gap < 0  → Gap Remaining
+        Gap < 0  → Above Target
     """
 
     results = []
@@ -337,16 +337,16 @@ def _get_all_competency_strengths(
 
         if required is not None:
 
-            gap = actual - required
+            gap = required - actual
 
             if gap > 0:
-                gap_status = "Above Target"
+                gap_status = "Gap Remaining"
 
             elif gap == 0:
                 gap_status = "Gap Closed"
 
             else:
-                gap_status = "Gap Remaining"
+                gap_status = "Above Target"
 
         # =========================================================
         # STORE RESULT
@@ -549,7 +549,7 @@ def _render_competency_strength_class(
             elif gap > 0:
 
                 st.success(
-                    f"Gap: +{gap:.0f} · Above Target"
+                    f"Gap: +{gap:.0f} · Gap Remaining"
                 )
 
             elif gap == 0:
@@ -561,7 +561,7 @@ def _render_competency_strength_class(
             else:
 
                 st.warning(
-                    f"Gap: {gap:.0f} · Gap Remaining"
+                    f"Gap: {gap:.0f} · Above Target"
                 )
 # =============================================================================
 # CAREER PROGRESSION CONFIGURATION
@@ -740,7 +740,7 @@ def _build_target_gap_dataframe(
             )
 
             gap_score = (
-                actual_score - target_score
+                target_score - actual_score
                 if (
                     pd.notna(actual_score)
                     and pd.notna(target_score)
@@ -1572,7 +1572,7 @@ def render_readiness_methodology():
         )
 
         st.code(
-            "Gap = Actual Score − Required Score",
+            "Gap = Required Score − Actual Score",
             language="text",
         )
 

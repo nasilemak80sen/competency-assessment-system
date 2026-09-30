@@ -43,8 +43,8 @@ def add_category_averages(df: pd.DataFrame) -> pd.DataFrame:
 
 def gap_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
-    For each person, count: no_gap, minor_gap (gap<0 but >=-1), major_gap (gap<-1)
-    across all G-- columns. Returns Name + counts + overall gap status.
+    Count workbook-convention gaps (requirement - actual): minor shortfall
+    (0 < gap <= 1) and major shortfall (gap > 1) across all G- columns.
     """
     gap_cols = [c for c in GAP_COLS if c in df.columns]
     out = []
@@ -54,7 +54,7 @@ def gap_summary(df: pd.DataFrame) -> pd.DataFrame:
             status = "Not Assessed"
             n_gaps = None
         else:
-            n_gaps = sum(1 for g in gaps if g < 0)
+            n_gaps = sum(1 for g in gaps if g > 0)
             if n_gaps == 0:
                 status = "No Gap"
             elif n_gaps == 1:
@@ -208,9 +208,9 @@ def gap_analysis_individual(
         """Determine status based on gap value."""
         if pd.isna(gap_value):
             return "N/A"
-        if gap_value >= 0:
+        if gap_value <= 0:
             return "Met"
-        if gap_value >= -1:
+        if gap_value <= 1:
             return "Minor Gap"
         return "Major Gap"
 
@@ -253,7 +253,7 @@ def gap_analysis_individual(
                     continue
                 
                 target = grade_req[sc]
-                g = a - target
+                g = target - a
                 comp_name = name_map.get(sc) or COMPETENCY_FULLNAMES.get(sc, sc)
                 
                 records.append({

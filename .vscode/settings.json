@@ -6,5 +6,11 @@
             "approve": true,
             "matchCommandLine": true
         }
+    },
+    "workbench.editorAssociations": {
+        "*.copilotmd": "vscode.markdown.preview.editor",
+        "*.css": "default",
+        "*.ipynb": "jupyter-notebook",
+        "file:/**/*.xlsx": "jupyter-data-wrangler"
     }
 }

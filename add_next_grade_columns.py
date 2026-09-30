@@ -1,7 +1,8 @@
 import sqlite3
-from pathlib import Path
 
-db_path = Path('re_competency.db')
+from config import DATABASE_PATH
+
+db_path = DATABASE_PATH
 
 if db_path.exists():
     conn = sqlite3.connect(db_path)

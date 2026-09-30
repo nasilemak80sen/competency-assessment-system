@@ -102,7 +102,7 @@ class Assessment(Base):
 
     id = Column(Integer, primary_key=True)
     personnel_id = Column(Integer, ForeignKey("personnel.id"), nullable=False, index=True)
-    assessment_date = Column(Date, nullable=False, index=True)
+    assessment_date = Column(Date, nullable=True, index=True)
     assessment_level = Column(String(60))
     assessor1 = Column(String(100))
     assessor2 = Column(String(100))
@@ -134,7 +134,7 @@ class CompetencyScore(Base):
     competency_type = Column(String(1), nullable=False, index=True)  # B, K, P, E
     actual_score = Column(Float)
     requirement_score = Column(Float)
-    gap_score = Column(Float)  # actual – requirement
+    gap_score = Column(Float)  # requirement - actual; positive means a shortfall
     achievement_pct = Column(Float)  # (actual / requirement) * 100
     created_at = Column(DateTime, default=datetime.utcnow)
 
