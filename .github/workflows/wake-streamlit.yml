@@ -28,6 +28,6 @@ jobs:
 
       - name: Visit Streamlit application
         env:
-          STREAMLIT_APP_URL: https://beta-re-fraternity-dashboard-1.streamlit.app/
+          STREAMLIT_APP_URL: https://re-fraternity-dashboard.streamlit.app/
         run: |
           python scripts/wake_streamlit.py
