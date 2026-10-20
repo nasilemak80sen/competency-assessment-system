@@ -311,6 +311,31 @@ def update_personnel(session: Session, pid: int, data: Dict[str, Any]) -> Tuple[
         for k, v in data.items():
             if hasattr(p, k):
                 setattr(p, k, _safe(v))
+
+        # Assessment Level and Last Assessment Date are summary fields on
+        # Personnel, but are also stored on Assessment. Keep the latest
+        # assessment record aligned when Admin edits those summary fields.
+        assessment_summary_fields = {
+            "assessment_level": "assessment_level",
+            "last_assessment_date": "assessment_date",
+        }
+        if any(field in data for field in assessment_summary_fields):
+            latest_assessment = (
+                session.query(Assessment)
+                .filter_by(personnel_id=pid)
+                .order_by(Assessment.assessment_date.desc(), Assessment.id.desc())
+                .first()
+            )
+            if latest_assessment is not None:
+                for personnel_field, assessment_field in assessment_summary_fields.items():
+                    if personnel_field in data:
+                        setattr(
+                            latest_assessment,
+                            assessment_field,
+                            _safe(data.get(personnel_field)),
+                        )
+                latest_assessment.updated_at = datetime.utcnow()
+
         setattr(p, "updated_at", datetime.utcnow())
         session.commit()
         _log(session, "Personnel", pid, "UPDATE", old, data)
@@ -513,16 +538,29 @@ def resolve_personnel_id(
 
 def add_assessment(session: Session, personnel_id: int, data: Dict) -> Tuple[bool, str, Optional[int]]:
     try:
+        assessment_date = _safe(data.get("assessment_date", date.today()))
+        assessment_level = _safe(data.get("assessment_level"))
         a = Assessment(
             personnel_id=personnel_id,
-            assessment_date=_safe(data.get("assessment_date", date.today())),
-            assessment_level=data.get("assessment_level"),
+            assessment_date=assessment_date,
+            assessment_level=assessment_level,
             assessor1=data.get("assessor1"),
             assessor2=data.get("assessor2"),
             supervisor=data.get("supervisor"),
             remarks=data.get("remarks"),
         )
         session.add(a)
+
+        # Keep the Personnel summary in sync with the assessment just created.
+        # Pages that show the current assessment type read from this summary.
+        person = session.query(Personnel).filter_by(id=personnel_id).first()
+        if person is not None:
+            if "assessment_level" in data:
+                person.assessment_level = assessment_level
+            if "assessment_date" in data:
+                person.last_assessment_date = assessment_date
+            person.updated_at = datetime.utcnow()
+
         session.flush()
         session.commit()
         return True, "Assessment created.", cast(int, a.id)
