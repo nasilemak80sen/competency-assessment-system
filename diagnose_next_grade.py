@@ -2,8 +2,10 @@ import sqlite3
 import pandas as pd
 from pathlib import Path
 
-# Check the database schema
-db_path = Path("competency_data.db")
+from config import DATABASE_PATH, EXCEL_PATH
+
+# Check the configured rebuilt database schema
+db_path = DATABASE_PATH
 if db_path.exists():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -57,7 +59,7 @@ print("\n" + "="*60)
 print("Checking Excel file for Next Grade values:")
 print("="*60)
 
-excel_path = Path("RE Fraternity Jul2026_Master.xlsm")
+excel_path = Path(EXCEL_PATH)
 if excel_path.exists():
     try:
         df = pd.read_excel(excel_path, sheet_name='All', header=2, nrows=5)

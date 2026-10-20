@@ -16,7 +16,7 @@ import numpy as np
 import openpyxl
 from datetime import date
 from urllib.parse import urljoin
-from config import ( SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, CV_ALLOWED_FILE_TYPES, SHAREPOINT_CV_ROOT_URL, GRADE_LABELS, POSITION_TO_SG, SG_HIERARCHY,)
+from config import ( SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, CV_ALLOWED_FILE_TYPES, SHAREPOINT_CV_ROOT_URL, GRADE_LABELS, POSITION_TO_SG, SG_HIERARCHY, ASSESSMENT_LEVELS,)
 
 
 def _normalize_summary_column_name(name: object) -> str:
@@ -28,6 +28,18 @@ def _normalize_summary_column_name(name: object) -> str:
         except Exception:
             return ""
     normalized = name.strip()
+
+    # The current master workbook labels gaps as G-B1, G-K1, etc. The
+    # application-wide canonical name is G--B1, G--K1, etc. Normalise that
+    # one-hyphen workbook variant before numeric cleanup and analytics.
+    gap_match = re.fullmatch(
+        r"G-(B\d+|K\d+|P\d+|E\d+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if gap_match:
+        return f"G--{gap_match.group(1).upper()}"
+
     match = re.match(
         r'^(Staff|Principal|Custodian|Next\s+Grade)\s+(Base|Keys|Pacing|Emerging|CTI)\d*$',
         normalized,
@@ -207,7 +219,23 @@ def load_master_data(path: str) -> pd.DataFrame:
                  "Date in Position"]
     for col in date_cols:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
+            if col == "Last Assesment Date":
+                # Keep the original workbook value for audit notes. A year-only
+                # value or marker (Ongoing/TBA/N/A) is not a complete date.
+                df["Last Assesment Date Source"] = df[col]
+                def _parse_assessment_date(value):
+                    if value is None or pd.isna(value):
+                        return pd.NaT
+                    if isinstance(value, (pd.Timestamp, date)):
+                        return pd.Timestamp(value)
+                    raw = str(value).strip()
+                    if not raw or re.fullmatch(r"\d{4}", raw):
+                        return pd.NaT
+                    parsed = pd.to_datetime(raw, errors="coerce", format="mixed")
+                    return parsed if pd.notna(parsed) else pd.NaT
+                df[col] = df[col].apply(_parse_assessment_date)
+            else:
+                df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
 
     # String cleanup
     str_cols = ["Name", "Staff ID", "Gender", "Nationality", "Department",
@@ -232,6 +260,26 @@ def load_master_data(path: str) -> pd.DataFrame:
                 return str(x).strip()
 
         df["Staff ID"] = df["Staff ID"].apply(_clean_staff_id)
+
+    # Canonicalise casing in the source assessment-level column, e.g.
+    # "staff" -> "Staff", while retaining all observed source values.
+    if "Assessment Level" in df.columns:
+        assessment_level_lookup = {
+            str(level).strip().casefold(): str(level).strip()
+            for level in ASSESSMENT_LEVELS
+        }
+
+        def _normalise_assessment_level(value):
+            if value is None or pd.isna(value):
+                return np.nan
+            label = str(value).strip()
+            if not label:
+                return np.nan
+            return assessment_level_lookup.get(label.casefold(), label)
+
+        df["Assessment Level"] = df["Assessment Level"].apply(
+            _normalise_assessment_level
+        )
 
     df = normalize_position_and_sg(df)
     df = df.reset_index(drop=True)
@@ -314,13 +362,27 @@ def load_ruler_and_tech_mapping(
     # RULER SHEET VALIDATION
     # -------------------------------------------------------------------------
 
-    if RULER_SHEET not in wb.sheetnames:
+    # Accept harmless trailing-underscore variants in workbook sheet names
+    # (for example, the source workbook contains "Ruler_" while config.py
+    # specifies "Ruler"). Prefer the exact configured name when it exists.
+    ruler_sheet_name = RULER_SHEET if RULER_SHEET in wb.sheetnames else None
+    if ruler_sheet_name is None:
+        normalized_target = str(RULER_SHEET).strip().rstrip("_").casefold()
+        matches = [
+            sheet_name
+            for sheet_name in wb.sheetnames
+            if str(sheet_name).strip().rstrip("_").casefold() == normalized_target
+        ]
+        if len(matches) == 1:
+            ruler_sheet_name = matches[0]
+
+    if ruler_sheet_name is None:
         raise FileNotFoundError(
-            f"Sheet '{RULER_SHEET}' was not found. "
-            f"Available sheets: {wb.sheetnames}"
+            f"Sheet '{RULER_SHEET}' was not found (also checked trailing-underscore "
+            f"variants). Available sheets: {wb.sheetnames}"
         )
 
-    ws = wb[RULER_SHEET]
+    ws = wb[ruler_sheet_name]
 
     # Row 4 contains the headers.
     header_row = [
@@ -373,86 +435,61 @@ def load_ruler_and_tech_mapping(
 
     row_count = 0
 
-    for row_number in range(
-        5,
-        ws.max_row + 1,
-    ):
-        # IMPORTANT:
-        # Workbook Column A = Ruler Type
-        # Workbook Column B = SG
-        # Workbook Column C = Position
-        raw_ruler_type = ws.cell(
-            row_number,
-            1,
-        ).value
+    # The source workbook uses:
+    #   Column B = Ruler Type (blank on continuation rows)
+    #   Column C = Salary Grade (P1-P10)
+    #   Column D = Position label
+    #   Column E onward = competency requirement values
+    # Blank ruler-type cells inherit the last explicit group. Rows before the
+    # first explicit progression ruler belong to BASE.
+    active_ruler_type = "BASE"
 
-        raw_sg = ws.cell(
-            row_number,
-            2,
-        ).value
+    aliases = {
+        "BASE": "BASE",
+        "NO RULER ASSIGNED": "BASE",
+        "RDP": "RDP",
+        "RMS": "RMS",
+        "RSS": "RSS",
+    }
 
-        # Skip fully empty rows.
+    for row_number in range(5, ws.max_row + 1):
+        raw_ruler_type = ws.cell(row_number, 2).value
+        raw_sg = ws.cell(row_number, 3).value
+
+        # Ignore completely empty data rows.
         if raw_ruler_type is None and raw_sg is None:
             continue
 
-        # Skip rows without a valid SG.
-        if raw_sg is None:
+        # An explicit ruler label starts a new group. Continuation rows
+        # intentionally leave column B blank, so retain the previous type.
+        if raw_ruler_type is not None and str(raw_ruler_type).strip():
+            candidate_type = str(raw_ruler_type).strip().upper()
+            normalized_type = aliases.get(candidate_type, candidate_type)
+            if normalized_type not in {"BASE", "RDP", "RMS", "RSS"}:
+                if verbose:
+                    print(
+                        f"Skipping row {row_number}: "
+                        f"invalid ruler={raw_ruler_type!r}"
+                    )
+                # Do not accidentally let an unknown label inherit a prior group.
+                active_ruler_type = None
+                continue
+            active_ruler_type = normalized_type
+
+        # Skip rows without a valid grade or without a known ruler group.
+        if raw_sg is None or active_ruler_type is None:
             continue
 
         sg = str(raw_sg).strip().upper()
-
-        # Only accept P1 through P10.
-        if not re.fullmatch(
-            r"P(?:[1-9]|10)",
-            sg,
-        ):
+        if not re.fullmatch(r"P(?:[1-9]|10)", sg):
             if verbose:
                 print(
                     f"Skipping row {row_number}: "
                     f"invalid SG={raw_sg!r}"
                 )
-
             continue
 
-        # Normalize ruler type.
-        if (
-            raw_ruler_type is None
-            or str(raw_ruler_type).strip() == ""
-        ):
-            ruler_type = "BASE"
-        else:
-            ruler_type = str(
-                raw_ruler_type
-            ).strip().upper()
-
-        aliases = {
-            "BASE": "BASE",
-            "NO RULER ASSIGNED": "BASE",
-            "RDP": "RDP",
-            "RMS": "RMS",
-            "RSS": "RSS",
-        }
-
-        ruler_type = aliases.get(
-            ruler_type,
-            ruler_type,
-        )
-
-        # Reject unrelated ruler types.
-        if ruler_type not in {
-            "BASE",
-            "RDP",
-            "RMS",
-            "RSS",
-        }:
-            if verbose:
-                print(
-                    f"Skipping row {row_number}: "
-                    f"invalid ruler={ruler_type!r}"
-                )
-
-            continue
-
+        ruler_type = active_ruler_type
         row_data = {}
 
         for column_number, competency in (
