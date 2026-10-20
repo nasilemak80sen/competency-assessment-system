@@ -5,7 +5,7 @@ from pathlib import Path
 from config import DATABASE_PATH, EXCEL_PATH
 
 # Check the configured rebuilt database schema
- db_path = DATABASE_PATH
+db_path = DATABASE_PATH
 if db_path.exists():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
