@@ -676,6 +676,26 @@ def _build_ruler_requirements(row: pd.Series, ruler_map: Dict[str, Dict[str, Dic
     reqs = _find_ruler_requirements(ruler_map, str(ruler_type or ""), str(sg or ""))
     return reqs or {}
 
+def _assessment_source_remarks(row):
+    """Preserve workbook remarks and non-date assessment-date markers."""
+    parts = []
+    existing_remarks = _safe(row.get("Remarks"))
+    if existing_remarks is not None:
+        parts.append(str(existing_remarks).strip())
+    source_date = _safe(row.get("Last Assesment Date Source"))
+    if source_date is None:
+        raw_date = row.get("Last Assesment Date")
+        if raw_date is not None and not isinstance(raw_date, (date, datetime)):
+            source_date = _safe(raw_date)
+    if source_date is not None:
+        value = str(source_date).strip()
+        if value and value.casefold() not in {"nan", "nat", "none"}:
+            note = f"Source Last Assesment Date field: {value}"
+            if not any(note in part for part in parts):
+                parts.append(note)
+    return "\n".join(parts) or None
+
+
 def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None) -> Dict[str, int]:
     """
     Import all personnel + their current scores from the Excel DataFrame.
@@ -777,7 +797,7 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
             # Positive values indicate a shortfall; negative values exceed target.
             actual_num = _coerce_numeric(actual)
             req_num = _coerce_numeric(req)
-            workbook_gap = _coerce_numeric(row.get(f"G--{sc}"))
+            workbook_gap = _coerce_numeric(row.get(f"G-{sc}"))
             gap = workbook_gap if workbook_gap is not None else (
                 round(req_num - actual_num, 2)
                 if actual_num is not None and req_num is not None
@@ -810,6 +830,7 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
                     assessor1=_safe(row.get("Assesor1")),
                     assessor2=_safe(row.get("Assessor2")),
                     supervisor=_safe(row.get("Supervisor")),
+                    remarks=_assessment_source_remarks(row),
                 )
                 session.add(a)
                 session.flush()

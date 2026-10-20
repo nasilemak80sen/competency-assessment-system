@@ -28,8 +28,8 @@ def test_assessment_date_is_nullable_and_add_assessment_accepts_missing_date():
 
 def test_workbook_gap_convention_counts_positive_values_as_shortfalls():
     frame = pd.DataFrame([
-        {"Name": "Shortfall", "G--B1": 1.0, "G--B2": 2.0},
-        {"Name": "Meets", "G--B1": 0.0, "G--B2": -1.0},
+        {"Name": "Shortfall", "G-B1": 1.0, "G-B2": 2.0},
+        {"Name": "Meets", "G-B1": 0.0, "G-B2": -1.0},
     ])
 
     result = gap_summary(frame).set_index("Name")
@@ -82,3 +82,12 @@ def test_load_master_data_does_not_invent_full_date_from_year_or_markers(tmp_pat
     assert indexed.loc["Ongoing", "Last Assesment Date Source"] == "Ongoing"
     assert pd.isna(indexed.loc["TBA", "Last Assesment Date"])
     assert indexed.loc["Full Date", "Last Assesment Date"].date().isoformat() == "2021-05-12"
+
+ 
+def test_importer_preserves_date_markers_in_assessment_remarks():
+    row = pd.Series({
+        "Remarks": "Original remark",
+        "Last Assesment Date": pd.NaT,
+        "Last Assesment Date Source": "TBA",
+    })
+    assert db_ops._assessment_source_remarks(row) == "Original remark\nSource Last Assesment Date field: TBA"

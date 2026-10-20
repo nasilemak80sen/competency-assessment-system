@@ -44,7 +44,7 @@ def add_category_averages(df: pd.DataFrame) -> pd.DataFrame:
 def gap_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
     Count workbook-convention gaps (requirement - actual): minor shortfall
-    (0 < gap <= 1) and major shortfall (gap > 1) across all G-- columns.
+    (0 < gap <= 1) and major shortfall (gap > 1) across all G- columns.
     """
     gap_cols = [c for c in GAP_COLS if c in df.columns]
     out = []

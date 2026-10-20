@@ -39,8 +39,8 @@ def safe_date_display(value, fallback="Not Applicable"):
 
 def assessment_status(gap_value):
     if pd.isna(gap_value): return "Not Assessed"
-    if gap_value >= 0: return "✅ Met"
-    if gap_value >= -1: return "🟡 Minor Gap"
+    if gap_value <= 0: return "✅ Met"
+    if gap_value <= 1: return "🟡 Minor Gap"
     return "🔴 Major Gap"
 
 
@@ -86,8 +86,8 @@ def _rg_get_competency_category(competency_code):
 
 def _rg_gap_severity(gap_value, is_assessed):
     if not is_assessed or pd.isna(gap_value): return "Not Assessed"
-    if gap_value >= 0: return "Met"
-    if gap_value >= -1: return "Minor Gap"
+    if gap_value <= 0: return "Met"
+    if gap_value <= 1: return "Minor Gap"
     return "Major Gap"
 
 
@@ -121,8 +121,8 @@ def build_readiness_detail_dataframe(personnel_dataframe, ruler_map, target_mode
             target = pd.to_numeric(requirements[target_sg].get(code), errors="coerce")
             if pd.isna(target): continue
             actual = pd.to_numeric(person_row.get(code), errors="coerce"); assessed = pd.notna(actual)
-            gap = float(actual)-float(target) if assessed else np.nan; capped = min(float(actual), float(target)) if assessed and target > 0 else 0.0; burden = abs(min(gap, 0)) if pd.notna(gap) else 0.0
-            records.append({"Personnel ID":personnel_id,"DataFrame Index":dataframe_index,"Name":name,"Staff ID":staff_id,"Department":department,"Staff Position":position,"Employment Category":employment,"Current SG":current_sg,"Career Ruler":ruler,"Target SG":target_sg,"Years in Grade":years,"Competency Code":code,"Competency Name":COMPETENCY_FULLNAMES.get(code,code),"Category":_rg_get_competency_category(code),"Actual Score":actual,"Target Score":float(target),"Capped Actual":capped,"Gap":gap,"Gap Burden":burden,"Gap Severity":_rg_gap_severity(gap,assessed),"Is Assessed":bool(assessed),"Is Met":bool(assessed and gap >= 0),"Is Major Gap":bool(assessed and gap < -1),"Is Minor Gap":bool(assessed and -1 <= gap < 0)})
+            gap = float(target)-float(actual) if assessed else np.nan; capped = min(float(actual), float(target)) if assessed and target > 0 else 0.0; burden = max(gap, 0.0) if pd.notna(gap) else 0.0
+            records.append({"Personnel ID":personnel_id,"DataFrame Index":dataframe_index,"Name":name,"Staff ID":staff_id,"Department":department,"Staff Position":position,"Employment Category":employment,"Current SG":current_sg,"Career Ruler":ruler,"Target SG":target_sg,"Years in Grade":years,"Competency Code":code,"Competency Name":COMPETENCY_FULLNAMES.get(code,code),"Category":_rg_get_competency_category(code),"Actual Score":actual,"Target Score":float(target),"Capped Actual":capped,"Gap":gap,"Gap Burden":burden,"Gap Severity":_rg_gap_severity(gap,assessed),"Is Assessed":bool(assessed),"Is Met":bool(assessed and gap <= 0),"Is Major Gap":bool(assessed and gap > 1),"Is Minor Gap":bool(assessed and 0 < gap <= 1)})
     return pd.DataFrame(records)
 
 
@@ -143,9 +143,9 @@ def recommend_readiness_action(readiness_status, coverage, major_gap_count, mino
 
 
 def find_top_personnel_gap(person_detail_dataframe):
-    gaps = person_detail_dataframe[person_detail_dataframe["Gap"].notna() & (person_detail_dataframe["Gap"] < 0)]
+    gaps = person_detail_dataframe[person_detail_dataframe["Gap"].notna() & (person_detail_dataframe["Gap"] > 0)]
     if gaps.empty: return "None"
-    row = gaps.sort_values("Gap", ascending=True).iloc[0]
+    row = gaps.sort_values("Gap", ascending=False).iloc[0]
     return f"{row['Competency Code']} - {row['Competency Name']}"
 
 
@@ -210,8 +210,8 @@ def build_target_gap_dataframe(person_row, target_requirements, current_sg, targ
         target=float(target_value)
         if target <= 0: continue
         actual=pd.to_numeric(person_row.get(code), errors="coerce")
-        gap=(actual-target) if pd.notna(actual) else np.nan
-        status="Not Assessed" if pd.isna(actual) else ("Met" if gap >= 0 else ("Minor Gap" if gap >= -1 else "Major Gap"))
+        gap=(target-actual) if pd.notna(actual) else np.nan
+        status="Not Assessed" if pd.isna(actual) else ("Met" if gap <= 0 else ("Minor Gap" if gap <= 1 else "Major Gap"))
         records.append({"Competency":code,"Competency Name":competency_names.get(code,code),"Current Grade":current_sg,"Target Grade":target_sg,"Target Position":target_position,"Ruler Type":ruler_type,"Actual":actual,"Target":target,"Gap":gap,"Status":status})
     return pd.DataFrame(records)
 
