@@ -207,7 +207,23 @@ def load_master_data(path: str) -> pd.DataFrame:
                  "Date in Position"]
     for col in date_cols:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
+            if col == "Last Assesment Date":
+                # Keep the original workbook value for audit notes. A year-only
+                # value or marker (Ongoing/TBA/N/A) is not a complete date.
+                df["Last Assesment Date Source"] = df[col]
+                def _parse_assessment_date(value):
+                    if value is None or pd.isna(value):
+                        return pd.NaT
+                    if isinstance(value, (pd.Timestamp, date)):
+                        return pd.Timestamp(value)
+                    raw = str(value).strip()
+                    if not raw or re.fullmatch(r"\d{4}", raw):
+                        return pd.NaT
+                    parsed = pd.to_datetime(raw, errors="coerce", format="mixed")
+                    return parsed if pd.notna(parsed) else pd.NaT
+                df[col] = df[col].apply(_parse_assessment_date)
+            else:
+                df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
 
     # String cleanup
     str_cols = ["Name", "Staff ID", "Gender", "Nationality", "Department",

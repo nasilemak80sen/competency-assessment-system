@@ -90,8 +90,8 @@ def _build_future_grade_gap_dataframe(person, requirements, current_sg):
                 gap = pd.NA
                 status = "Not Assessed"
             else:
-                gap = float(actual) - float(target)
-                status = "Met" if gap >= 0 else "Minor Gap" if gap >= -1 else "Major Gap"
+                gap = float(target) - float(actual)
+                status = "Met" if gap <= 0 else "Minor Gap" if gap <= 1 else "Major Gap"
             records.append({
                 "Target SG": grade,
                 "Competency": code,
@@ -144,12 +144,12 @@ def _strength_frame(person, competency_type):
         )
 
     frame = pd.DataFrame(records)
-    frame["Gap"] = frame["Score"] - frame["Target"]
+    frame["Gap"] = frame["Target"] - frame["Score"]
     frame["Gap Status"] = frame["Gap"].apply(
         lambda gap: (
             "Target unavailable"
             if pd.isna(gap)
-            else "Above Target"
+            else "Gap Remaining"
             if gap > 0
             else "Gap Closed"
             if gap == 0

@@ -50,3 +50,35 @@ def test_future_grade_gap_uses_requirement_minus_actual():
     future = result[result["Target Grade"] == "P4"].iloc[0]
     assert future["Gap"] == 1.0
     assert future["Status"] == "Minor Gap"
+
+
+def test_load_master_data_does_not_invent_full_date_from_year_or_markers(tmp_path):
+    import openpyxl
+    from data_loader import load_master_data
+
+    path = tmp_path / "assessment_dates.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "All"
+    headers = ["Staff ID", "Name", "Last Assesment Date"]
+    for col, value in enumerate(headers, 1):
+        ws.cell(3, col, value)
+    for row, (sid, name, value) in enumerate([
+        ("1", "Year Only", "2021"),
+        ("2", "Ongoing", "Ongoing"),
+        ("3", "TBA", "TBA"),
+        ("4", "Full Date", "2021-05-12"),
+    ], 4):
+        ws.cell(row, 1, sid)
+        ws.cell(row, 2, name)
+        ws.cell(row, 3, value)
+    wb.save(path)
+
+    df = load_master_data(str(path))
+    indexed = df.set_index("Name")
+    assert pd.isna(indexed.loc["Year Only", "Last Assesment Date"])
+    assert indexed.loc["Year Only", "Last Assesment Date Source"] == "2021"
+    assert pd.isna(indexed.loc["Ongoing", "Last Assesment Date"])
+    assert indexed.loc["Ongoing", "Last Assesment Date Source"] == "Ongoing"
+    assert pd.isna(indexed.loc["TBA", "Last Assesment Date"])
+    assert indexed.loc["Full Date", "Last Assesment Date"].date().isoformat() == "2021-05-12"
