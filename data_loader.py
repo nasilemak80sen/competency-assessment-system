@@ -403,86 +403,61 @@ def load_ruler_and_tech_mapping(
 
     row_count = 0
 
-    for row_number in range(
-        5,
-        ws.max_row + 1,
-    ):
-        # IMPORTANT:
-        # Workbook Column A = Ruler Type
-        # Workbook Column B = SG
-        # Workbook Column C = Position
-        raw_ruler_type = ws.cell(
-            row_number,
-            1,
-        ).value
+    # The source workbook uses:
+    #   Column B = Ruler Type (blank on continuation rows)
+    #   Column C = Salary Grade (P1-P10)
+    #   Column D = Position label
+    #   Column E onward = competency requirement values
+    # Blank ruler-type cells inherit the last explicit group. Rows before the
+    # first explicit progression ruler belong to BASE.
+    active_ruler_type = "BASE"
 
-        raw_sg = ws.cell(
-            row_number,
-            2,
-        ).value
+    aliases = {
+        "BASE": "BASE",
+        "NO RULER ASSIGNED": "BASE",
+        "RDP": "RDP",
+        "RMS": "RMS",
+        "RSS": "RSS",
+    }
 
-        # Skip fully empty rows.
+    for row_number in range(5, ws.max_row + 1):
+        raw_ruler_type = ws.cell(row_number, 2).value
+        raw_sg = ws.cell(row_number, 3).value
+
+        # Ignore completely empty data rows.
         if raw_ruler_type is None and raw_sg is None:
             continue
 
-        # Skip rows without a valid SG.
-        if raw_sg is None:
+        # An explicit ruler label starts a new group. Continuation rows
+        # intentionally leave column B blank, so retain the previous type.
+        if raw_ruler_type is not None and str(raw_ruler_type).strip():
+            candidate_type = str(raw_ruler_type).strip().upper()
+            normalized_type = aliases.get(candidate_type, candidate_type)
+            if normalized_type not in {"BASE", "RDP", "RMS", "RSS"}:
+                if verbose:
+                    print(
+                        f"Skipping row {row_number}: "
+                        f"invalid ruler={raw_ruler_type!r}"
+                    )
+                # Do not accidentally let an unknown label inherit a prior group.
+                active_ruler_type = None
+                continue
+            active_ruler_type = normalized_type
+
+        # Skip rows without a valid grade or without a known ruler group.
+        if raw_sg is None or active_ruler_type is None:
             continue
 
         sg = str(raw_sg).strip().upper()
-
-        # Only accept P1 through P10.
-        if not re.fullmatch(
-            r"P(?:[1-9]|10)",
-            sg,
-        ):
+        if not re.fullmatch(r"P(?:[1-9]|10)", sg):
             if verbose:
                 print(
                     f"Skipping row {row_number}: "
                     f"invalid SG={raw_sg!r}"
                 )
-
             continue
 
-        # Normalize ruler type.
-        if (
-            raw_ruler_type is None
-            or str(raw_ruler_type).strip() == ""
-        ):
-            ruler_type = "BASE"
-        else:
-            ruler_type = str(
-                raw_ruler_type
-            ).strip().upper()
-
-        aliases = {
-            "BASE": "BASE",
-            "NO RULER ASSIGNED": "BASE",
-            "RDP": "RDP",
-            "RMS": "RMS",
-            "RSS": "RSS",
-        }
-
-        ruler_type = aliases.get(
-            ruler_type,
-            ruler_type,
-        )
-
-        # Reject unrelated ruler types.
-        if ruler_type not in {
-            "BASE",
-            "RDP",
-            "RMS",
-            "RSS",
-        }:
-            if verbose:
-                print(
-                    f"Skipping row {row_number}: "
-                    f"invalid ruler={ruler_type!r}"
-                )
-
-            continue
-
+        ruler_type = active_ruler_type
         row_data = {}
 
         for column_number, competency in (
