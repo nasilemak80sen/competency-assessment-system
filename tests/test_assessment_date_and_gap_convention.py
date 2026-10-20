@@ -60,7 +60,7 @@ def test_load_master_data_does_not_invent_full_date_from_year_or_markers(tmp_pat
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "All"
-    headers = ["Staff ID", "Unused", "Last Assesment Date", "Unused2", "Name"]
+    headers = ["Staff ID", "SG", "Last Assesment Date", "Staff Position", "Name"]
     for col, value in enumerate(headers, 1):
         ws.cell(3, col, value)
     for row, (sid, name, value) in enumerate([
