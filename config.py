@@ -247,20 +247,20 @@ POSITIONS = ["Executive","Snr RE","Staff","Principal","Specialist","UPTREX","Man
 # ── Chat Status ──────────────────────────────────────────────────────────────
 CHAT_STATUS_OPTIONS = ["Yes","No","No Need"]
 
-# ── Assessment Level values observed in the current master workbook ──────────
-# Staff, UPE, Principal, TPCP, Custodian, and Research are observed categories.
-# TBA, N/A and Ongoing are source markers also present in the workbook; retain
-# them as choices so updating a record does not silently convert its value.
+# ── Assessment Level values copied from the current master workbook ───────────
+# Keep unique non-blank values in their first-observed order in the column.
+# The source also contains lowercase "staff"; the loader normalizes it to
+# "Staff". Blank cells are handled in forms as "Not specified" (None).
 ASSESSMENT_LEVELS = [
-    "Staff",
     "UPE",
+    "Staff",
     "Principal",
-    "TPCP",
-    "Custodian",
-    "Research",
-    "TBA",
-    "N/A",
     "Ongoing",
+    "N/A",
+    "TBA",
+    "TPCP",
+    "Research",
+    "Custodian",
 ]
 
 RULER_SHEET = "Ruler"
