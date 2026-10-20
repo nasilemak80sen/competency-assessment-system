@@ -60,7 +60,7 @@ def test_load_master_data_does_not_invent_full_date_from_year_or_markers(tmp_pat
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "All"
-    headers = ["Staff ID", "Name", "Last Assesment Date"]
+    headers = ["Staff ID", "Unused", "Last Assesment Date", "Unused2", "Name"]
     for col, value in enumerate(headers, 1):
         ws.cell(3, col, value)
     for row, (sid, name, value) in enumerate([
@@ -70,7 +70,7 @@ def test_load_master_data_does_not_invent_full_date_from_year_or_markers(tmp_pat
         ("4", "Full Date", "2021-05-12"),
     ], 4):
         ws.cell(row, 1, sid)
-        ws.cell(row, 2, name)
+        ws.cell(row, 5, name)
         ws.cell(row, 3, value)
     wb.save(path)
 

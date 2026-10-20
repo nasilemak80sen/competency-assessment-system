@@ -768,14 +768,11 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
         # ── Import competency scores as a single assessment ──────────────────
         score_dict = {}
         from config import SCORE_COLS, REQ_COLS
-        ruler_requirements = _build_ruler_requirements(row, ruler_map or {})
         for sc, rc in zip(SCORE_COLS, REQ_COLS):
             actual = _safe(row.get(sc))
-            req = None
-            if sc in ruler_requirements:
-                req = _safe(ruler_requirements.get(sc))
-            if req is None:
-                req = _safe(row.get(rc))
+            # The workbook's requirement columns are authoritative for the
+            # imported snapshot; do not silently substitute a ruler lookup.
+            req = _safe(row.get(rc))
             # Preserve the workbook's G-- convention: Requirement - Actual.
             # Positive values indicate a shortfall; negative values exceed target.
             actual_num = _coerce_numeric(actual)

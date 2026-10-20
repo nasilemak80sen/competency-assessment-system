@@ -153,7 +153,7 @@ def _strength_frame(person, competency_type):
             if gap > 0
             else "Gap Closed"
             if gap == 0
-            else "Gap Remaining"
+            else "Above Target"
         )
     )
     frame = frame.sort_values(
