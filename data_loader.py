@@ -330,13 +330,27 @@ def load_ruler_and_tech_mapping(
     # RULER SHEET VALIDATION
     # -------------------------------------------------------------------------
 
-    if RULER_SHEET not in wb.sheetnames:
+    # Accept harmless trailing-underscore variants in workbook sheet names
+    # (for example, the source workbook contains "Ruler_" while config.py
+    # specifies "Ruler"). Prefer the exact configured name when it exists.
+    ruler_sheet_name = RULER_SHEET if RULER_SHEET in wb.sheetnames else None
+    if ruler_sheet_name is None:
+        normalized_target = str(RULER_SHEET).strip().rstrip("_").casefold()
+        matches = [
+            sheet_name
+            for sheet_name in wb.sheetnames
+            if str(sheet_name).strip().rstrip("_").casefold() == normalized_target
+        ]
+        if len(matches) == 1:
+            ruler_sheet_name = matches[0]
+
+    if ruler_sheet_name is None:
         raise FileNotFoundError(
-            f"Sheet '{RULER_SHEET}' was not found. "
-            f"Available sheets: {wb.sheetnames}"
+            f"Sheet '{RULER_SHEET}' was not found (also checked trailing-underscore "
+            f"variants). Available sheets: {wb.sheetnames}"
         )
 
-    ws = wb[RULER_SHEET]
+    ws = wb[ruler_sheet_name]
 
     # Row 4 contains the headers.
     header_row = [
