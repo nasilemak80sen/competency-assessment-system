@@ -94,7 +94,7 @@ from config import (  # noqa: E402
     SCORE_COLS,
 )
 from data_loader import load_master_data, load_ruler_and_tech_mapping  # noqa: E402
-from models import init_db, get_session as db_get_session  # noqa: E402
+from models import init_db, get_session as db_get_session, Personnel  # noqa: E402
 
 
 def initialise_session() -> None:
@@ -156,10 +156,90 @@ def _get_master_data_cached(path: str, modified_ns: int, file_size: int):
     return add_category_averages(df)
 
 
+def _normalise_overlay_key(value):
+    """Normalise a Staff ID or name for joining Excel rows to database records."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    key = str(value).strip()
+    if not key or key.casefold() in {"nan", "none", "nat"}:
+        return None
+    if key.endswith(".0") and key[:-2].isdigit():
+        key = key[:-2]
+    return key.casefold()
+
+
+def _overlay_database_assessment_levels(df: pd.DataFrame, personnel_rows) -> pd.DataFrame:
+    """Make SQLite's editable assessment level authoritative over the Excel snapshot.
+
+    The workbook remains the baseline for bulk data and competency values. Once
+    a personnel record exists in SQLite, however, its Assessment Level is the
+    value edited by Admin CRUD and must be what all V2 pages display. A stored
+    NULL is also respected so an intentional "Not specified" value can clear
+    the workbook value.
+    """
+    if df is None or df.empty or "Assessment Level" not in df.columns:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    by_staff_id = {}
+    name_candidates = {}
+    for staff_id, name, assessment_level in personnel_rows:
+        sid_key = _normalise_overlay_key(staff_id)
+        name_key = _normalise_overlay_key(name)
+        if sid_key:
+            by_staff_id[sid_key] = assessment_level
+        if name_key:
+            name_candidates.setdefault(name_key, []).append(assessment_level)
+
+    # Fall back to a name only when that name is unique in the database.
+    by_name = {
+        name: values[0]
+        for name, values in name_candidates.items()
+        if len(values) == 1
+    }
+
+    out = df.copy()
+    for index, row in out.iterrows():
+        sid_key = _normalise_overlay_key(row.get("Staff ID"))
+        name_key = _normalise_overlay_key(row.get("Name"))
+        if sid_key and sid_key in by_staff_id:
+            out.at[index, "Assessment Level"] = by_staff_id[sid_key]
+        elif name_key and name_key in by_name:
+            out.at[index, "Assessment Level"] = by_name[name_key]
+    return out
+
+
 def get_master_data():
-    """Load the current workbook snapshot, refreshing cache when the file changes."""
+    """Load workbook data, then overlay assessment levels edited in SQLite.
+
+    Excel remains the bulk-import source, while SQLite is the CRUD source of
+    truth for assessment level. This keeps database edits visible across every
+    page that consumes the shared master dataframe.
+    """
     path, modified_ns, file_size = _excel_cache_identity()
-    return _get_master_data_cached(path, modified_ns, file_size)
+    df = _get_master_data_cached(path, modified_ns, file_size)
+    session = None
+    try:
+        session = db_get_session(get_database_engine())
+        rows = (
+            session.query(Personnel.staff_id, Personnel.name, Personnel.assessment_level)
+            .filter(Personnel.is_deleted.is_(False))
+            .all()
+        )
+        return _overlay_database_assessment_levels(df, rows)
+    except Exception as exc:
+        # Do not silently imply that CRUD changes are reflected if the database
+        # overlay cannot be read. Keep the dashboard available and surface the
+        # data-source problem to the operator.
+        st.warning(f"Could not refresh Assessment Level values from SQLite: {exc}")
+        return df
+    finally:
+        if session is not None:
+            session.close()
 
 
 @st.cache_data(show_spinner="Loading career rulers…")
