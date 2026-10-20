@@ -14,10 +14,31 @@ REPO_ROOT = V2_DIR.parent
 # Keep v2 packages ahead of root-level legacy modules. The repository root is
 # still exposed so v2 can import proven data/model modules such as config.py,
 # data_loader.py and models.py without shadowing v2.analytics.
-if str(V2_DIR) not in sys.path:
-    sys.path.insert(0, str(V2_DIR))
-if str(REPO_ROOT) not in sys.path:
-    sys.path.append(str(REPO_ROOT))
+# Always put v2 first, even when Streamlit or the launching environment
+# has already inserted it later in sys.path. A simple "if not in sys.path"
+# check is insufficient because the root-level legacy analytics.py can win.
+_V2_PATH = str(V2_DIR)
+if _V2_PATH in sys.path:
+    sys.path.remove(_V2_PATH)
+sys.path.insert(0, _V2_PATH)
+
+_ROOT_PATH = str(REPO_ROOT)
+if _ROOT_PATH not in sys.path:
+    sys.path.append(_ROOT_PATH)
+
+# If the legacy root-level analytics.py was imported before this bootstrap,
+# remove only that specific module so analytics.* resolves to v2/analytics.
+# Do not evict an already-loaded v2 analytics package.
+_legacy_analytics_file = (REPO_ROOT / "analytics.py").resolve()
+_loaded_analytics = sys.modules.get("analytics")
+_loaded_analytics_file = getattr(_loaded_analytics, "__file__", None)
+if _loaded_analytics_file:
+    try:
+        if Path(_loaded_analytics_file).resolve() == _legacy_analytics_file:
+            del sys.modules["analytics"]
+    except (OSError, RuntimeError):
+        # A path-resolution problem should not prevent application startup.
+        pass
 
 
 def _patch_streamlit_width_compatibility() -> None:
