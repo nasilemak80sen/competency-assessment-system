@@ -17,7 +17,8 @@ from analytics.readiness import (
     build_target_gap_dataframe,
     calculate_readiness_metrics,
 )
-from components.competency_charts import render_actual_target_charts\nfrom components.competency_charts import build_actual_target_figures
+from components.competency_charts import render_actual_target_charts
+from components.competency_charts import build_actual_target_figures
 from components.navigation import render_header, render_navigation
 from config import COMPETENCY_FULLNAMES, COMP_TYPES
 from core.bootstrap import get_master_data, get_ruler_data, open_session
