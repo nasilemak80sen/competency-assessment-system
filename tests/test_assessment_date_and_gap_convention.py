@@ -299,8 +299,8 @@ def test_assessment_level_values_match_workbook_and_normalize_case(tmp_path):
     from data_loader import load_master_data
 
     assert ASSESSMENT_LEVELS == [
-        "Staff", "UPE", "Principal", "TPCP", "Custodian", "Research",
-        "TBA", "N/A", "Ongoing",
+        "UPE", "Staff", "Principal", "Ongoing", "N/A", "TBA",
+        "TPCP", "Research", "Custodian",
     ]
 
     path = tmp_path / "assessment_levels.xlsx"
