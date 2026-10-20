@@ -119,3 +119,34 @@ def test_runtime_database_uses_validated_rebuilt_file():
             "cv_documents",
         }.issubset(tables)
         assert connection.execute("SELECT COUNT(*) FROM personnel").fetchone()[0] > 0
+
+def test_load_ruler_accepts_trailing_underscore_sheet_name(tmp_path):
+    import openpyxl
+
+    from config import SCORE_COLS
+    from data_loader import load_ruler_and_tech_mapping
+
+    workbook_path = tmp_path / "ruler_alias.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Ruler_"
+
+    headers = ["Ruler Type", "SG", "Position", *SCORE_COLS]
+    for column, header in enumerate(headers, start=1):
+        sheet.cell(row=4, column=column, value=header)
+
+    for row_number, ruler_type in enumerate(["BASE", "RDP", "RMS", "RSS"], start=5):
+        sheet.cell(row=row_number, column=1, value=ruler_type)
+        sheet.cell(row=row_number, column=2, value="P3")
+        sheet.cell(row=row_number, column=3, value="Test Position")
+        for column in range(4, len(headers) + 1):
+            sheet.cell(row=row_number, column=column, value=2)
+
+    workbook.save(workbook_path)
+    workbook.close()
+
+    ruler_map, _ = load_ruler_and_tech_mapping(str(workbook_path))
+
+    assert {"BASE", "RDP", "RMS", "RSS"}.issubset(ruler_map)
+    assert ruler_map["RDP"]["P3"]["B1"] == 2.0
+
