@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +51,37 @@ def test_analytics_package_does_not_resolve_to_legacy_module():
     _prepare_v2_path()
     analytics = importlib.import_module("analytics")
     assert getattr(analytics, "__file__", "").replace("\\", "/").startswith(str(V2_DIR).replace("\\", "/"))
+
+
+def test_bootstrap_recovers_when_legacy_analytics_is_preloaded_and_v2_path_is_later():
+    script = r"""
+import importlib
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+v2 = root / "v2"
+
+# Reproduce a local launch where the legacy root module wins initially and
+# the v2 directory is already on sys.path, but not at the front.
+sys.path.insert(0, str(root))
+sys.path.insert(1, str(v2))
+legacy = importlib.import_module("analytics")
+assert Path(legacy.__file__).resolve() == (root / "analytics.py").resolve()
+
+importlib.import_module("core.bootstrap")
+analytics = importlib.import_module("analytics")
+assert Path(analytics.__file__).resolve() == (v2 / "analytics" / "__init__.py").resolve()
+nationality = importlib.import_module("analytics.nationality")
+assert hasattr(nationality, "prepare_nationality_map_data")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(REPO_ROOT)],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_page_registry_is_canonical_and_matches_golden_order():
