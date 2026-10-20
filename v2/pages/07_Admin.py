@@ -70,17 +70,26 @@ def _date(value):
     return date.today() if pd.isna(d) else d.date()
 
 def _assessment_level_options(source_df, current_value=None):
-    """Keep known workbook assessment-level values selectable without coercion."""
+    """Expose workbook values without duplicate variants such as Staff/staff."""
     options = list(ASSESSMENT_LEVELS)
+    seen = {value.casefold() for value in options}
+
     if source_df is not None and "Assessment Level" in source_df.columns:
         for raw_value in source_df["Assessment Level"].dropna():
             value = str(raw_value).strip()
-            if value and value not in options:
+            key = value.casefold()
+            if value and key not in seen:
                 options.append(value)
+                seen.add(key)
+
+    # Preserve an unusual existing value rather than silently changing it to
+    # the first dropdown option on save.
     if current_value is not None:
         value = str(current_value).strip()
-        if value and value not in options:
+        key = value.casefold()
+        if value and key not in seen:
             options.append(value)
+            seen.add(key)
     return options
 
 df=get_master_data()

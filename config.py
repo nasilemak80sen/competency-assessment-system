@@ -247,8 +247,21 @@ POSITIONS = ["Executive","Snr RE","Staff","Principal","Specialist","UPTREX","Man
 # ── Chat Status ──────────────────────────────────────────────────────────────
 CHAT_STATUS_OPTIONS = ["Yes","No","No Need"]
 
-# ── Assessment Levels (from data) ────────────────────────────────────────────
-ASSESSMENT_LEVELS = ["Staff","SMA","Principal","UPE","Not yet","Not done","Research"]
+# ── Assessment Level values observed in the current master workbook ──────────
+# Staff, UPE, Principal, TPCP, Custodian, and Research are observed categories.
+# TBA, N/A and Ongoing are source markers also present in the workbook; retain
+# them as choices so updating a record does not silently convert its value.
+ASSESSMENT_LEVELS = [
+    "Staff",
+    "UPE",
+    "Principal",
+    "TPCP",
+    "Custodian",
+    "Research",
+    "TBA",
+    "N/A",
+    "Ongoing",
+]
 
 RULER_SHEET = "Ruler"
 TAB_SEPARATOR_SHEET = "tab separator"

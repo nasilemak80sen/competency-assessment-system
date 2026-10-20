@@ -16,7 +16,7 @@ import numpy as np
 import openpyxl
 from datetime import date
 from urllib.parse import urljoin
-from config import ( SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, CV_ALLOWED_FILE_TYPES, SHAREPOINT_CV_ROOT_URL, GRADE_LABELS, POSITION_TO_SG, SG_HIERARCHY,)
+from config import ( SCORE_COLS, REQ_COLS, GAP_COLS, SUMMARY_GROUPS, RULER_SHEET, TAB_SEPARATOR_SHEET, CV_LIST_SHEET, CV_LIST_COLUMNS, CV_ALLOWED_FILE_TYPES, SHAREPOINT_CV_ROOT_URL, GRADE_LABELS, POSITION_TO_SG, SG_HIERARCHY, ASSESSMENT_LEVELS,)
 
 
 def _normalize_summary_column_name(name: object) -> str:
@@ -260,6 +260,26 @@ def load_master_data(path: str) -> pd.DataFrame:
                 return str(x).strip()
 
         df["Staff ID"] = df["Staff ID"].apply(_clean_staff_id)
+
+    # Canonicalise casing in the source assessment-level column, e.g.
+    # "staff" -> "Staff", while retaining all observed source values.
+    if "Assessment Level" in df.columns:
+        assessment_level_lookup = {
+            str(level).strip().casefold(): str(level).strip()
+            for level in ASSESSMENT_LEVELS
+        }
+
+        def _normalise_assessment_level(value):
+            if value is None or pd.isna(value):
+                return np.nan
+            label = str(value).strip()
+            if not label:
+                return np.nan
+            return assessment_level_lookup.get(label.casefold(), label)
+
+        df["Assessment Level"] = df["Assessment Level"].apply(
+            _normalise_assessment_level
+        )
 
     df = normalize_position_and_sg(df)
     df = df.reset_index(drop=True)

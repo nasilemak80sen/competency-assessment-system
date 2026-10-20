@@ -293,3 +293,41 @@ def test_bulk_import_refreshes_existing_assessment_and_scores_from_workbook():
     session.close()
     engine.dispose()
 
+def test_assessment_level_values_match_workbook_and_normalize_case(tmp_path):
+    import openpyxl
+    from config import ASSESSMENT_LEVELS
+    from data_loader import load_master_data
+
+    assert ASSESSMENT_LEVELS == [
+        "Staff", "UPE", "Principal", "TPCP", "Custodian", "Research",
+        "TBA", "N/A", "Ongoing",
+    ]
+
+    path = tmp_path / "assessment_levels.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "All"
+    headers = ["Staff ID", "SG", "Last Assesment Date", "Staff Position", "Name", "Assessment Level"]
+    for column, header in enumerate(headers, start=1):
+        sheet.cell(row=3, column=column, value=header)
+    records = [
+        ("A1", "Person Staff", "staff"),
+        ("A2", "Person UPE", "UPE"),
+        ("A3", "Person TBA", "TBA"),
+        ("A4", "Person Custodian", "Custodian"),
+    ]
+    for row_number, (staff_id, name, level) in enumerate(records, start=4):
+        sheet.cell(row=row_number, column=1, value=staff_id)
+        sheet.cell(row=row_number, column=2, value="P3")
+        sheet.cell(row=row_number, column=4, value="Senior Executive")
+        sheet.cell(row=row_number, column=5, value=name)
+        sheet.cell(row=row_number, column=6, value=level)
+    workbook.save(path)
+    workbook.close()
+
+    loaded = load_master_data(str(path)).set_index("Name")
+    assert loaded.loc["Person Staff", "Assessment Level"] == "Staff"
+    assert loaded.loc["Person UPE", "Assessment Level"] == "UPE"
+    assert loaded.loc["Person TBA", "Assessment Level"] == "TBA"
+    assert loaded.loc["Person Custodian", "Assessment Level"] == "Custodian"
+
