@@ -390,7 +390,7 @@ def render_page():
     with selection_col:
         selected_name = st.selectbox("Select Personnel", names, key="personnel_select")
     with refresh_col:
-        if st.button("🔄 Refresh", type="secondary", width="stretch"):
+        if st.button("🔄 Refresh", type="secondary", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 

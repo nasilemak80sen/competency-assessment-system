@@ -216,7 +216,6 @@ def create_nationality_distribution_map(
 
     fig.update_layout(
         autosize=True,
-        width=None,
         height=500,
         margin={
             "l": 0,

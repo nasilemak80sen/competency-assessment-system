@@ -97,7 +97,7 @@ with target_sg_col:
         selected_target_sg = None
         st.text_input("Selected Target SG", value="Automatically determined", disabled=True, key="rg_target_sg_disabled")
 with reset_col:
-    if st.button("Reset", type="secondary", width="stretch", key="rg_reset_filters"):
+    if st.button("Reset", type="secondary", use_container_width=True, key="rg_reset_filters"):
         _reset_readiness_filters(st.session_state)
         st.rerun()
 

@@ -82,8 +82,12 @@ class ChartCompatibility:
         if numeric_ratio >= 0.95:
             return DataType.NUMERIC
 
-        unique_ratio = non_null.nunique(dropna=True) / max(1, len(non_null))
-        return DataType.MIXED if unique_ratio >= 0.95 else DataType.CATEGORICAL
+        # High-cardinality text (e.g. personnel names) remains categorical.
+        # Reserve MIXED for genuinely mixed object values, not unique labels.
+        type_count = non_null.map(lambda value: type(value).__name__).nunique()
+        if type_count > 1:
+            return DataType.MIXED
+        return DataType.CATEGORICAL
 
     @staticmethod
     def analyze_data_element(series: pd.Series, name: str) -> DataElementInfo:

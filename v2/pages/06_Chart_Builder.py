@@ -287,7 +287,7 @@ else:
     size_col = None
 
 st.markdown("### 📊 Generate")
-if st.button("📊 Generate Chart", type="primary", width="stretch"):
+if st.button("📊 Generate Chart", type="primary", use_container_width=True):
     try:
         title = (
             f"{aggregation} of {measure_selection} by {dimension}"

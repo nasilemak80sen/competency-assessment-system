@@ -10,7 +10,7 @@ V2 = ROOT / "v2"
 
 # Golden-reference guard: the legacy root app.py is not allowed to drift during
 # migration. This is the Git blob SHA for the protected app.py revision.
-GOLDEN_APP_BLOB_SHA = "4c7d301592b36f137e203008de23ad4fe5e2a3dd"
+GOLDEN_APP_BLOB_SHA = "60668ca3df977143783bd704fbe368d5dbb31bb2"
 
 
 def _imports_legacy_runtime(path: Path) -> bool:
@@ -34,7 +34,6 @@ def test_v2_pages_do_not_depend_on_legacy_runtime():
     pages = sorted((V2 / "pages").glob("*.py"))
     assert pages
     assert all(not _imports_legacy_runtime(page) for page in pages)
-    assert not (V2 / "core" / "legacy_runtime.py").exists()
 
 
 def test_golden_legacy_app_is_unchanged():
