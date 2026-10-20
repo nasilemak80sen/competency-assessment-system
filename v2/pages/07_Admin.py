@@ -69,6 +69,20 @@ def _date(value):
     d=pd.to_datetime(value,errors="coerce")
     return date.today() if pd.isna(d) else d.date()
 
+def _assessment_level_options(source_df, current_value=None):
+    """Keep known workbook assessment-level values selectable without coercion."""
+    options = list(ASSESSMENT_LEVELS)
+    if source_df is not None and "Assessment Level" in source_df.columns:
+        for raw_value in source_df["Assessment Level"].dropna():
+            value = str(raw_value).strip()
+            if value and value not in options:
+                options.append(value)
+    if current_value is not None:
+        value = str(current_value).strip()
+        if value and value not in options:
+            options.append(value)
+    return options
+
 df=get_master_data()
 if df is None or df.empty: st.info("No personnel available. Import data first."); st.stop()
 names=sorted(df["Name"].dropna().astype(str).unique())
@@ -214,7 +228,7 @@ with personnel_tab:
         with t1:
             copts=list(CHAT_STATUS_OPTIONS); cv=_text(row,"Chat Status","No Need"); chat_status=st.selectbox("Chat Status",copts,index=copts.index(cv) if cv in copts else 0,key=f"{prefix}_chat")
             chat_date=st.date_input("Chat Date",_date(row.get("Chat Date")),key=f"{prefix}_chatdate")
-            lv=list(ASSESSMENT_LEVELS); av=_text(row,"Assessment Level",lv[0]); assessment_level=st.selectbox("Assessment Level",lv,index=lv.index(av) if av in lv else 0,key=f"{prefix}_level")
+            lv=_assessment_level_options(df, _text(row,"Assessment Level")); av=_text(row,"Assessment Level",lv[0]); assessment_level=st.selectbox("Assessment Level",lv,index=lv.index(av) if av in lv else 0,key=f"{prefix}_level")
             last_assessment_date=st.date_input("Last Assessment Date",_date(row.get("Last Assessment Date") or row.get("Last Assesment Date")),key=f"{prefix}_lastdate")
         with t2:
             sub_disciplines=st.text_input("Sub-disciplines",_text(row,"Sub-Disciplines"),key=f"{prefix}_subdisc")
@@ -251,7 +265,9 @@ with assessment_tab:
         c1,c2=st.columns(2)
         with c1:
             adate=st.date_input("Assessment Date",date.today(),key="admin_assessment_date")
-            level=st.selectbox("Assessment Level",list(ASSESSMENT_LEVELS),key="admin_assessment_level")
+            level_options=_assessment_level_options(df, _text(row, "Assessment Level"))
+            current_level=_text(row, "Assessment Level", level_options[0])
+            level=st.selectbox("Assessment Level",level_options,index=level_options.index(current_level) if current_level in level_options else 0,key="admin_assessment_level")
         with c2:
             assessor1_entry=st.text_input("Assessor 1",key="admin_assessor1")
             supervisor_entry=st.text_input("Supervisor",key="admin_supervisor")

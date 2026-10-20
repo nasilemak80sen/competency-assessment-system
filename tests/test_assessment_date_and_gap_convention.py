@@ -167,3 +167,129 @@ def test_load_ruler_accepts_trailing_underscore_sheet_name(tmp_path):
     assert ruler_map["RDP"]["P3"]["B1"] == 2.0
     assert ruler_map["RDP"]["P4"]["B1"] == 2.0
 
+def test_resolve_excel_path_prefers_updated_xlsx_over_legacy_xlsm(tmp_path, monkeypatch):
+    import config
+
+    monkeypatch.delenv("COMPETENCY_EXCEL_PATH", raising=False)
+    monkeypatch.delenv("RE_EXCEL_PATH", raising=False)
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    legacy = tmp_path / "RE Fraternity Jul2026_Master.xlsm"
+    current = tmp_path / "RE Fraternity Jul2026_Master.xlsx"
+    legacy.write_bytes(b"legacy")
+    current.write_bytes(b"current")
+
+    assert config.resolve_excel_path() == str(current.resolve())
+
+
+def test_load_master_data_normalizes_single_hyphen_gap_headers(tmp_path):
+    import openpyxl
+    from data_loader import load_master_data
+
+    path = tmp_path / "gap_headers.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "All"
+    headers = ["Staff ID", "SG", "Last Assesment Date", "Staff Position", "Name", "B1", "R-B1", "G-B1"]
+    for column, header in enumerate(headers, start=1):
+        sheet.cell(row=3, column=column, value=header)
+    sheet.cell(row=4, column=1, value="TEST-GAP")
+    sheet.cell(row=4, column=2, value="P3")
+    sheet.cell(row=4, column=4, value="Senior Executive")
+    sheet.cell(row=4, column=5, value="Gap Test Person")
+    sheet.cell(row=4, column=6, value=2)
+    sheet.cell(row=4, column=7, value=3)
+    sheet.cell(row=4, column=8, value=0.25)
+    workbook.save(path)
+    workbook.close()
+
+    result = load_master_data(str(path)).iloc[0]
+    assert result["B1"] == 2
+    assert result["R-B1"] == 3
+    assert result["G--B1"] == 0.25
+    assert "G-B1" not in result.index
+
+
+def test_bulk_import_refreshes_existing_assessment_and_scores_from_workbook():
+    from datetime import date
+
+    from config import SCORE_COLS
+    from models import CompetencyScore
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    person = Personnel(
+        staff_id="TEST-REIMPORT",
+        name="Reimport Person",
+        assessment_level="Staff",
+        is_active=True,
+        is_deleted=False,
+    )
+    session.add(person)
+    session.commit()
+
+    assessment = Assessment(
+        personnel_id=person.id,
+        assessment_date=date(2025, 5, 12),
+        assessment_level="Staff",
+        remarks="old workbook value",
+    )
+    session.add(assessment)
+    session.flush()
+    session.add(
+        CompetencyScore(
+            assessment_id=assessment.id,
+            personnel_id=person.id,
+            competency_code="B1",
+            competency_type="B",
+            actual_score=1,
+            requirement_score=2,
+            gap_score=1,
+            achievement_pct=50,
+        )
+    )
+    session.commit()
+
+    row = {
+        "Staff ID": "TEST-REIMPORT",
+        "Name": "Reimport Person",
+        "SG": "P3",
+        "Staff Position": "Senior Executive",
+        "Assessment Level": "UPE",
+        "Last Assesment Date": date(2025, 5, 12),
+        "Remarks": "latest workbook value",
+    }
+    for code in SCORE_COLS:
+        row[code] = None
+        row[f"R-{code}"] = None
+        row[f"G--{code}"] = None
+    row["B1"] = 2
+    row["R-B1"] = 3
+    row["G--B1"] = 0.25  # Source value wins over recomputed 1.0.
+
+    result = db_ops.bulk_import_from_df(session, pd.DataFrame([row]))
+    assert result["added"] == 0
+    assert result["updated"] == 1
+    assert result["errors"] == 0
+
+    refreshed_person = session.query(Personnel).filter_by(staff_id="TEST-REIMPORT").one()
+    refreshed_assessment = session.query(Assessment).filter_by(personnel_id=person.id).one()
+    refreshed_score = (
+        session.query(CompetencyScore)
+        .filter_by(assessment_id=refreshed_assessment.id, competency_code="B1")
+        .one()
+    )
+    assert refreshed_person.assessment_level == "UPE"
+    assert refreshed_assessment.assessment_level == "UPE"
+    assert refreshed_assessment.remarks == "latest workbook value"
+    assert refreshed_score.actual_score == 2
+    assert refreshed_score.requirement_score == 3
+    assert refreshed_score.gap_score == 0.25
+    assert session.query(CompetencyScore).filter_by(assessment_id=refreshed_assessment.id).count() == len(SCORE_COLS)
+
+    session.close()
+    engine.dispose()
+

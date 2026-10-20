@@ -696,6 +696,63 @@ def _assessment_source_remarks(row):
     return "\n".join(parts) or None
 
 
+def _upsert_imported_assessment_scores(
+    session: Session,
+    assessment: Assessment,
+    personnel_id: int,
+    scores: Dict[str, Dict[str, Any]],
+) -> None:
+    """Synchronize the source workbook's actual, target, and gap values.
+
+    Scores supplied by the master workbook are authoritative. A present but
+    blank gap cell remains NULL instead of being recalculated. Competency
+    columns absent from a partial source dataframe are left untouched.
+    """
+    existing_rows = (
+        session.query(CompetencyScore)
+        .filter_by(assessment_id=assessment.id)
+        .all()
+    )
+    grouped = {}
+    for record in existing_rows:
+        grouped.setdefault(record.competency_code, []).append(record)
+
+    for code, values in scores.items():
+        duplicates = grouped.pop(code, [])
+        record = duplicates.pop(0) if duplicates else None
+        for duplicate in duplicates:
+            session.delete(duplicate)
+
+        actual = _coerce_numeric(values.get("actual"))
+        requirement = _coerce_numeric(values.get("req"))
+        gap = _coerce_numeric(values.get("gap"))
+        achievement_pct = (
+            round(actual / requirement * 100, 1)
+            if actual is not None and requirement is not None and requirement > 0
+            else None
+        )
+
+        if record is None:
+            record = CompetencyScore(
+                assessment_id=assessment.id,
+                personnel_id=personnel_id,
+                competency_code=code,
+                competency_type=code[0],
+            )
+            session.add(record)
+
+        record.personnel_id = personnel_id
+        record.competency_type = code[0]
+        record.actual_score = actual
+        record.requirement_score = requirement
+        record.gap_score = gap
+        record.achievement_pct = achievement_pct
+
+    # Do not delete codes whose columns are absent from the source row. A full
+    # master workbook has every code, including blank cells that clear stale
+    # values, whereas a deliberately partial dataframe may omit whole codes.
+
+
 def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None) -> Dict[str, int]:
     """
     Import all personnel + their current scores from the Excel DataFrame.
@@ -787,24 +844,37 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
 
         # ── Import competency scores as a single assessment ──────────────────
         score_dict = {}
-        from config import SCORE_COLS, REQ_COLS
         for sc, rc in zip(SCORE_COLS, REQ_COLS):
-            actual = _safe(row.get(sc))
-            # The workbook's requirement columns are authoritative for the
-            # imported snapshot; do not silently substitute a ruler lookup.
-            req = _safe(row.get(rc))
-            # Preserve the workbook's G-- convention: Requirement - Actual.
-            # Positive values indicate a shortfall; negative values exceed target.
-            actual_num = _coerce_numeric(actual)
-            req_num = _coerce_numeric(req)
-            workbook_gap = _coerce_numeric(row.get(f"G-{sc}"))
-            gap = workbook_gap if workbook_gap is not None else (
-                round(req_num - actual_num, 2)
-                if actual_num is not None and req_num is not None
-                else None
+            gap_col = next(
+                (candidate for candidate in (f"G--{sc}", f"G-{sc}") if candidate in row.index),
+                None,
             )
-            if actual_num is not None or req_num is not None:
-                score_dict[sc] = {"actual": actual_num, "req": req_num, "gap": gap}
+            source_columns = (sc, rc, f"G--{sc}", f"G-{sc}")
+            if not any(column in row.index for column in source_columns):
+                continue
+
+            actual_num = _coerce_numeric(_safe(row.get(sc)))
+            req_num = _coerce_numeric(_safe(row.get(rc)))
+
+            if gap_col is not None:
+                # Preserve the workbook cell exactly, including an intentional
+                # blank. Do not replace a blank source gap with a derived value.
+                gap = _coerce_numeric(_safe(row.get(gap_col)))
+            else:
+                # Fallback only for older/partial dataframes with no gap column.
+                gap = (
+                    round(req_num - actual_num, 2)
+                    if actual_num is not None and req_num is not None
+                    else None
+                )
+
+            # Include competencies whose cells are blank when their columns
+            # exist, so importing the master workbook clears stale DB values.
+            score_dict[sc] = {
+                "actual": actual_num,
+                "req": req_num,
+                "gap": gap,
+            }
 
         if score_dict:
             # Missing or non-date source values remain undated. Never fabricate
@@ -817,24 +887,38 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
                 except (TypeError, ValueError, OverflowError):
                     adate = None
 
-            # Check if assessment for that date already exists for this person
             existing_a = session.query(Assessment).filter_by(
                 personnel_id=pid, assessment_date=adate
             ).first()
+            assessment_values = {
+                "assessment_level": _safe(row.get("Assessment Level")),
+                "assessor1": _safe(row.get("Assesor1")),
+                "assessor2": _safe(row.get("Assessor2")),
+                "supervisor": _safe(row.get("Supervisor")),
+                "remarks": _assessment_source_remarks(row),
+            }
 
-            if not existing_a:
-                a = Assessment(
+            if existing_a is None:
+                existing_a = Assessment(
                     personnel_id=pid,
                     assessment_date=adate,
-                    assessment_level=_safe(row.get("Assessment Level")),
-                    assessor1=_safe(row.get("Assesor1")),
-                    assessor2=_safe(row.get("Assessor2")),
-                    supervisor=_safe(row.get("Supervisor")),
-                    remarks=_assessment_source_remarks(row),
+                    **assessment_values,
                 )
-                session.add(a)
+                session.add(existing_a)
                 session.flush()
-                add_competency_scores(session, cast(int, a.id), pid, score_dict)
+            else:
+                # Re-importing the same assessment date must refresh values,
+                # not silently skip them just because the row already exists.
+                for field, value in assessment_values.items():
+                    setattr(existing_a, field, value)
+                existing_a.updated_at = datetime.utcnow()
+
+            _upsert_imported_assessment_scores(
+                session,
+                existing_a,
+                pid,
+                score_dict,
+            )
 
         # ── Import summary scores ──────────────────────────────────────────
         sum_data = {

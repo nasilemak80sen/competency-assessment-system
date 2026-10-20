@@ -142,17 +142,36 @@ def get_database_engine():
     return init_db(DATABASE_URL)
 
 
+def _excel_cache_identity() -> tuple[str, int, int]:
+    """Return a cache key that changes whenever the source workbook changes."""
+    path = Path(EXCEL_PATH).expanduser().resolve()
+    stat = path.stat()
+    return str(path), stat.st_mtime_ns, stat.st_size
+
+
 @st.cache_data(show_spinner="Loading master data…")
-def get_master_data():
-    """Load the live master workbook and apply the golden derived columns."""
-    df = load_master_data(EXCEL_PATH)
+def _get_master_data_cached(path: str, modified_ns: int, file_size: int):
+    # modified_ns and file_size are intentionally cache-key arguments.
+    df = load_master_data(path)
     return add_category_averages(df)
 
 
+def get_master_data():
+    """Load the current workbook snapshot, refreshing cache when the file changes."""
+    path, modified_ns, file_size = _excel_cache_identity()
+    return _get_master_data_cached(path, modified_ns, file_size)
+
+
 @st.cache_data(show_spinner="Loading career rulers…")
+def _get_ruler_data_cached(path: str, modified_ns: int, file_size: int):
+    # modified_ns and file_size are intentionally cache-key arguments.
+    return load_ruler_and_tech_mapping(path)
+
+
 def get_ruler_data():
-    """Load career-ruler requirements and competency labels."""
-    return load_ruler_and_tech_mapping(EXCEL_PATH)
+    """Load career-ruler requirements, refreshing cache when the file changes."""
+    path, modified_ns, file_size = _excel_cache_identity()
+    return _get_ruler_data_cached(path, modified_ns, file_size)
 
 
 def open_session():

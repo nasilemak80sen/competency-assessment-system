@@ -131,12 +131,25 @@ def _strength_frame(person, competency_type):
     for code in COMP_TYPES.get(competency_type, {}).get("cols", []):
         score = pd.to_numeric(person.get(code), errors="coerce")
         if pd.notna(score):
+            target = pd.to_numeric(person.get(f"R-{code}"), errors="coerce")
+            gap_column = (
+                f"G--{code}" if f"G--{code}" in person.index
+                else f"G-{code}" if f"G-{code}" in person.index
+                else None
+            )
+            # Raw assessment gaps should match the source workbook, including
+            # blank cells. Only derive a gap when no source gap column exists.
+            if gap_column is not None:
+                gap = pd.to_numeric(person.get(gap_column), errors="coerce")
+            else:
+                gap = target - float(score) if pd.notna(target) else float("nan")
             records.append(
                 {
                     "Code": code,
                     "Competency": COMPETENCY_FULLNAMES.get(code, code),
                     "Score": float(score),
-                    "Target": pd.to_numeric(person.get(f"R-{code}"), errors="coerce"),
+                    "Target": target,
+                    "Gap": gap,
                 }
             )
     if not records:
@@ -145,17 +158,17 @@ def _strength_frame(person, competency_type):
         )
 
     frame = pd.DataFrame(records)
-    frame["Gap"] = frame["Target"] - frame["Score"]
-    frame["Gap Status"] = frame["Gap"].apply(
-        lambda gap: (
-            "Target unavailable"
-            if pd.isna(gap)
+    frame["Gap Status"] = frame.apply(
+        lambda row: (
+            ("Target unavailable" if pd.isna(row["Target"]) else "Gap not recorded")
+            if pd.isna(row["Gap"])
             else "Gap Remaining"
-            if gap > 0
+            if row["Gap"] > 0
             else "Gap Closed"
-            if gap == 0
+            if row["Gap"] == 0
             else "Above Target"
-        )
+        ),
+        axis=1,
     )
     frame = frame.sort_values(
         ["Score", "Competency"], ascending=[False, True]
@@ -189,7 +202,7 @@ def _render_competency_strength_class(person, competency_type):
 
             gap = record["Gap"]
             if pd.isna(gap):
-                st.info("Target unavailable")
+                st.info("Gap not recorded in workbook" if pd.notna(record["Target"]) else "Target unavailable")
             elif gap > 0:
                 st.success(f"Gap: +{gap:.0f} · Above Target")
             elif gap == 0:

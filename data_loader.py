@@ -28,6 +28,18 @@ def _normalize_summary_column_name(name: object) -> str:
         except Exception:
             return ""
     normalized = name.strip()
+
+    # The current master workbook labels gaps as G-B1, G-K1, etc. The
+    # application-wide canonical name is G--B1, G--K1, etc. Normalise that
+    # one-hyphen workbook variant before numeric cleanup and analytics.
+    gap_match = re.fullmatch(
+        r"G-(B\d+|K\d+|P\d+|E\d+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if gap_match:
+        return f"G--{gap_match.group(1).upper()}"
+
     match = re.match(
         r'^(Staff|Principal|Custodian|Next\s+Grade)\s+(Base|Keys|Pacing|Emerging|CTI)\d*$',
         normalized,

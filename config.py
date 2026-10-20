@@ -12,31 +12,34 @@ DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 
 
 def resolve_excel_path() -> str:
-    """Resolve the workbook path from an environment variable or local project paths."""
-    env_path = os.getenv("COMPETENCY_EXCEL_PATH") or os.getenv("RE_EXCEL_PATH")
-    if env_path:
-        path = Path(env_path).expanduser()
-        if path.exists():
-            return str(path.resolve())
+    """Resolve the current master workbook, preferring the updated XLSX file.
+
+    Environment variables are explicit overrides. Without an override, the
+    project's current .xlsx master is preferred before legacy .xlsm copies so
+    an older macro-enabled workbook cannot silently shadow newer assessment
+    levels, scores, requirements, and gaps.
+    """
+    for env_name in ("COMPETENCY_EXCEL_PATH", "RE_EXCEL_PATH"):
+        env_path = os.getenv(env_name)
+        if env_path:
+            path = Path(env_path).expanduser()
+            if path.is_file():
+                return str(path.resolve())
 
     candidates = [
+        BASE_DIR / "RE Fraternity Jul2026_Master.xlsx",
+        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsx",
         BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
         BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
-        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
-        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
-        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
-        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
-        BASE_DIR / "RE Fraternity Jul2026_Master.xlsm",
-        BASE_DIR / "RE_Fraternity_Jul2026_Master.xlsm",
-        Path(r"C:\Users\mnabielizzuddin.radz\OneDrive - PETRONAS\Reservoir Engineering\Programming_Python_Projects\Competency Assessment System\RE Fraternity Jul2026_Master.xlsm"),
     ]
 
     for candidate in candidates:
-        if candidate.exists():
+        if candidate.is_file():
             return str(candidate.resolve())
 
+    # Return the canonical path even when absent; the resulting error names
+    # the expected file and allows the user to place the workbook there.
     return str((BASE_DIR / "RE Fraternity Jul2026_Master.xlsx").resolve())
-
 
 EXCEL_PATH = resolve_excel_path()
 USE_LIVE_EXCEL_SOURCE = True
