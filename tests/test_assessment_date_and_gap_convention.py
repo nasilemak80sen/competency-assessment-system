@@ -28,8 +28,8 @@ def test_assessment_date_is_nullable_and_add_assessment_accepts_missing_date():
 
 def test_workbook_gap_convention_counts_positive_values_as_shortfalls():
     frame = pd.DataFrame([
-        {"Name": "Shortfall", "G-B1": 1.0, "G-B2": 2.0},
-        {"Name": "Meets", "G-B1": 0.0, "G-B2": -1.0},
+        {"Name": "Shortfall", "G--B1": 1.0, "G--B2": 2.0},
+        {"Name": "Meets", "G--B1": 0.0, "G--B2": -1.0},
     ])
 
     result = gap_summary(frame).set_index("Name")

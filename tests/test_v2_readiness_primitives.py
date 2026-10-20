@@ -31,6 +31,6 @@ def test_display_helpers_preserve_missing_value_rules():
 def test_assessment_status_preserves_gap_thresholds():
     assert _get_assessment_status(float("nan")) == "Not Assessed"
     assert _get_assessment_status(0) == "✅ Met"
-    assert _get_assessment_status(2) == "✅ Met"
-    assert _get_assessment_status(-1) == "🟡 Minor Gap"
-    assert _get_assessment_status(-2) == "🔴 Major Gap"
+    assert _get_assessment_status(-2) == "✅ Met"
+    assert _get_assessment_status(1) == "🟡 Minor Gap"
+    assert _get_assessment_status(2) == "🔴 Major Gap"

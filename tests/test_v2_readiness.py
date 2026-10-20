@@ -26,7 +26,7 @@ def test_readiness_detail_preserves_gap_semantics():
     alice = detail[detail["Name"] == "Alice"].set_index("Competency Code")
     assert alice.loc["B1", "Gap"] == 0
     assert bool(alice.loc["B1", "Is Met"])
-    assert alice.loc["B2", "Gap"] == -2
+    assert alice.loc["B2", "Gap"] == 2
     assert bool(alice.loc["B2", "Is Major Gap"])
 
 
