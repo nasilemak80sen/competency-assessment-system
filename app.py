@@ -549,7 +549,7 @@ def _render_competency_strength_class(
             elif gap > 0:
 
                 st.success(
-                    f"Gap: +{gap:.0f} · Above Target"
+                    f"Gap: +{gap:.0f} · Gap Remaining"
                 )
 
             elif gap == 0:
@@ -561,7 +561,7 @@ def _render_competency_strength_class(
             else:
 
                 st.warning(
-                    f"Gap: {gap:.0f} · Gap Remaining"
+                    f"Gap: {gap:.0f} · Above Target"
                 )
 # =============================================================================
 # CAREER PROGRESSION CONFIGURATION
