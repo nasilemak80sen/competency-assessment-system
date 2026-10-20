@@ -20,7 +20,7 @@ from analytics.readiness import (
 from components.competency_charts import render_actual_target_charts
 from components.competency_charts import build_actual_target_figures
 from components.navigation import render_header, render_navigation
-from config import COMPETENCY_FULLNAMES, COMP_TYPES
+from config import COMPETENCY_FULLNAMES, COMP_TYPES, EXCEL_PATH
 from core.bootstrap import get_master_data, get_ruler_data, open_session
 from models import CVDocument, Personnel, SummaryScore
 
@@ -382,6 +382,7 @@ def render_page():
         "👤 Individual Assessment & Talent Profile",
         "Personnel profile, competency readiness, gaps and supporting documents",
     )
+    st.caption(f"Master workbook source: {EXCEL_PATH}")
 
     df = get_master_data()
     ruler_map, _tech_labels = get_ruler_data()
@@ -612,6 +613,11 @@ def render_page():
 
     st.markdown("---")
     st.subheader("🎯 Target Definition & Career Progression")
+    st.caption(
+        "The workbook's recorded assessment gaps are shown above. This section "
+        "recalculates gaps against the selected career-ruler target, so values "
+        "can differ when a different ruler or target grade is selected."
+    )
     rulers = list(ruler_map.keys())
     career = _rg_get_person_ruler(person, ruler_map) if rulers else None
     target_cols = st.columns([1.4, 1.4, 1])
