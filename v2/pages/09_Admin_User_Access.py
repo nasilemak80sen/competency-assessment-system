@@ -30,8 +30,7 @@ def _load_personnel_options() -> tuple[dict[str, int], str | None]:
     USER accounts must point at the SQLAlchemy Personnel primary key because
     that is the identifier used by the authenticated session/RBAC layer.
     The master workbook is an analytical source and does not contain the
-    database ``id`` column, so using ``get_master_data()`` here produced an
-    empty selector even when personnel existed in the application database.
+    database primary-key column, so the selector must use database records.
     """
     session = open_session()
     try:

@@ -65,7 +65,7 @@ def _build_score_frame(person):
     return frame
 
 
-def _display_age(person, person_db):
+def _display_age(profile_data, person_db):
     age = person.get("Age")
     if pd.notna(age):
         try:
@@ -158,6 +158,10 @@ if mine.empty:
     st.stop()
 
 person = mine.iloc[0]
+profile_data = {
+    "Age": person.get("Age"),
+    "Background": person.get("Background") or person.get("Sub-Disciplines"),
+}
 score_df = _build_score_frame(person)
 assessed = score_df["Actual"].notna()
 coverage = float(assessed.mean() * 100) if len(score_df) else 0.0
@@ -189,12 +193,13 @@ contract_expiry = person.get("Contract Expire Date") or person_db.contract_expir
 assignment_length = person.get("Length in Current Assignment") or person_db.assignment_length
 years_in_grade = person.get("Years in Salary Grade") or person_db.sg_years
 
-assessment_dates = []
-for assessment in getattr(person_db, "assessments", []):
-    parsed = pd.to_datetime(assessment.assessment_date, errors="coerce")
-    if pd.notna(parsed):
-        assessment_dates.append(parsed)
-for candidate in (person.get("Last Assesment Date"), person.get("Last Assessment Date")):
+db_assessment_dates = [
+    assessment.assessment_date
+    for assessment in getattr(person_db, "assessments", [])
+]
+assessment_dates = [pd.Timestamp(value) for value in db_assessment_dates if value is not None and pd.notna(value)]
+metadata_last_assessment = person.get("Last Assesment Date")
+for candidate in (metadata_last_assessment, person.get("Last Assessment Date")):
     parsed = pd.to_datetime(candidate, errors="coerce")
     if pd.notna(parsed):
         assessment_dates.append(parsed)
@@ -275,7 +280,7 @@ with profile_tab:
             unsafe_allow_html=True,
         )
     with talent_right:
-        background = _controlled_value(person.get("Background") or person.get("Sub-Disciplines"), person_db.sub_disciplines)
+        background = _controlled_value(profile_data.get("Background"), person_db.sub_disciplines)
         st.markdown(
             "<div class='profile-card'>"
             + _field_row("Background", background, "🧩")
