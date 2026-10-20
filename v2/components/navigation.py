@@ -67,7 +67,10 @@ def render_navigation() -> None:
         st.markdown("---")
 
         visible_nav = MAIN_NAV if admin else USER_NAV
-        nav_cols = st.columns(len(visible_nav))
+        if admin:
+            nav_cols = st.columns(5)
+        else:
+            nav_cols = st.columns(len(visible_nav))
         for idx, (display_name, actual_name, path) in enumerate(visible_nav):
             with nav_cols[idx]:
                 is_active = current_page == actual_name

@@ -195,7 +195,7 @@ years_in_grade = person.get("Years in Salary Grade") or person_db.sg_years
 
 db_assessment_dates = [
     assessment.assessment_date
-    for assessment in getattr(person_db, "assessments", [])
+    for assessment in person_db.assessments
 ]
 assessment_dates = [pd.Timestamp(value) for value in db_assessment_dates if value is not None and pd.notna(value)]
 metadata_last_assessment = person.get("Last Assesment Date")

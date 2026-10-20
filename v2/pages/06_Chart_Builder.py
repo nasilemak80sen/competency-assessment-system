@@ -157,9 +157,10 @@ if not dimension_options:
     st.error("No suitable dimensions were found.")
     st.stop()
 
+st.markdown("### 📈 Step 2: Select Data Elements")
 col1, swap_col, col2 = st.columns([10, 1, 10])
 with col1:
-    dimension = st.selectbox("Dimension / X-axis", dimension_options, key="cb_dimension")
+    dimension = st.selectbox("X-Axis Data Element", dimension_options, key="cb_dimension")
 
 with swap_col:
     st.markdown("<div style='height: 1.75rem'></div>", unsafe_allow_html=True)
@@ -172,7 +173,7 @@ with swap_col:
 with col2:
     measure_options = ["Count of rows"] + dimension_options
     measure_selection = st.selectbox(
-        "Dimension / Measure / Y-axis",
+        "Y-Axis Data Element (optional, for paired charts)",
         measure_options,
         key="cb_measure",
     )
@@ -214,6 +215,7 @@ color_col = None if breakdown == "(None)" else breakdown
 # -----------------------------------------------------------------------------
 # Phase D — smart recommendations
 # -----------------------------------------------------------------------------
+st.markdown("### 🔍 Step 3: Data Analysis & Compatibility Check")
 x_info = ChartCompatibility.analyze_data_element(working_df[dimension], dimension)
 y_info = (
     None
@@ -257,9 +259,25 @@ if measure is None:
     ]
 
 if not available_charts:
-    st.warning("No compatible visualization for the selected dimension and measure.")
+    st.error("Data Compatibility Issues Detected")
+    incompatible_rows = [
+        {"Chart Type": name, "Reason": details.get("reason") or "The selected data elements are not compatible."}
+        for name, details in compatible.items()
+        if not details.get("is_compatible", False)
+    ]
+    if measure is None and x_info.data_type != DataType.CATEGORICAL:
+        incompatible_rows.insert(0, {
+            "Chart Type": "Count of rows",
+            "Reason": "Count-based charts require a categorical X-axis.",
+        })
+    if incompatible_rows:
+        st.dataframe(pd.DataFrame(incompatible_rows), width="stretch", hide_index=True)
+    else:
+        st.info("Try another X-axis or Y-axis element and review the chart compatibility reasons.")
     st.stop()
 
+st.success("✅ Data elements look good for analysis!")
+st.markdown("### Step 4: Select Chart Type")
 default_chart = next((name for name in recommendation_names if name in available_charts), available_charts[0])
 selected_chart = st.selectbox(
     "Visualization",
@@ -268,6 +286,17 @@ selected_chart = st.selectbox(
     format_func=lambda name: f"{ChartCompatibility.CHART_TYPES[name]['icon']} {name}",
     key="cb_chart_type",
 )
+
+incompatible_chart_rows = [
+    {"Chart Type": name, "Reason": details.get("reason") or "Not compatible with the selected data elements."}
+    for name, details in compatible.items()
+    if not details.get("is_compatible", False)
+]
+with st.expander("Incompatible Chart Types (Why?)", expanded=False):
+    if incompatible_chart_rows:
+        st.dataframe(pd.DataFrame(incompatible_chart_rows), width="stretch", hide_index=True)
+    else:
+        st.caption("No incompatibility reasons were returned for the evaluated chart types.")
 
 # -----------------------------------------------------------------------------
 # Phase E — Top-N / sorting
@@ -286,7 +315,7 @@ if selected_chart in {"Scatter Plot", "Bubble Chart"}:
 else:
     size_col = None
 
-st.markdown("### 📊 Generate")
+st.markdown("### Step 5: Generate Chart")
 if st.button("📊 Generate Chart", type="primary", use_container_width=True):
     try:
         title = (

@@ -8,6 +8,34 @@ import pycountry
 from config import COUNTRY_COORDINATES, NATIONALITY_ALIASES
 
 
+_NATIONALITY_COUNTRY_NAMES = {
+    # Display labels are retained in the output, while these mappings resolve
+    # demonyms to the corresponding country for ISO and centroid lookups.
+    "Malaysian": "Malaysia",
+    "British": "United Kingdom",
+    "Indonesian": "Indonesia",
+    "Australian": "Australia",
+    "Canadian": "Canada",
+    "Danish": "Denmark",
+    "Egyptian": "Egypt",
+    "French": "France",
+    "Indian": "India",
+    "Iranian": "Iran",
+    "Nigerian": "Nigeria",
+    "Russian": "Russia",
+    "Sudanese": "Sudan",
+    "Turkmen": "Turkmenistan",
+    "Venezuelan": "Venezuela",
+    "Vietnamese": "Vietnam",
+}
+
+
+def _canonical_country_name(nationality):
+    value = str(nationality).strip()
+    value = NATIONALITY_ALIASES.get(value, value)
+    return _NATIONALITY_COUNTRY_NAMES.get(value, value)
+
+
 _MAP_COLORSCALE = [
     [0.00, "#E8F1F2"],
     [0.01, "#BFD730"],
@@ -26,7 +54,7 @@ def nationality_to_iso3(nationality):
     if not value:
         return None
 
-    value = NATIONALITY_ALIASES.get(value, value)
+    value = _canonical_country_name(value)
 
     try:
         return pycountry.countries.lookup(value).alpha_3
@@ -72,10 +100,10 @@ def prepare_nationality_map_data(
 
     summary["ISO3"] = summary["Nationality"].map(nationality_to_iso3)
     summary["Latitude"] = summary["Nationality"].map(
-        lambda country: COUNTRY_COORDINATES.get(country, {}).get("latitude")
+        lambda country: COUNTRY_COORDINATES.get(_canonical_country_name(country), {}).get("latitude")
     )
     summary["Longitude"] = summary["Nationality"].map(
-        lambda country: COUNTRY_COORDINATES.get(country, {}).get("longitude")
+        lambda country: COUNTRY_COORDINATES.get(_canonical_country_name(country), {}).get("longitude")
     )
 
     unmatched = (

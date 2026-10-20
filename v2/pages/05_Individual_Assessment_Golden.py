@@ -463,12 +463,13 @@ def render_page():
         first_row[3].metric("Current Assignment", _text(person.get("Current Location:"), "Not available"))
         first_row[4].metric("Employment Type", _text(person.get("Employment Category")))
 
-        second_row = st.columns(5)
+        second_row = st.columns(6)
         second_row[0].metric("Age", _int(person.get("Age"), "N/A"))
         second_row[1].metric("Years in PETRONAS", _int(person.get("Years in PET")))
         second_row[2].metric("Years of RE Experiences", _int(person.get("Years of RE Experience")))
         second_row[3].metric("Contract Expiry Date", _date(person.get("Contract Expire Date")))
         second_row[4].metric("Length in Grade", _int(person.get("Years in Salary Grade")))
+        second_row[5].metric("Assessment Type", _text(person.get("Assessment Level")))
 
         st.markdown("### 💪 Talent Profile")
         talent_cols = st.columns(3)

@@ -55,8 +55,10 @@ def test_analytics_package_does_not_resolve_to_legacy_module():
 def test_page_registry_is_canonical_and_matches_golden_order():
     _prepare_v2_path()
     pages = importlib.import_module("core.pages")
-    assert len(pages.PAGES) == 7
-    assert len(pages.PAGE_BY_PATH) == 7
+    # Eight admin pages are registered, including the newer user-access page;
+    # the path map also includes the two user-role pages.
+    assert len(pages.PAGES) == 8
+    assert len(pages.PAGE_BY_PATH) == 10
     assert pages.PAGE_BY_PATH[""] is pages.PAGES[0]
     source = (V2_DIR / "core" / "pages.py").read_text(encoding="utf-8")
     expected_titles = [
@@ -67,9 +69,13 @@ def test_page_registry_is_canonical_and_matches_golden_order():
         "📊 Chart Builder & Depth Analysis",
         "⚙️ Admin: Import Data",
         "⚙️ Admin: Personnel Database Settings",
+        "🔐 Admin: User Access Management",
     ]
     assert all(title in source for title in expected_titles)
     assert pages.PAGE_BY_PATH["individual-assessment"] is pages.PAGES[2]
+    assert pages.PAGE_BY_PATH["admin-user-access"] is pages.PAGES[7]
+    assert pages.PAGE_BY_PATH["my-dashboard"] is pages.USER_PAGES[0]
+    assert pages.PAGE_BY_PATH["my-assessment"] is pages.USER_PAGES[1]
 
 
 def test_registered_pages_all_render_shared_navigation():
