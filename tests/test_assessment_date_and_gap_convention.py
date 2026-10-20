@@ -91,3 +91,31 @@ def test_importer_preserves_date_markers_in_assessment_remarks():
         "Last Assesment Date Source": "TBA",
     })
     assert db_ops._assessment_source_remarks(row) == "Original remark\nSource Last Assesment Date field: TBA"
+
+
+def test_runtime_database_uses_validated_rebuilt_file():
+    import sqlite3
+
+    from config import BASE_DIR, DATABASE_PATH, DATABASE_URL
+
+    expected_path = (BASE_DIR / "re_competency_rebuilt.db").resolve()
+    assert DATABASE_PATH == expected_path
+    assert DATABASE_URL == f"sqlite:///{expected_path.as_posix()}"
+    assert DATABASE_PATH.is_file(), f"Configured database is missing: {DATABASE_PATH}"
+
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert {
+            "personnel",
+            "assessments",
+            "competency_scores",
+            "summary_scores",
+            "cv_documents",
+        }.issubset(tables)
+        assert connection.execute("SELECT COUNT(*) FROM personnel").fetchone()[0] > 0

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = (BASE_DIR / "re_competency.db").resolve()
+DATABASE_PATH = (BASE_DIR / "re_competency_rebuilt.db").resolve()
 DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 
 

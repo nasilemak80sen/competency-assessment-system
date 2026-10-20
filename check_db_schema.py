@@ -1,7 +1,8 @@
 import sqlite3
-from pathlib import Path
 
-db_path = Path('re_competency.db')
+from config import DATABASE_PATH
+
+db_path = DATABASE_PATH
 print(f'Checking database at: {db_path}')
 print(f'Database exists: {db_path.exists()}')
 
@@ -30,10 +31,9 @@ if db_path.exists():
     
     if not next_grade_cols:
         print('  *** NO NEXT_GRADE COLUMNS FOUND! ***')
-        print('\n  The database needs to be recreated with the new schema.')
-        print('  You can either:')
-        print('  1. Delete re_competency.db and re-run the import')
-        print('  2. Use SQLite ALTER TABLE to add the columns')
+        print('\n  The configured rebuilt database is missing next_grade_* columns.')
+        print('  Apply the required schema migration to this database.')
+        print('  Do not delete the validated database as a troubleshooting step.')
     
     cursor.execute("SELECT COUNT(*) FROM summary_scores WHERE next_grade_base IS NOT NULL")
     count = cursor.fetchone()[0]

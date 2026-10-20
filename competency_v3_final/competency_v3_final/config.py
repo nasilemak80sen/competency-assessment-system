@@ -6,7 +6,9 @@ All constants derived from actual Excel data structure.
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = (BASE_DIR / "re_competency.db").resolve()
+# Use the single validated rebuilt database stored at the repository root.
+REPOSITORY_ROOT = BASE_DIR.parents[1]
+DATABASE_PATH = (REPOSITORY_ROOT / "re_competency_rebuilt.db").resolve()
 DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 
 # ── Salary Grades (SG column in Excel) ──────────────────────────────────────

@@ -5,6 +5,7 @@ __pycache__/
 
 # SQLite databases
 *.db
+!re_competency_rebuilt.db
 *.db-shm
 *.db-wal
 *.sqlite
