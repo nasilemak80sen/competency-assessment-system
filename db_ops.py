@@ -776,22 +776,29 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
                 req = _safe(ruler_requirements.get(sc))
             if req is None:
                 req = _safe(row.get(rc))
-            # NOTE: Excel's G--col uses (Requirement - Actual) convention.
-            # We standardize internally to (Actual - Requirement): positive = exceeds target.
+            # Preserve the workbook's G-- convention: Requirement - Actual.
+            # Positive values indicate a shortfall; negative values exceed target.
             actual_num = _coerce_numeric(actual)
             req_num = _coerce_numeric(req)
-            gap = round(actual_num - req_num, 2) if (actual_num is not None and req_num is not None) else None
+            workbook_gap = _coerce_numeric(row.get(f"G--{sc}"))
+            gap = workbook_gap if workbook_gap is not None else (
+                round(req_num - actual_num, 2)
+                if actual_num is not None and req_num is not None
+                else None
+            )
             if actual_num is not None or req_num is not None:
                 score_dict[sc] = {"actual": actual_num, "req": req_num, "gap": gap}
 
         if score_dict:
-            adate = _safe(row.get("Last Assesment Date")) or date.today()
-            # Only create assessment if date is a valid date
-            if not isinstance(adate, date):
+            # Missing or non-date source values remain undated. Never fabricate
+            # a date for Ongoing/TBA/N/A/year-only values.
+            adate = _safe(row.get("Last Assesment Date"))
+            if adate is not None and not isinstance(adate, date):
                 try:
-                    adate = pd.to_datetime(adate).date()
-                except Exception:
-                    adate = date.today()
+                    parsed = pd.to_datetime(adate, errors="coerce")
+                    adate = None if pd.isna(parsed) else parsed.date()
+                except (TypeError, ValueError, OverflowError):
+                    adate = None
 
             # Check if assessment for that date already exists for this person
             existing_a = session.query(Assessment).filter_by(
