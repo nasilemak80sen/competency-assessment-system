@@ -71,7 +71,9 @@ def _date(value):
 
 def _assessment_level_options(source_df, current_value=None):
     """Expose workbook values without duplicate variants such as Staff/staff."""
-    options = list(ASSESSMENT_LEVELS)
+    # A neutral sentinel preserves blank source values instead of defaulting
+    # an unassigned record to Staff merely because a selectbox needs a choice.
+    options = ["Not specified", *ASSESSMENT_LEVELS]
     seen = {value.casefold() for value in options}
 
     if source_df is not None and "Assessment Level" in source_df.columns:
@@ -258,7 +260,7 @@ with personnel_tab:
             remarks=st.text_area("Remarks",_text(row,"Remarks"),height=120,key=f"{prefix}_remarks")
         submitted=st.form_submit_button("💾 Save Personnel Info",type="primary")
     if submitted:
-        payload={"name":name.strip(),"staff_id":staff_id.strip(),"email":email.strip() or None,"gender":gender,"age":int(age),"birth_year":int(birth_year),"nationality":nationality.strip() or "Malaysia","employment_category":employment_category.strip() or None,"department":department,"section_name":section_name.strip() or None,"unit_name":unit_name.strip() or None,"sub_unit":sub_unit.strip() or None,"staff_position":str(staff_position),"sg":sg.strip() or POSITION_TO_SG.get(str(staff_position),""),"joining_date":joining_date,"contract_expire_date":contract_expire_date,"years_in_pet":float(years_in_pet),"years_re_experience":float(years_re_experience),"sg_years":float(sg_years),"sg_start_date":sg_start_date,"age_promoted":float(age_promoted),"current_assignment":current_assignment.strip() or None,"assignment_date":assignment_date,"assignment_length":float(assignment_length),"chat_status":chat_status,"chat_date":chat_date,"assessment_level":assessment_level,"last_assessment_date":last_assessment_date,"sub_disciplines":sub_disciplines.strip() or None,"potential":potential.strip() or None,"strength":strength.strip() or None,"recommendation":recommendation.strip() or None,"resource_sme":resource_sme.strip() or None,"interest":interest.strip() or None,"preference":preference.strip() or None,"comment":comment.strip() or None,"assessor1":assessor1.strip() or None,"assessor2":assessor2.strip() or None,"supervisor":supervisor.strip() or None,"remarks":remarks.strip() or None}
+        payload={"name":name.strip(),"staff_id":staff_id.strip(),"email":email.strip() or None,"gender":gender,"age":int(age),"birth_year":int(birth_year),"nationality":nationality.strip() or "Malaysia","employment_category":employment_category.strip() or None,"department":department,"section_name":section_name.strip() or None,"unit_name":unit_name.strip() or None,"sub_unit":sub_unit.strip() or None,"staff_position":str(staff_position),"sg":sg.strip() or POSITION_TO_SG.get(str(staff_position),""),"joining_date":joining_date,"contract_expire_date":contract_expire_date,"years_in_pet":float(years_in_pet),"years_re_experience":float(years_re_experience),"sg_years":float(sg_years),"sg_start_date":sg_start_date,"age_promoted":float(age_promoted),"current_assignment":current_assignment.strip() or None,"assignment_date":assignment_date,"assignment_length":float(assignment_length),"chat_status":chat_status,"chat_date":chat_date,"assessment_level":None if assessment_level=="Not specified" else assessment_level,"last_assessment_date":last_assessment_date,"sub_disciplines":sub_disciplines.strip() or None,"potential":potential.strip() or None,"strength":strength.strip() or None,"recommendation":recommendation.strip() or None,"resource_sme":resource_sme.strip() or None,"interest":interest.strip() or None,"preference":preference.strip() or None,"comment":comment.strip() or None,"assessor1":assessor1.strip() or None,"assessor2":assessor2.strip() or None,"supervisor":supervisor.strip() or None,"remarks":remarks.strip() or None}
         s=open_session()
         try:
             ok,msg=update_personnel(s,pid,payload)
@@ -295,7 +297,7 @@ with assessment_tab:
     if save_assessment:
         s=open_session()
         try:
-            ok,msg,aid=add_assessment(s,pid,{"assessment_date":adate,"assessment_level":level,"assessor1":assessor1_entry.strip() or None,"supervisor":supervisor_entry.strip() or None})
+            ok,msg,aid=add_assessment(s,pid,{"assessment_date":adate,"assessment_level":None if level=="Not specified" else level,"assessor1":assessor1_entry.strip() or None,"supervisor":supervisor_entry.strip() or None})
             if ok:
                 ok2,msg2=add_competency_scores(s,aid,pid,score_inputs)
                 if ok2: st.success(f"✅ Assessment saved for {selected_name} on {adate}"); st.cache_data.clear()
