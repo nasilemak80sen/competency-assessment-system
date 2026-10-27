@@ -8,7 +8,7 @@ import streamlit as st
 
 from components.navigation import render_navigation, render_header
 from config import COMP_TYPES, COMPETENCY_FULLNAMES, HEATMAP_COLORSCALE
-from core.bootstrap import get_master_data
+from core.bootstrap import get_heatmap_data
 
 
 render_navigation()
@@ -17,7 +17,7 @@ render_header(
     "Explore actual competency scores across personnel with filtering, ranking and summary analysis",
 )
 
-df = get_master_data()
+df = get_heatmap_data()
 if df is None or df.empty:
     st.warning("No personnel data is available.")
     st.stop()
@@ -26,7 +26,7 @@ if df is None or df.empty:
 # FILTERS
 # -----------------------------------------------------------------------------
 
-filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
 
 with filter_col1:
     f_dept = st.multiselect(
@@ -67,6 +67,24 @@ with filter_col3:
     )
 
 with filter_col4:
+    employment_options = (
+        df["Employment Type Filter"].dropna().astype(str).unique().tolist()
+        if "Employment Type Filter" in df.columns
+        else []
+    )
+    employment_order = {"CDH": 0, "Permanent": 1, "Not specified": 2}
+    employment_options = sorted(
+        employment_options,
+        key=lambda value: (employment_order.get(value, 3), value.casefold()),
+    )
+    f_employment = st.multiselect(
+        "Employment Type",
+        options=employment_options,
+        help="Filter personnel by CDH, Permanent, or other recorded employment categories.",
+        key="hm_employment_type",
+    )
+
+with filter_col5:
     f_type = st.multiselect(
         "Competency Type",
         options=list(COMP_TYPES.keys()),
@@ -123,6 +141,8 @@ if f_pos:
     fdf = fdf[fdf["Staff Position"].isin(f_pos)]
 if f_sg:
     fdf = fdf[fdf["SG"].isin(f_sg)]
+if f_employment:
+    fdf = fdf[fdf["Employment Type Filter"].isin(f_employment)]
 
 value_cols: list[str] = []
 for competency_type in f_type:
@@ -164,10 +184,11 @@ def build_personnel_label(row: pd.Series) -> str:
 
 
 heatmap_data["Heatmap Label"] = heatmap_data.apply(build_personnel_label, axis=1)
-heatmap_data = heatmap_data[heatmap_data[value_cols].notna().any(axis=1)].copy()
-
+# Do not drop personnel merely because every score is missing. The heatmap
+# must retain all matching database personnel; unassessed people appear as
+# blank score rows and are counted as 0% coverage.
 if heatmap_data.empty:
-    st.warning("No assessed personnel match the selected filters.")
+    st.warning("No personnel match the selected filters.")
     st.stop()
 
 heatmap_data["Average Score"] = heatmap_data[value_cols].mean(axis=1)
@@ -379,6 +400,8 @@ with personnel_tab:
             "Department",
             "Staff Position",
             "SG",
+            "Employment Category",
+            "Employment Type Filter",
             "Assessed Competencies",
             "Missing Competencies",
             "Assessment Coverage %",
