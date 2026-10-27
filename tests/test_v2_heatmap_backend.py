@@ -104,7 +104,7 @@ def test_employment_type_filter_normalises_cdh_and_permanent_variants():
 
 def test_heatmap_keeps_unassessed_people_and_uses_database_reconciled_dataset():
     source = (ROOT / "v2/pages/03_Competency_Heatmap.py").read_text(encoding="utf-8")
-    assert "df = get_heatmap_data()" in source
+    assert "df = ensure_employment_type_filter(get_heatmap_data())" in source
     assert '"Employment Type"' in source
     assert 'fdf["Employment Type Filter"].isin(f_employment)' in source
     assert 'heatmap_data = heatmap_data[heatmap_data[value_cols].notna().any(axis=1)]' not in source
