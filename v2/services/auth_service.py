@@ -50,6 +50,14 @@ def ensure_auth_table() -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             last_login TEXT)""")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_app_users_personnel_id ON app_users(personnel_id)")
+        # Keep a one-time marker for the configured administrator credentials.
+        # Only a password hash is persisted here, never the plaintext secret.
+        conn.execute("""CREATE TABLE IF NOT EXISTS auth_bootstrap_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            username TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
         conn.commit()
 
 
@@ -104,15 +112,15 @@ def create_user(username: str, password: str, role: str, personnel_id: int | Non
 
 
 def bootstrap_admin_from_environment() -> bool:
-    """Create the first ADMIN from Streamlit Secrets, with env vars as a local fallback.
+    """Provision the configured ADMIN and apply each configured password once.
 
-    The bootstrap is intentionally one-time: if any application user already
-    exists, no account is created or overwritten.
+    Streamlit Secrets are the source of truth for the initial/configured ADMIN.
+    A password hash in auth_bootstrap_state records which secret was last
+    applied. This repairs stale or inactive pre-existing admin records on the
+    first run after deployment, but does not overwrite a password that an
+    administrator later changes manually. Other user accounts are untouched.
     """
     ensure_auth_table()
-    with _connect() as conn:
-        if conn.execute("SELECT 1 FROM app_users LIMIT 1").fetchone():
-            return False
 
     username, password, display_name = _streamlit_admin_credentials()
     if not username or not password:
@@ -120,11 +128,72 @@ def bootstrap_admin_from_environment() -> bool:
         password = os.getenv("POC_ADMIN_PASSWORD", "")
         display_name = os.getenv("POC_ADMIN_DISPLAY_NAME", "POC Administrator").strip() or "POC Administrator"
 
+    username = normalize_username(username)
+    display_name = str(display_name or username).strip() or username
     if not username or not password:
         return False
 
-    ok, _, _ = create_user(username, password, ROLE_ADMIN, display_name=display_name)
-    return ok
+    with _connect() as conn:
+        state = conn.execute(
+            "SELECT username, display_name, password_hash FROM auth_bootstrap_state WHERE singleton = 1"
+        ).fetchone()
+
+        # The configured password has already been applied. Do not reset it
+        # again on every Streamlit rerun, and do not undo an intentional
+        # password reset performed later through Admin: User Access.
+        if (
+            state is not None
+            and state["username"] == username
+            and state["display_name"] == display_name
+            and verify_password(password, state["password_hash"])
+        ):
+            existing = conn.execute(
+                "SELECT id FROM app_users WHERE username = ?", (username,)
+            ).fetchone()
+            if existing is not None:
+                return False
+
+        encoded_password = hash_password(password)
+
+        # If the configured admin username was changed, disable the prior
+        # bootstrap-managed account instead of leaving an orphaned admin login.
+        if state is not None and state["username"] != username:
+            conn.execute(
+                "UPDATE app_users SET is_active = 0 WHERE username = ?",
+                (state["username"],),
+            )
+
+        existing = conn.execute(
+            "SELECT id FROM app_users WHERE username = ?", (username,)
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """INSERT INTO app_users
+                   (username, password_hash, display_name, role, personnel_id, is_active)
+                   VALUES (?, ?, ?, ?, NULL, 1)""",
+                (username, encoded_password, display_name, ROLE_ADMIN),
+            )
+        else:
+            conn.execute(
+                """UPDATE app_users
+                   SET password_hash = ?, display_name = ?, role = ?, personnel_id = NULL, is_active = 1
+                   WHERE id = ?""",
+                (encoded_password, display_name, ROLE_ADMIN, existing["id"]),
+            )
+
+        conn.execute(
+            """INSERT INTO auth_bootstrap_state
+               (singleton, username, display_name, password_hash, updated_at)
+               VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(singleton) DO UPDATE SET
+                   username = excluded.username,
+                   display_name = excluded.display_name,
+                   password_hash = excluded.password_hash,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (username, display_name, encoded_password),
+        )
+        conn.commit()
+        return True
 
 
 def list_users() -> list[dict]:
