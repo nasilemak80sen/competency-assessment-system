@@ -6,6 +6,7 @@ import pandas as pd
 
 from v2.services.heatmap_service import (
     classify_employment_type,
+    ensure_employment_type_filter,
     merge_database_personnel_for_heatmap,
 )
 
@@ -111,3 +112,37 @@ def test_heatmap_keeps_unassessed_people_and_uses_database_reconciled_dataset():
     backend = (ROOT / "v2/core/bootstrap.py").read_text(encoding="utf-8")
     assert "merge_database_personnel_for_heatmap(workbook_df, records)" in backend
     assert "Personnel.is_deleted.is_(False), Personnel.is_deleted.is_(None)" in backend
+
+
+
+def test_heatmap_employment_filter_is_present_for_workbook_only_fallback():
+    # This reproduces the reported KeyError path: reconciliation may fail and
+    # return a workbook dataframe that has Employment Category but not the
+    # derived Employment Type Filter column.
+    workbook_only = pd.DataFrame(
+        [
+            {"Name": "CDH Person", "Staff ID": "4001", "Employment Category": "CDH"},
+            {"Name": "Permanent Person", "Staff ID": "4002", "Employment Category": "Permanent Staff"},
+            {"Name": "Unknown Category", "Staff ID": "4003", "Employment Category": None},
+        ]
+    )
+
+    safe = ensure_employment_type_filter(workbook_only)
+
+    assert safe["Employment Type Filter"].tolist() == ["CDH", "Permanent", "Not specified"]
+    assert "Employment Type Filter" not in workbook_only.columns, "Helper should not mutate its input"
+
+
+def test_heatmap_employment_filter_is_safe_when_category_column_is_missing():
+    safe = ensure_employment_type_filter(pd.DataFrame([{"Name": "Person", "Staff ID": "4004"}]))
+
+    assert "Employment Category" in safe.columns
+    assert safe.loc[0, "Employment Type Filter"] == "Not specified"
+
+
+def test_heatmap_page_guards_derived_employment_column_before_rendering():
+    page = (ROOT / "v2/pages/03_Competency_Heatmap.py").read_text(encoding="utf-8")
+    assert "df = ensure_employment_type_filter(get_heatmap_data())" in page
+    backend = (ROOT / "v2/core/bootstrap.py").read_text(encoding="utf-8")
+    assert "return ensure_employment_type_filter(workbook_df)" in backend
+    assert "Showing workbook fallback data only" in backend
