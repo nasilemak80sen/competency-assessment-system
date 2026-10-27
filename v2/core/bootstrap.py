@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import or_
 from streamlit.delta_generator import DeltaGenerator
 
 V2_DIR = Path(__file__).resolve().parents[1]
@@ -281,7 +282,9 @@ def get_heatmap_data() -> pd.DataFrame:
         session = db_get_session(get_database_engine())
         people = (
             session.query(Personnel)
-            .filter(Personnel.is_deleted.is_(False))
+            # Older migrated rows can have NULL is_deleted values; treat those
+            # as not deleted, otherwise legitimate personnel silently disappear.
+            .filter(or_(Personnel.is_deleted.is_(False), Personnel.is_deleted.is_(None)))
             .order_by(Personnel.name.asc(), Personnel.staff_id.asc())
             .all()
         )
