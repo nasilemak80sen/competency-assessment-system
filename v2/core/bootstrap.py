@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from sqlalchemy import or_
+from sqlalchemy.orm import selectinload
 from streamlit.delta_generator import DeltaGenerator
 
 V2_DIR = Path(__file__).resolve().parents[1]
@@ -95,7 +96,7 @@ from config import (  # noqa: E402
     SCORE_COLS,
 )
 from data_loader import load_master_data, load_ruler_and_tech_mapping  # noqa: E402
-from models import init_db, get_session as db_get_session, Personnel  # noqa: E402
+from models import init_db, get_session as db_get_session, Personnel, Assessment  # noqa: E402
 from services.heatmap_service import merge_database_personnel_for_heatmap  # noqa: E402
 
 
@@ -282,6 +283,7 @@ def get_heatmap_data() -> pd.DataFrame:
         session = db_get_session(get_database_engine())
         people = (
             session.query(Personnel)
+            .options(selectinload(Personnel.assessments).selectinload(Assessment.scores))
             # Older migrated rows can have NULL is_deleted values; treat those
             # as not deleted, otherwise legitimate personnel silently disappear.
             .filter(or_(Personnel.is_deleted.is_(False), Personnel.is_deleted.is_(None)))
