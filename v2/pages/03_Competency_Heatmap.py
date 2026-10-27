@@ -9,6 +9,7 @@ import streamlit as st
 from components.navigation import render_navigation, render_header
 from config import COMP_TYPES, COMPETENCY_FULLNAMES, HEATMAP_COLORSCALE
 from core.bootstrap import get_heatmap_data
+from services.heatmap_service import ensure_employment_type_filter
 
 
 render_navigation()
@@ -17,7 +18,9 @@ render_header(
     "Explore actual competency scores across personnel with filtering, ranking and summary analysis",
 )
 
-df = get_heatmap_data()
+# Always guarantee the derived employment field before any filter/table
+# references it. This is a final guard for workbook-only fallback datasets.
+df = ensure_employment_type_filter(get_heatmap_data())
 if df is None or df.empty:
     st.warning("No personnel data is available.")
     st.stop()
