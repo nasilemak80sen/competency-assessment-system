@@ -100,6 +100,20 @@ def classify_employment_type(value: Any) -> str:
     return raw
 
 
+def ensure_employment_type_filter(frame: pd.DataFrame | None) -> pd.DataFrame:
+    """Return a heatmap-safe frame with the derived employment filter column.
+
+    This is intentionally safe for fallback/workbook-only frames returned when
+    SQLite reconciliation fails, so a data-source warning cannot cascade into
+    a KeyError while rendering the personnel summary.
+    """
+    out = frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+    if "Employment Category" not in out.columns:
+        out["Employment Category"] = pd.NA
+    out["Employment Type Filter"] = out["Employment Category"].map(classify_employment_type)
+    return out
+
+
 def merge_database_personnel_for_heatmap(
     workbook_df: pd.DataFrame | None,
     database_records: Iterable[Mapping[str, Any]],
@@ -176,5 +190,4 @@ def merge_database_personnel_for_heatmap(
 
     # Canonical labels drive the dropdown; keep the original category intact
     # for audit/export purposes and so unusual employment values remain usable.
-    out["Employment Type Filter"] = out["Employment Category"].map(classify_employment_type)
-    return out.reset_index(drop=True)
+    return ensure_employment_type_filter(out).reset_index(drop=True)
