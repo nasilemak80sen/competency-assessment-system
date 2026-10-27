@@ -97,7 +97,10 @@ from config import (  # noqa: E402
 )
 from data_loader import load_master_data, load_ruler_and_tech_mapping  # noqa: E402
 from models import init_db, get_session as db_get_session, Personnel, Assessment  # noqa: E402
-from services.heatmap_service import merge_database_personnel_for_heatmap  # noqa: E402
+from services.heatmap_service import (  # noqa: E402
+    ensure_employment_type_filter,
+    merge_database_personnel_for_heatmap,
+)
 
 
 def initialise_session() -> None:
@@ -369,8 +372,13 @@ def get_heatmap_data() -> pd.DataFrame:
     except Exception as exc:
         # Keep the view available if SQLite cannot be queried, but clearly
         # identify that the result may omit database-only personnel.
-        st.warning(f"Could not reconcile database personnel for the heatmap: {exc}")
-        return workbook_df.copy() if isinstance(workbook_df, pd.DataFrame) else pd.DataFrame()
+        st.warning(
+            "Could not reconcile database personnel for the heatmap. "
+            "Showing workbook fallback data only. Details: " + str(exc)
+        )
+        # A workbook-only fallback still needs the derived employment filter
+        # field expected by the page's filter and summary table.
+        return ensure_employment_type_filter(workbook_df)
     finally:
         if session is not None:
             session.close()
