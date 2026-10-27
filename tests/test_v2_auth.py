@@ -78,3 +78,80 @@ def test_app_and_navigation_define_two_role_surfaces():
     assert "My Assessment" in pages_source
     assert "USER_NAV" in nav_source
     assert "ADMIN_NAV" in nav_source
+
+
+def test_configured_admin_bootstrap_repairs_existing_inactive_account(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(
+        auth_service,
+        "_streamlit_admin_credentials",
+        lambda: ("admin", "ConfiguredPass123", "System Administrator"),
+    )
+
+    auth_service.ensure_auth_table()
+    ok, message, admin_id = auth_service.create_user(
+        "admin", "OldPassword123", auth_service.ROLE_USER,
+        personnel_id=42, display_name="Stale account",
+    )
+    assert ok, message
+    assert admin_id is not None
+    assert auth_service.set_active(admin_id, False)[0]
+
+    # The app must repair the configured administrator even though other users
+    # or stale rows already exist in app_users.
+    ok, message, _ = auth_service.create_user(
+        "colleague", "ColleaguePass123", auth_service.ROLE_USER,
+        personnel_id=43, display_name="Colleague",
+    )
+    assert ok, message
+
+    assert auth_service.bootstrap_admin_from_environment() is True
+    admin = auth_service.authenticate("ADMIN", "ConfiguredPass123")
+    assert admin is not None
+    assert admin["role"] == auth_service.ROLE_ADMIN
+    assert admin["display_name"] == "System Administrator"
+    assert admin["is_active"] == 1
+    assert auth_service.authenticate("admin", "OldPassword123") is None
+    assert auth_service.authenticate("colleague", "ColleaguePass123") is not None
+
+
+def test_configured_admin_bootstrap_does_not_reset_password_on_each_rerun(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(
+        auth_service,
+        "_streamlit_admin_credentials",
+        lambda: ("admin", "ConfiguredPass123", "System Administrator"),
+    )
+
+    assert auth_service.bootstrap_admin_from_environment() is True
+    admin = auth_service.authenticate("admin", "ConfiguredPass123")
+    assert admin is not None
+
+    ok, message = auth_service.reset_password(admin["id"], "ManualResetPass123")
+    assert ok, message
+
+    # The configured secret has not changed, so an intentional admin reset
+    # must survive subsequent Streamlit reruns.
+    assert auth_service.bootstrap_admin_from_environment() is False
+    assert auth_service.authenticate("admin", "ManualResetPass123") is not None
+    assert auth_service.authenticate("admin", "ConfiguredPass123") is None
+
+
+def test_configured_admin_secret_rotation_is_applied_once(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
+    credentials = {"password": "ConfiguredPass123"}
+    monkeypatch.setattr(
+        auth_service,
+        "_streamlit_admin_credentials",
+        lambda: ("admin", credentials["password"], "System Administrator"),
+    )
+
+    assert auth_service.bootstrap_admin_from_environment() is True
+    credentials["password"] = "RotatedPass456"
+    assert auth_service.bootstrap_admin_from_environment() is True
+    assert auth_service.authenticate("admin", "RotatedPass456") is not None
+    assert auth_service.authenticate("admin", "ConfiguredPass123") is None
+    assert auth_service.bootstrap_admin_from_environment() is False
