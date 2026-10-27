@@ -95,6 +95,7 @@ from config import (  # noqa: E402
 )
 from data_loader import load_master_data, load_ruler_and_tech_mapping  # noqa: E402
 from models import init_db, get_session as db_get_session, Personnel  # noqa: E402
+from services.heatmap_service import merge_database_personnel_for_heatmap  # noqa: E402
 
 
 def initialise_session() -> None:
@@ -264,3 +265,108 @@ def set_selected_person(person_id=None, staff_id=None, name=None) -> None:
     st.session_state.selected_personnel_id = person_id
     st.session_state.selected_staff_id = staff_id
     st.session_state.selected_person_name = name
+
+def get_heatmap_data() -> pd.DataFrame:
+    """Return workbook data reconciled with every non-deleted DB personnel row.
+
+    The workbook provides the baseline competency matrix. SQLite contributes
+    current personnel fields and the most recent assessment with non-null
+    scores. Database-only personnel are kept even when they have no recorded
+    competency scores, allowing the heatmap to show them as unassessed rows.
+    """
+    workbook_df = get_master_data()
+    session = None
+    records = []
+    try:
+        session = db_get_session(get_database_engine())
+        people = (
+            session.query(Personnel)
+            .filter(Personnel.is_deleted.is_(False))
+            .order_by(Personnel.name.asc(), Personnel.staff_id.asc())
+            .all()
+        )
+
+        for person in people:
+            scored_assessments = []
+            for assessment in person.assessments or []:
+                scored = {
+                    score.competency_code: score.actual_score
+                    for score in (assessment.scores or [])
+                    if score.competency_code and score.actual_score is not None
+                }
+                if scored:
+                    assessed_date = assessment.assessment_date
+                    created_at = assessment.created_at
+                    scored_assessments.append(
+                        (
+                            (
+                                assessed_date is not None,
+                                assessed_date.isoformat() if assessed_date is not None else "",
+                                created_at.isoformat() if created_at is not None else "",
+                                int(assessment.id or 0),
+                            ),
+                            scored,
+                        )
+                    )
+
+            latest_scores = (
+                max(scored_assessments, key=lambda item: item[0])[1]
+                if scored_assessments
+                else {}
+            )
+            records.append(
+                {
+                    "staff_id": person.staff_id,
+                    "name": person.name,
+                    "email": person.email,
+                    "gender": person.gender,
+                    "age": person.age,
+                    "birth_year": person.birth_year,
+                    "nationality": person.nationality,
+                    "employment_category": person.employment_category,
+                    "department": person.department,
+                    "section_name": person.section_name,
+                    "unit_name": person.unit_name,
+                    "sub_unit": person.sub_unit,
+                    "staff_position": person.staff_position,
+                    "sg": person.sg,
+                    "joining_date": person.joining_date,
+                    "contract_expire_date": person.contract_expire_date,
+                    "years_in_pet": person.years_in_pet,
+                    "years_re_experience": person.years_re_experience,
+                    "sg_years": person.sg_years,
+                    "sg_start_date": person.sg_start_date,
+                    "age_promoted": person.age_promoted,
+                    "current_assignment": person.current_assignment,
+                    "assignment_date": person.assignment_date,
+                    "assignment_length": person.assignment_length,
+                    "chat_status": person.chat_status,
+                    "chat_date": person.chat_date,
+                    "assessment_level": person.assessment_level,
+                    "last_assessment_date": person.last_assessment_date,
+                    "sub_disciplines": person.sub_disciplines,
+                    "potential": person.potential,
+                    "strength": person.strength,
+                    "recommendation": person.recommendation,
+                    "resource_sme": person.resource_sme,
+                    "interest": person.interest,
+                    "preference": person.preference,
+                    "comment": person.comment,
+                    "assessor1": person.assessor1,
+                    "assessor2": person.assessor2,
+                    "supervisor": person.supervisor,
+                    "remarks": person.remarks,
+                    "db_scores": latest_scores,
+                }
+            )
+
+        return merge_database_personnel_for_heatmap(workbook_df, records)
+    except Exception as exc:
+        # Keep the view available if SQLite cannot be queried, but clearly
+        # identify that the result may omit database-only personnel.
+        st.warning(f"Could not reconcile database personnel for the heatmap: {exc}")
+        return workbook_df.copy() if isinstance(workbook_df, pd.DataFrame) else pd.DataFrame()
+    finally:
+        if session is not None:
+            session.close()
+
