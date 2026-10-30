@@ -4,7 +4,7 @@ import pytest
 playwright_sync = pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import sync_playwright  # noqa: E402
 import pandas as pd  # noqa: E402
-from v2.components.openglobus import OPEN_GLOBUS_JS, _build_openglobus_html  # noqa: E402
+from v2.components.openglobus import OPEN_GLOBUS_CSS, OPEN_GLOBUS_JS, _build_openglobus_html  # noqa: E402
 from v2.services.geospatial_service import build_nationality_dataset  # noqa: E402
 
 MOCK_OPENGLOBUS = r"""
@@ -76,6 +76,7 @@ def browser_page():
             args=["--use-gl=angle", "--use-angle=swiftshader", "--enable-webgl", "--ignore-gpu-blocklist"],
         )
         page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.route(OPEN_GLOBUS_CSS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
         page.route(
             OPEN_GLOBUS_JS,
             lambda route: route.fulfill(
@@ -124,6 +125,7 @@ def test_browser_handles_engine_module_load_failure():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
+        page.route(OPEN_GLOBUS_CSS, lambda route: route.fulfill(status=200, content_type="text/css", body=""))
         page.route(OPEN_GLOBUS_JS, lambda route: route.abort())
         page.set_content(_build_openglobus_html(_dataset()), wait_until="domcontentloaded")
         page.wait_for_function("document.getElementById('status').dataset.state === 'error'", timeout=10000)
