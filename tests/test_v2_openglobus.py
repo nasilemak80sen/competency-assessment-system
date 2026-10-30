@@ -25,8 +25,7 @@ def _sample_people_df():
         "Nationality": ["Malaysian", "British", "Indonesian", "Malaysian"],
         "Name": ["A", "B", "C", "D"],
         "Staff Position": ["Engineer", "Geologist", "Engineer", "Manager"],
-        "Department": ["RE"] * 4,
-        "SG": ["P5", "P6", "P5", "P7"],
+        "Department": ["RE"] * 4, "SG": ["P5", "P6", "P5", "P7"],
         "Employment Category": ["PERMANENT", "CDH", "PERMANENT", "PERMANENT"],
         "Section Name": ["A", "B", "A", "C"],
         "Staff ID": ["001", "002", "003", "004"],
@@ -60,9 +59,10 @@ def test_dual_nationality_support_and_duplicate_token_handling():
     assert len(dataset["records"][0]["people"]) == 1
 
 
-def test_html_contains_split_frontend_modules_and_versioned_contract():
+def test_html_contains_split_frontend_and_both_stylesheets():
     html = _build_openglobus_html(build_nationality_dataset(_sample_map_df(), _sample_people_df()))
-    assert f"@openglobus/og@{OPEN_GLOBUS_VERSION}" in html
+    assert f"@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/og.es.js" in html
+    assert f"@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/og.css" in html
     assert 'id="re-globe-config"' in html
     for module in ("contract.js", "filters.js", "markers.js", "layers.js", "details.js", "camera.js"):
         assert f'data-re-globe-module="{module}"' in html

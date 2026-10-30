@@ -12,6 +12,7 @@ from v2.services.geospatial_service import validate_nationality_dataset
 
 OPEN_GLOBUS_VERSION = "0.28.7"
 OPEN_GLOBUS_JS = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/og.es.js"
+OPEN_GLOBUS_CSS = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/og.css"
 OPEN_GLOBUS_RESOURCES = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/res"
 OPEN_GLOBUS_FONTS = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/res/fonts"
 _FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend" / "openglobus"
@@ -59,12 +60,13 @@ def _build_openglobus_html(dataset: dict[str, Any], height: int = 620) -> str:
     }
     html = (
         template.replace("__CSS__", css)
+        .replace("__OPEN_GLOBUS_CSS__", OPEN_GLOBUS_CSS)
         .replace("__CONFIG_JSON__", _safe_json(config))
         .replace("__MODULE_SCRIPTS__", "\n".join(scripts))
         .replace("__MAIN_SCRIPT__", main_script)
     )
     unresolved = [token for token in (
-        "__CSS__", "__CONFIG_JSON__", "__MODULE_SCRIPTS__", "__MAIN_SCRIPT__"
+        "__CSS__", "__OPEN_GLOBUS_CSS__", "__CONFIG_JSON__", "__MODULE_SCRIPTS__", "__MAIN_SCRIPT__"
     ) if token in html]
     if unresolved:
         raise RuntimeError(f"Unresolved OpenGlobus HTML template tokens: {unresolved}")
@@ -80,4 +82,7 @@ def render_nationality_globe(dataset: dict[str, Any], *, height: int = 620) -> N
     )
 
 
-__all__ = ["OPEN_GLOBUS_VERSION", "render_nationality_globe", "_build_openglobus_html"]
+__all__ = [
+    "OPEN_GLOBUS_VERSION", "OPEN_GLOBUS_CSS",
+    "render_nationality_globe", "_build_openglobus_html",
+]
