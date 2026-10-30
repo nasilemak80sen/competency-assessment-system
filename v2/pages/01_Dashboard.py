@@ -8,7 +8,11 @@ import streamlit as st
 
 from config import SG_HIERARCHY, SG_TO_POSITION_BRACKET, POSITION_HIERARCHY_ORDER
 from core.bootstrap import get_master_data
-from analytics.nationality import prepare_nationality_map_data
+from analytics.nationality import (
+    create_nationality_distribution_map,
+    prepare_nationality_map_data,
+)
+from services.geospatial_service import build_nationality_dataset
 from components.openglobus import render_nationality_globe
 from analytics.workforce import scatter_age_vs_grade
 from components.navigation import render_navigation
@@ -97,16 +101,25 @@ if nationality_map_df.empty:
         "No valid nationality data is available for the geographical visualization."
     )
 else:
-    render_nationality_globe(
-        nationality_map_df,
-        personnel_df=df,
-        height=620,
-    )
-    st.caption(
-        "OpenGlobus WebGL nationality intelligence: proportional pins, click-to-detail, "
-        "camera fly-to and client-side workforce filters. Coordinates use approximate "
-        "country centroids."
-    )
+    try:
+        # The geospatial service owns data transformation and the versioned
+        # renderer-neutral contract. OpenGlobus only consumes this dataset.
+        nationality_dataset = build_nationality_dataset(nationality_map_df, df)
+        render_nationality_globe(nationality_dataset, height=620)
+        st.caption(
+            "OpenGlobus WebGL nationality intelligence: proportional pins, click-to-detail, "
+            "camera fly-to and client-side workforce filters. Coordinates use approximate "
+            "country centroids."
+        )
+    except Exception as exc:
+        st.warning(f"3D Earth is unavailable. Showing the 2D nationality map instead. Details: {exc}")
+        try:
+            st.plotly_chart(
+                create_nationality_distribution_map(nationality_map_df),
+                use_container_width=True,
+            )
+        except Exception as fallback_error:
+            st.error(f"Nationality map fallback could not be rendered: {fallback_error}")
 
 if unmatched_nationalities:
     with st.expander("⚠️ Nationality values requiring mapping"):
