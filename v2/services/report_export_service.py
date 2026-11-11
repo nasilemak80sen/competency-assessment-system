@@ -27,11 +27,27 @@ SUB_UNIT_COLUMNS = ("Sub Unit", "Sub-Unit", "Sub Unit Name")
 # The current workbook has a few legacy spelling variants. These aliases let
 # the export overlay current database values without renaming source columns.
 SOURCE_COLUMN_ALIASES = {
-    "Last Assesment Date": ("Last Assesment Date", "Last Assessment Date"),
-    "Assesor1": ("Assesor1", "Assessor 1"),
-    "Assessor2": ("Assessor2", "Assessor 2"),
-    "Resource/SME": ("Resource/SME", "Resource / SME"),
-    "Comment/Suggestion": ("Comment/Suggestion", "Comment / Suggestion"),
+    # Prefer current database-mapped names, then fall back to the original
+    # workbook labels/values when a database value is not available.
+    "Current Location:": ("Current Assignment", "Current Location:"),
+    "Date in Position": ("Assignment Date", "Date in Position"),
+    "Date of Appointment to Current Grade": (
+        "SG Start Date",
+        "Date of Appointment to Current Grade",
+    ),
+    "Age Promoted to Staff or Principal": (
+        "Age Promoted",
+        "Age Promoted to Staff or Principal",
+    ),
+    "Last Assesment Date": (
+        "Last Assessment Date",
+        "Last Assesment Date Source",
+        "Last Assesment Date",
+    ),
+    "Assesor1": ("Assessor 1", "Assesor1"),
+    "Assesor2": ("Assessor 2", "Assesor2"),
+    "Resource/SME": ("Resource / SME", "Resource/SME"),
+    "Comment/Suggestion": ("Comment / Suggestion", "Comment/Suggestion"),
 }
 
 

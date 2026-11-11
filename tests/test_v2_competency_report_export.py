@@ -88,14 +88,16 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
     source_ws["A1"] = "Original master heading"
     headers = [
         "Name", "Staff ID", "Department", "Section Name", "Unit Name",
-        "Sub Unit", "SG", "B1", "R-B1", "G-B1",
+        "Sub Unit", "SG", "Current Location:", "Date in Position",
+        "Date of Appointment to Current Grade", "Age Promoted to Staff or Principal",
+        "Last Assesment Date", "B1", "R-B1", "G-B1",
     ]
     for column, value in enumerate(headers, start=1):
         source_ws.cell(3, column, value)
     source_ws.append([])
     source_ws.append([
         "Workbook Person", 1001, "DPE", "RMS", "SBA", "Cluster 1",
-        "P3", 2, 3, 1,
+        "P3", "Old assignment", None, None, None, "Old date", 2, 3, 1,
     ])
     source_wb.save(source_path)
     source_wb.close()
@@ -110,6 +112,11 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
                 "Unit Name": "SBA",
                 "Sub Unit": "Cluster 2",
                 "SG": "P4",
+                "Current Assignment": "Current assignment",
+                "Assignment Date": pd.Timestamp("2026-10-01"),
+                "SG Start Date": pd.Timestamp("2025-01-01"),
+                "Age Promoted": 31,
+                "Last Assessment Date": pd.Timestamp("2026-10-15"),
                 "B1": 4,
                 "R-B1": 3,
                 "G--B1": -1,
@@ -162,8 +169,13 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
         assert master.cell(workbook_person_row, 3).value == "PSR"
         assert master.cell(workbook_person_row, 6).value == "Cluster 2"
         assert master.cell(workbook_person_row, 7).value == "P4"
-        assert master.cell(workbook_person_row, 8).value == 4
-        assert master.cell(workbook_person_row, 10).value == -1
+        assert master.cell(workbook_person_row, 8).value == "Current assignment"
+        assert master.cell(workbook_person_row, 9).value.date().isoformat() == "2026-10-01"
+        assert master.cell(workbook_person_row, 10).value.date().isoformat() == "2025-01-01"
+        assert master.cell(workbook_person_row, 11).value == 31
+        assert master.cell(workbook_person_row, 12).value == pd.Timestamp("2026-10-15").to_pydatetime()
+        assert master.cell(workbook_person_row, 13).value == 4
+        assert master.cell(workbook_person_row, 15).value == -1
         assert master.cell(database_person_row, 1).value == "Database Only Person"
         assert master.cell(database_person_row, 5).value == "JVM"
         assert master.cell(database_person_row, 8).value == 2
