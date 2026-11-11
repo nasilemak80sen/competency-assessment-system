@@ -11,6 +11,7 @@ PAGES = [
     st.Page("pages/08_Admin_Import_Data.py", title="⚙️ Admin: Import Data", url_path="admin-import-data"),
     st.Page("pages/07_Admin.py", title="⚙️ Admin: Personnel Database Settings", url_path="admin-personnel-settings"),
     st.Page("pages/09_Admin_User_Access.py", title="🔐 Admin: User Access Management", url_path="admin-user-access"),
+    st.Page("pages/12_Admin_Competency_Report_Export.py", title="🧾 Admin: Competency Report Export", url_path="admin-competency-report-export"),
 ]
 
 USER_PAGES = [
@@ -27,6 +28,7 @@ PAGE_BY_PATH = {
     "admin-import-data": PAGES[5],
     "admin-personnel-settings": PAGES[6],
     "admin-user-access": PAGES[7],
+    "admin-competency-report-export": PAGES[8],
     "my-dashboard": USER_PAGES[0],
     "my-assessment": USER_PAGES[1],
 }

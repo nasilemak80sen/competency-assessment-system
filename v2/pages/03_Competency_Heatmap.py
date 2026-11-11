@@ -7,9 +7,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from components.navigation import render_navigation, render_header
-from config import COMP_TYPES, COMPETENCY_FULLNAMES, HEATMAP_COLORSCALE
-from core.bootstrap import get_heatmap_data
-from services.heatmap_service import ensure_employment_type_filter
+from config import COMP_TYPES, COMPETENCY_FULLNAMES, HEATMAP_COLORSCALE, SCORE_COLS
+from core.bootstrap import get_heatmap_data, get_ruler_data
+from services.heatmap_service import (
+    derive_competency_max_scores,
+    ensure_employment_type_filter,
+    filter_personnel_by_competency_threshold,
+)
 
 
 render_navigation()
@@ -147,11 +151,109 @@ if f_sg:
 if f_employment:
     fdf = fdf[fdf["Employment Type Filter"].isin(f_employment)]
 
+# ---------------------------------------------------------------------------
+# OPTIONAL COMPETENCY ELEMENT FINDER
+# ---------------------------------------------------------------------------
+score_filter_code: str | None = None
+score_filter_sort = "Highest to lowest"
+with st.expander("Find personnel by competency element", expanded=False):
+    enable_score_filter = st.checkbox(
+        "Enable competency score threshold filter",
+        value=False,
+        key="hm_enable_competency_threshold",
+        help="Filter the personnel shown below by one competency element and a minimum score.",
+    )
+    if enable_score_filter:
+        try:
+            ruler_map, ruler_competency_names = get_ruler_data()
+            competency_max_scores = derive_competency_max_scores(ruler_map)
+        except Exception as exc:
+            competency_max_scores = {}
+            st.warning(f"Could not load competency score limits from the Ruler worksheet: {exc}")
+
+        available_score_codes = [
+            code for code in SCORE_COLS
+            if code in fdf.columns and code in competency_max_scores
+        ]
+        if not available_score_codes:
+            st.warning(
+                "No competency score limits are available. The filter is disabled "
+                "rather than assuming that every competency has a maximum score of 5."
+            )
+        else:
+            competency_labels = COMPETENCY_FULLNAMES.copy()
+            competency_labels.update({
+                code: name for code, name in ruler_competency_names.items() if name
+            })
+            finder_col1, finder_col2, finder_col3 = st.columns([2.6, 1, 1.5])
+            with finder_col1:
+                score_filter_code = st.selectbox(
+                    "Competency element",
+                    options=available_score_codes,
+                    format_func=lambda code: f"{code} · {competency_labels.get(code, code)}",
+                    key="hm_competency_element",
+                )
+            score_maximum = int(competency_max_scores[score_filter_code])
+            if score_maximum < 1:
+                st.warning(f"{score_filter_code} has no positive score levels in the Ruler worksheet.")
+                score_filter_code = None
+            else:
+                with finder_col2:
+                    score_threshold = st.selectbox(
+                        f"Minimum score (1–{score_maximum})",
+                        options=list(range(1, score_maximum + 1)),
+                        key="hm_competency_threshold",
+                    )
+                with finder_col3:
+                    score_filter_sort = st.selectbox(
+                        "Sort matching personnel",
+                        options=["Highest to lowest", "Lowest to highest"],
+                        key="hm_competency_sort",
+                    )
+                st.caption(
+                    f"Maximum attainable score for {score_filter_code}: {score_maximum}. "
+                    "Limits are derived from the highest level assigned to that element "
+                    "across all BASE/RDP/RMS/RSS salary-grade ruler entries."
+                )
+                fdf = filter_personnel_by_competency_threshold(
+                    fdf,
+                    score_filter_code,
+                    score_threshold,
+                )
+                if fdf.empty:
+                    st.info(
+                        f"No personnel have a {score_filter_code} score of "
+                        f"{score_threshold} or higher."
+                    )
+                else:
+                    matching = fdf.copy()
+                    matching["Selected Competency Score"] = pd.to_numeric(
+                        matching[score_filter_code], errors="coerce"
+                    )
+                    matching = matching.sort_values(
+                        "Selected Competency Score",
+                        ascending=(score_filter_sort == "Lowest to highest"),
+                        na_position="last",
+                    )
+                    result_columns = [
+                        column for column in [
+                            "Name", "Staff ID", "Department", "Section Name",
+                            "Unit Name", "Sub Unit", "SG",
+                        ]
+                        if column in matching.columns
+                    ]
+                    result_table = matching[result_columns].copy()
+                    result_table["Selected Competency Score"] = matching["Selected Competency Score"]
+                    st.markdown(f"**Personnel meeting the {score_filter_code} threshold**")
+                    st.dataframe(result_table, use_container_width=True, hide_index=True)
+
 value_cols: list[str] = []
 for competency_type in f_type:
     configured_columns = COMP_TYPES.get(competency_type, {}).get("cols", [])
     value_cols.extend(column for column in configured_columns if column in fdf.columns)
 value_cols = list(dict.fromkeys(value_cols))
+if score_filter_code and score_filter_code in fdf.columns and score_filter_code not in value_cols:
+    value_cols.append(score_filter_code)
 
 if not value_cols:
     st.info("Select at least one competency type.")
@@ -215,7 +317,13 @@ if heatmap_data.empty:
 # SORT PERSONNEL
 # -----------------------------------------------------------------------------
 
-if sort_option == "Name":
+if score_filter_code:
+    heatmap_data = heatmap_data.sort_values(
+        score_filter_code,
+        ascending=(score_filter_sort == "Lowest to highest"),
+        na_position="last",
+    )
+elif sort_option == "Name":
     heatmap_data = heatmap_data.sort_values("Name", ascending=True, na_position="last")
 elif sort_option == "Average score: high to low":
     heatmap_data = heatmap_data.sort_values("Average Score", ascending=False, na_position="last")

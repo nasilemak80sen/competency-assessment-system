@@ -19,6 +19,7 @@ ADMIN_NAV = (
     ("📥 Import", "⚙️ Admin: Import Data", "admin-import-data"),
     ("👥 Database", "⚙️ Admin: Personnel Database Settings", "admin-personnel-settings"),
     ("🔐 Users", "🔐 Admin: User Access Management", "admin-user-access"),
+    ("📤 Reports", "🧾 Admin: Competency Report Export", "admin-competency-report-export"),
 )
 
 

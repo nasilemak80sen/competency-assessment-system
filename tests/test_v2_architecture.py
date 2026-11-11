@@ -48,7 +48,7 @@ def test_all_registered_v2_pages_exist():
     expected = [
         "01_Dashboard.py", "02_Personnel.py", "03_Competency_Heatmap.py",
         "04_Readiness_and_Gaps.py", "05_Individual_Assessment.py",
-        "06_Chart_Builder.py", "07_Admin.py", "08_Admin_Import_Data.py",
+        "06_Chart_Builder.py", "07_Admin.py", "08_Admin_Import_Data.py", "12_Admin_Competency_Report_Export.py",
     ]
     assert all((V2 / "pages" / name).exists() for name in expected)
 

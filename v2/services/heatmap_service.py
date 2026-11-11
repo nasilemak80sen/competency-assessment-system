@@ -191,3 +191,53 @@ def merge_database_personnel_for_heatmap(
     # Canonical labels drive the dropdown; keep the original category intact
     # for audit/export purposes and so unusual employment values remain usable.
     return ensure_employment_type_filter(out).reset_index(drop=True)
+
+
+def derive_competency_max_scores(ruler_map: Mapping[str, Any]) -> dict[str, float]:
+    """Return the highest defined ruler level for each competency.
+
+    The maximum is aggregated across BASE, RDP, RMS and RSS and every salary
+    grade in the source Ruler worksheet. It is not inferred from observed staff
+    scores, so a competency remains filterable up to its rubric-defined ceiling
+    even when nobody has achieved that score yet.
+    """
+    from config import SCORE_COLS
+
+    maxima: dict[str, float] = {}
+    if not isinstance(ruler_map, Mapping):
+        return maxima
+
+    for grade_map in ruler_map.values():
+        if not isinstance(grade_map, Mapping):
+            continue
+        for competency_map in grade_map.values():
+            if not isinstance(competency_map, Mapping):
+                continue
+            for code, raw_value in competency_map.items():
+                if code not in SCORE_COLS:
+                    continue
+                score = pd.to_numeric(raw_value, errors="coerce")
+                if pd.isna(score):
+                    continue
+                numeric_score = float(score)
+                if numeric_score < 0 or numeric_score > 5:
+                    raise ValueError(
+                        f"Ruler maximum for {code} is outside the supported 0-5 scale: {numeric_score}"
+                    )
+                maxima[code] = max(maxima.get(code, numeric_score), numeric_score)
+    return maxima
+
+
+def filter_personnel_by_competency_threshold(
+    frame: pd.DataFrame,
+    competency_code: str,
+    minimum_score: float,
+) -> pd.DataFrame:
+    """Keep only personnel whose selected competency score meets the threshold."""
+    if competency_code not in frame.columns:
+        raise KeyError(f"Competency column {competency_code!r} is not present in the personnel dataset.")
+    numeric_threshold = pd.to_numeric(minimum_score, errors="coerce")
+    if pd.isna(numeric_threshold):
+        raise ValueError("The minimum competency score must be numeric.")
+    scores = pd.to_numeric(frame[competency_code], errors="coerce")
+    return frame.loc[scores.ge(float(numeric_threshold))].copy()
