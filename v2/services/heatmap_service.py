@@ -193,51 +193,56 @@ def merge_database_personnel_for_heatmap(
     return ensure_employment_type_filter(out).reset_index(drop=True)
 
 
-def derive_competency_max_scores(ruler_map: Mapping[str, Any]) -> dict[str, float]:
-    """Return the highest defined ruler level for each competency.
+def get_configured_competency_max_scores(
+    maximum_scores: Mapping[str, Any] | None = None,
+) -> dict[str, int]:
+    """Return only explicitly configured, validated competency score ceilings.
 
-    The maximum is aggregated across BASE, RDP, RMS and RSS and every salary
-    grade in the source Ruler worksheet. It is not inferred from observed staff
-    scores, so a competency remains filterable up to its rubric-defined ceiling
-    even when nobody has achieved that score yet.
+    Career-ruler values are grade-specific target requirements and are not
+    authoritative scoring ceilings. Production defaults to config mapping;
+    callers may pass a mapping for deterministic tests.
     """
-    from config import SCORE_COLS
+    from config import COMPETENCY_MAX_SCORES, SCORE_COLS
 
-    maxima: dict[str, float] = {}
-    if not isinstance(ruler_map, Mapping):
-        return maxima
+    configured = COMPETENCY_MAX_SCORES if maximum_scores is None else maximum_scores
+    if not isinstance(configured, Mapping):
+        raise TypeError("Competency maximum scores must be provided as a mapping.")
 
-    for grade_map in ruler_map.values():
-        if not isinstance(grade_map, Mapping):
-            continue
-        for competency_map in grade_map.values():
-            if not isinstance(competency_map, Mapping):
-                continue
-            for code, raw_value in competency_map.items():
-                if code not in SCORE_COLS:
-                    continue
-                score = pd.to_numeric(raw_value, errors="coerce")
-                if pd.isna(score):
-                    continue
-                numeric_score = float(score)
-                if numeric_score < 0 or numeric_score > 5:
-                    raise ValueError(
-                        f"Ruler maximum for {code} is outside the supported 0-5 scale: {numeric_score}"
-                    )
-                maxima[code] = max(maxima.get(code, numeric_score), numeric_score)
-    return maxima
+    validated: dict[str, int] = {}
+    for raw_code, raw_maximum in configured.items():
+        code = str(raw_code).strip().upper()
+        if code not in SCORE_COLS:
+            raise ValueError(f"Unknown competency code in maximum-score configuration: {raw_code!r}")
+        score = pd.to_numeric(raw_maximum, errors="coerce")
+        if pd.isna(score):
+            raise ValueError(f"Maximum score for {code} must be numeric.")
+        numeric_score = float(score)
+        if not numeric_score.is_integer() or not 1 <= numeric_score <= 5:
+            raise ValueError(
+                f"Maximum score for {code} must be a whole-number level from 1 to 5."
+            )
+        validated[code] = int(numeric_score)
+    return validated
 
 
 def filter_personnel_by_competency_threshold(
     frame: pd.DataFrame,
     competency_code: str,
     minimum_score: float,
+    *,
+    maximum_score: int | None = None,
 ) -> pd.DataFrame:
-    """Keep only personnel whose selected competency score meets the threshold."""
+    """Keep personnel whose selected competency meets a valid minimum score."""
     if competency_code not in frame.columns:
         raise KeyError(f"Competency column {competency_code!r} is not present in the personnel dataset.")
     numeric_threshold = pd.to_numeric(minimum_score, errors="coerce")
     if pd.isna(numeric_threshold):
         raise ValueError("The minimum competency score must be numeric.")
+    if not 1 <= float(numeric_threshold) <= 5:
+        raise ValueError("The minimum competency score must be between 1 and 5.")
+    if maximum_score is not None and float(numeric_threshold) > maximum_score:
+        raise ValueError(
+            f"The minimum score {numeric_threshold} exceeds the configured maximum {maximum_score} for {competency_code}."
+        )
     scores = pd.to_numeric(frame[competency_code], errors="coerce")
     return frame.loc[scores.ge(float(numeric_threshold))].copy()

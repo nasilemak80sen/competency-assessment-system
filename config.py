@@ -266,6 +266,12 @@ ASSESSMENT_LEVELS = [
 RULER_SHEET = "Ruler"
 TAB_SEPARATOR_SHEET = "tab separator"
 
+# Explicit competency score ceilings must come from an approved scoring rubric.
+# The workbook's Ruler_ sheet contains grade-specific target requirements, not
+# maximum attainable scores. Do not use those requirements as score caps.
+# Leave empty until the authoritative per-element scoring ceilings are supplied.
+COMPETENCY_MAX_SCORES: dict[str, int] = {}
+
 COMPETENCY_FULLNAMES = {
     "B1": "Fluid characterisation*",
     "B2": "Rock Properties*",

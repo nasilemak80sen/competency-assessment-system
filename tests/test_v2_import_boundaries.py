@@ -87,10 +87,10 @@ assert hasattr(nationality, "prepare_nationality_map_data")
 def test_page_registry_is_canonical_and_matches_golden_order():
     _prepare_v2_path()
     pages = importlib.import_module("core.pages")
-    # Eight admin pages are registered, including the newer user-access page;
+    # The registry includes the dedicated admin competency report page;
     # the path map also includes the two user-role pages.
-    assert len(pages.PAGES) == 8
-    assert len(pages.PAGE_BY_PATH) == 10
+    assert len(pages.PAGES) == 9
+    assert len(pages.PAGE_BY_PATH) == 11
     assert pages.PAGE_BY_PATH[""] is pages.PAGES[0]
     source = (V2_DIR / "core" / "pages.py").read_text(encoding="utf-8")
     expected_titles = [
@@ -102,10 +102,12 @@ def test_page_registry_is_canonical_and_matches_golden_order():
         "⚙️ Admin: Import Data",
         "⚙️ Admin: Personnel Database Settings",
         "🔐 Admin: User Access Management",
+        "🧾 Admin: Competency Report Export",
     ]
     assert all(title in source for title in expected_titles)
     assert pages.PAGE_BY_PATH["individual-assessment"] is pages.PAGES[2]
     assert pages.PAGE_BY_PATH["admin-user-access"] is pages.PAGES[7]
+    assert pages.PAGE_BY_PATH["admin-competency-report-export"] is pages.PAGES[8]
     assert pages.PAGE_BY_PATH["my-dashboard"] is pages.USER_PAGES[0]
     assert pages.PAGE_BY_PATH["my-assessment"] is pages.USER_PAGES[1]
 
@@ -119,6 +121,7 @@ def test_registered_pages_all_render_shared_navigation():
         V2_DIR / "pages" / "06_Chart_Builder.py",
         V2_DIR / "pages" / "07_Admin.py",
         V2_DIR / "pages" / "08_Admin_Import_Data.py",
+        V2_DIR / "pages" / "12_Admin_Competency_Report_Export.py",
     ]
     for page_file in page_files:
         source = page_file.read_text(encoding="utf-8")
@@ -151,6 +154,7 @@ def test_navigation_matches_golden_labels_and_button_layout():
         '("📊 Charts", "📊 Chart Builder & Depth Analysis", "chart-builder")',
         '("📥 Import", "⚙️ Admin: Import Data", "admin-import-data")',
         '("👥 Database", "⚙️ Admin: Personnel Database Settings", "admin-personnel-settings")',
+        '("📤 Reports", "🧾 Admin: Competency Report Export", "admin-competency-report-export")',
         'st.columns(5)',
         'disabled=is_active',
         'st.switch_page(PAGE_BY_PATH[path])',

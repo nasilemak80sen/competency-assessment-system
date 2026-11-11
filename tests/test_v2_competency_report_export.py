@@ -6,7 +6,7 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 
 from v2.services.heatmap_service import (
-    derive_competency_max_scores,
+    get_configured_competency_max_scores,
     filter_personnel_by_competency_threshold,
 )
 from v2.services.report_export_service import (
@@ -18,23 +18,26 @@ from v2.services.report_export_service import (
 )
 
 
-def test_derive_competency_max_scores_uses_highest_ruler_level_across_all_groups():
-    ruler_map = {
-        "BASE": {
-            "P1": {"B1": 1, "P5": 1},
-            "P10": {"B1": 3, "P5": 2, "E1": 2},
-        },
-        "RDP": {
-            "P3": {"B1": 2, "P5": 1},
-            "P10": {"B1": 5, "P5": 2, "E1": 1},
-        },
-        "RMS": {"P10": {"B1": 4, "P5": 2}},
-        "RSS": {"P10": {"B1": 4, "P5": 1}},
-    }
+def test_configured_competency_max_scores_are_explicit_and_validated():
+    maxima = get_configured_competency_max_scores(
+        {"B1": 5, "B4": 4, "B8": 3, "P5": 2, "E2": 2}
+    )
 
-    maxima = derive_competency_max_scores(ruler_map)
+    assert maxima == {"B1": 5, "B4": 4, "B8": 3, "P5": 2, "E2": 2}
 
-    assert maxima == {"B1": 5.0, "P5": 2.0, "E1": 2.0}
+
+def test_configured_competency_max_scores_reject_invalid_values():
+    import pytest
+
+    with pytest.raises(ValueError, match="whole-number level"):
+        get_configured_competency_max_scores({"B1": 5.5})
+
+    with pytest.raises(ValueError, match="Unknown competency code"):
+        get_configured_competency_max_scores({"Z9": 5})
+
+
+def test_missing_maximum_configuration_does_not_infer_caps_from_ruler_targets():
+    assert get_configured_competency_max_scores({}) == {}
 
 
 def test_competency_threshold_filter_is_inclusive_and_ignores_missing_scores():
@@ -47,7 +50,7 @@ def test_competency_threshold_filter_is_inclusive_and_ignores_missing_scores():
         ]
     )
 
-    filtered = filter_personnel_by_competency_threshold(frame, "B1", 3)
+    filtered = filter_personnel_by_competency_threshold(frame, "B1", 3, maximum_score=4)
 
     assert filtered["Name"].tolist() == ["Match", "Exact"]
     assert frame["Name"].tolist() == ["Low", "Match", "Exact", "Unassessed"]

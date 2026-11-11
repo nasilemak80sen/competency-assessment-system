@@ -8,9 +8,9 @@ import streamlit as st
 
 from components.navigation import render_navigation, render_header
 from config import COMP_TYPES, COMPETENCY_FULLNAMES, HEATMAP_COLORSCALE, SCORE_COLS
-from core.bootstrap import get_heatmap_data, get_ruler_data
+from core.bootstrap import get_heatmap_data
 from services.heatmap_service import (
-    derive_competency_max_scores,
+    get_configured_competency_max_scores,
     ensure_employment_type_filter,
     filter_personnel_by_competency_threshold,
 )
@@ -165,26 +165,16 @@ with st.expander("Find personnel by competency element", expanded=False):
     )
     if enable_score_filter:
         try:
-            ruler_map, ruler_competency_names = get_ruler_data()
-            competency_max_scores = derive_competency_max_scores(ruler_map)
-        except Exception as exc:
+            competency_max_scores = get_configured_competency_max_scores()
+        except (TypeError, ValueError) as exc:
             competency_max_scores = {}
-            st.warning(f"Could not load competency score limits from the Ruler worksheet: {exc}")
+            st.error(f"Invalid competency maximum-score configuration: {exc}")
 
-        available_score_codes = [
-            code for code in SCORE_COLS
-            if code in fdf.columns and code in competency_max_scores
-        ]
+        available_score_codes = [code for code in SCORE_COLS if code in fdf.columns]
         if not available_score_codes:
-            st.warning(
-                "No competency score limits are available. The filter is disabled "
-                "rather than assuming that every competency has a maximum score of 5."
-            )
+            st.warning("No competency score columns are available in the current personnel dataset.")
         else:
             competency_labels = COMPETENCY_FULLNAMES.copy()
-            competency_labels.update({
-                code: name for code, name in ruler_competency_names.items() if name
-            })
             finder_col1, finder_col2, finder_col3 = st.columns([2.6, 1, 1.5])
             with finder_col1:
                 score_filter_code = st.selectbox(
@@ -193,16 +183,21 @@ with st.expander("Find personnel by competency element", expanded=False):
                     format_func=lambda code: f"{code} · {competency_labels.get(code, code)}",
                     key="hm_competency_element",
                 )
-            score_maximum = int(competency_max_scores[score_filter_code])
-            if score_maximum < 1:
-                st.warning(f"{score_filter_code} has no positive score levels in the Ruler worksheet.")
+
+            score_maximum = competency_max_scores.get(score_filter_code)
+            if score_maximum is None:
+                st.info(
+                    f"The maximum attainable score for {score_filter_code} has not been "
+                    "configured from an approved scoring rubric. Threshold filtering for "
+                    "this element is withheld rather than using its career-ruler target."
+                )
                 score_filter_code = None
             else:
                 with finder_col2:
                     score_threshold = st.selectbox(
                         f"Minimum score (1–{score_maximum})",
                         options=list(range(1, score_maximum + 1)),
-                        key="hm_competency_threshold",
+                        key=f"hm_competency_threshold_{score_filter_code}",
                     )
                 with finder_col3:
                     score_filter_sort = st.selectbox(
@@ -211,14 +206,14 @@ with st.expander("Find personnel by competency element", expanded=False):
                         key="hm_competency_sort",
                     )
                 st.caption(
-                    f"Maximum attainable score for {score_filter_code}: {score_maximum}. "
-                    "Limits are derived from the highest level assigned to that element "
-                    "across all BASE/RDP/RMS/RSS salary-grade ruler entries."
+                    f"Configured maximum attainable score for {score_filter_code}: "
+                    f"{score_maximum}."
                 )
                 fdf = filter_personnel_by_competency_threshold(
                     fdf,
                     score_filter_code,
                     score_threshold,
+                    maximum_score=score_maximum,
                 )
                 if fdf.empty:
                     st.info(

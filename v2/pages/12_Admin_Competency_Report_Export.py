@@ -11,9 +11,9 @@ import streamlit as st
 from components.navigation import render_header, render_navigation
 from config import COMPETENCY_FULLNAMES, EXCEL_PATH, SCORE_COLS
 from core.auth import require_roles
-from core.bootstrap import get_heatmap_data, get_ruler_data
+from core.bootstrap import get_heatmap_data
 from services.auth_service import ROLE_ADMIN
-from services.heatmap_service import derive_competency_max_scores, ensure_employment_type_filter
+from services.heatmap_service import get_configured_competency_max_scores, ensure_employment_type_filter
 from services.report_export_service import (
     build_competency_report_workbook,
     filter_personnel_for_export,
@@ -192,25 +192,19 @@ if selected_personnel.empty:
 # EXPORT
 # ---------------------------------------------------------------------------
 try:
-    ruler_map, workbook_competency_names = get_ruler_data()
-    maximum_scores = derive_competency_max_scores(ruler_map)
-except Exception as exc:
-    st.error(f"Unable to read the competency scoring reference from the master workbook: {exc}")
+    maximum_scores = get_configured_competency_max_scores()
+except (TypeError, ValueError) as exc:
+    st.error(f"Invalid competency maximum-score configuration: {exc}")
     st.stop()
 
-missing_maxima = [code for code in SCORE_COLS if code not in maximum_scores]
-if missing_maxima:
-    st.error(
-        "The scoring reference does not define a maximum level for: "
-        + ", ".join(missing_maxima)
-        + ". Export is stopped rather than inventing score limits."
+if len(maximum_scores) < len(SCORE_COLS):
+    st.info(
+        "Some competency maximum scores have not yet been configured from an approved "
+        "scoring rubric. Those Maximum Score cells will remain blank in the export; "
+        "career-ruler targets will not be treated as attainable-score limits."
     )
-    st.stop()
 
 competency_names = dict(COMPETENCY_FULLNAMES)
-competency_names.update({
-    code: name for code, name in workbook_competency_names.items() if name
-})
 export_filters = {
     "search": personnel_search,
     "sub_department": selected_department,
