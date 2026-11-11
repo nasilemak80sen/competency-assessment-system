@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
@@ -210,3 +211,63 @@ def test_export_rejects_empty_personnel_selection():
         assert "Select at least one" in str(exc)
     else:
         raise AssertionError("An empty export selection must be rejected.")
+
+
+
+def test_export_preserves_actual_repository_master_schema_and_styles():
+    source_path = Path(__file__).resolve().parents[1] / "RE Fraternity Jul2026_Master.xlsx"
+    if not source_path.is_file():
+        import pytest
+        pytest.skip("Repository master workbook is not present in this checkout.")
+
+    source_wb = load_workbook(source_path, data_only=True, read_only=False)
+    try:
+        source_ws = source_wb["All"]
+        header_row = 3
+        headers = [
+            source_ws.cell(header_row, column).value
+            for column in range(1, source_ws.max_column + 1)
+        ]
+        name_column = headers.index("Name") + 1
+        staff_id_column = headers.index("Staff ID") + 1
+        source_row = next(
+            row
+            for row in range(header_row + 1, source_ws.max_row + 1)
+            if source_ws.cell(row, name_column).value
+            and source_ws.cell(row, staff_id_column).value is not None
+        )
+        record = {
+            header: source_ws.cell(source_row, column).value
+            for column, header in enumerate(headers, start=1)
+            if header is not None
+        }
+        source_header_font_bold = source_ws.cell(header_row, name_column).font.bold
+        source_header_fill_type = source_ws.cell(header_row, name_column).fill.fill_type
+        source_header_border = source_ws.cell(header_row, name_column).border.bottom.style
+        source_record_font_italic = source_ws.cell(source_row, name_column).font.italic
+    finally:
+        source_wb.close()
+
+    content = build_competency_report_workbook(
+        source_workbook_path=source_path,
+        personnel=pd.DataFrame([record]),
+        competency_names={},
+        maximum_scores={},
+    )
+
+    exported = load_workbook(BytesIO(content), data_only=True)
+    try:
+        master = exported["Personnel Master"]
+        exported_headers = [
+            master.cell(header_row, column).value
+            for column in range(1, len(headers) + 1)
+        ]
+        assert exported_headers == headers
+        assert master.max_column == len(headers)
+        assert master.cell(3, name_column).font.bold == source_header_font_bold
+        assert master.cell(3, name_column).fill.fill_type == source_header_fill_type
+        assert master.cell(3, name_column).border.bottom.style == source_header_border
+        assert master.cell(4, name_column).font.italic == source_record_font_italic
+        assert master.cell(4, staff_id_column).value == record["Staff ID"]
+    finally:
+        exported.close()

@@ -226,12 +226,14 @@ def _copy_source_row(source_ws, target_ws, source_row: int, target_row: int, max
         source_cell = source_ws.cell(source_row, column_number)
         target_cell = target_ws.cell(target_row, column_number, _safe_excel_value(source_cell.value))
         if source_cell.has_style:
-            target_cell._style = copy(source_cell._style)
-        if source_cell.number_format:
-            target_cell.number_format = source_cell.number_format
-        if source_cell.alignment:
+            # Do not assign the source workbook's raw StyleArray. Its style
+            # IDs refer to a different workbook registry and can produce
+            # invalid style references in the exported file.
+            target_cell.font = copy(source_cell.font)
+            target_cell.fill = copy(source_cell.fill)
+            target_cell.border = copy(source_cell.border)
             target_cell.alignment = copy(source_cell.alignment)
-        if source_cell.protection:
+            target_cell.number_format = source_cell.number_format
             target_cell.protection = copy(source_cell.protection)
         if source_cell.hyperlink:
             target_cell._hyperlink = copy(source_cell.hyperlink)
