@@ -178,7 +178,7 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
         assert master.cell(workbook_person_row, 15).value == -1
         assert master.cell(database_person_row, 1).value == "Database Only Person"
         assert master.cell(database_person_row, 5).value == "JVM"
-        assert master.cell(database_person_row, 8).value == 2
+        assert master.cell(database_person_row, 13).value == 2
 
         breakdown = exported["Competency Breakdown"]
         assert breakdown["H2"].value == "Fluid characterisation"
