@@ -16,6 +16,45 @@ from sqlalchemy.orm import Session
 from models import ChartConfiguration
 
 
+CHART_CATEGORIES = (
+    "Workforce",
+    "Career Progression",
+    "Competency Analysis",
+)
+
+
+def infer_chart_category(configuration: dict) -> str:
+    """Infer gallery grouping from the data elements in a saved setup."""
+    chart = configuration.get("chart", {}) if isinstance(configuration, dict) else {}
+    fields = {
+        str(chart.get(key) or "")
+        for key in ("dimension", "measure", "size", "x_group", "y_group")
+    }
+    competency_codes = {
+        *(f"B{i}" for i in range(1, 13)),
+        *(f"K{i}" for i in range(1, 6)),
+        *(f"P{i}" for i in range(1, 6)),
+        "E1", "E2",
+    }
+    if any(
+        field in competency_codes
+        or field.startswith("R-")
+        or field.startswith("G--")
+        for field in fields
+    ):
+        return "Competency Analysis"
+
+    career_fields = {
+        "Years in PET",
+        "Years of RE Experience",
+        "Years in Salary Grade",
+        "SG",
+        "Age Promoted to Staff or Principal",
+        "Length in Current Assignment",
+    }
+    return "Career Progression" if fields.intersection(career_fields) else "Workforce"
+
+
 def _json_default(value: Any):
     """Convert common pandas/numpy scalar wrappers to JSON-native values."""
     if hasattr(value, "item"):
@@ -58,6 +97,10 @@ def list_chart_configurations(session: Session, owner_user_id: int) -> list[dict
             "id": record.id,
             "name": record.name,
             "description": record.description or "",
+            "category": record.category or infer_chart_category(
+                json.loads(record.configuration_json)
+            ),
+            "configuration": json.loads(record.configuration_json),
             "updated_at": record.updated_at,
         }
         for record in records
@@ -90,6 +133,7 @@ def get_chart_configuration(
         "id": record.id,
         "name": record.name,
         "description": record.description or "",
+        "category": record.category or infer_chart_category(configuration),
         "configuration": configuration,
         "updated_at": record.updated_at,
     }
@@ -102,6 +146,7 @@ def save_chart_configuration(
     name: str,
     configuration: dict,
     description: str = "",
+    category: str | None = None,
 ) -> dict:
     """Create or update a user's configuration by case-insensitive name."""
     if owner_user_id is None:
@@ -115,6 +160,9 @@ def save_chart_configuration(
     if len(clean_description) > 500:
         raise ValueError("Descriptions must be 500 characters or fewer.")
 
+    clean_category = str(category or infer_chart_category(configuration)).strip()
+    if clean_category not in CHART_CATEGORIES:
+        raise ValueError(f"Unsupported chart category: {clean_category}")
     payload = _serialize_configuration(configuration)
     record = (
         session.query(ChartConfiguration)
@@ -135,6 +183,7 @@ def save_chart_configuration(
     record.owner_username = str(owner_username or "").strip()[:120] or "unknown"
     record.name = clean_name
     record.description = clean_description or None
+    record.category = clean_category
     record.configuration_json = payload
     session.add(record)
     try:
@@ -150,6 +199,7 @@ def save_chart_configuration(
         "id": record.id,
         "name": record.name,
         "description": record.description or "",
+        "category": record.category or clean_category,
         "created": created,
     }
 

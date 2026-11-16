@@ -209,6 +209,28 @@ def test_chart_builder_has_saved_configurations_and_guided_chart_templates():
     assert not missing, f"Saved chart/template workflow missing: {missing}"
 
 
+def test_saved_chart_gallery_has_categories_previews_and_owner_actions():
+    s = CHARTS.read_text(encoding="utf-8")
+    required = [
+        "Saved chart gallery",
+        "All categories",
+        "Workforce",
+        "Career Progression",
+        "Competency Analysis",
+        "Search saved analyses",
+        "Show all saved analyses",
+        "build_chart_preview",
+        "Open setup",
+        "Confirm delete",
+        "cb_gallery_preview_",
+        "Gallery previews use the latest master data",
+        "Gallery category",
+        "category=saved_category",
+    ]
+    missing = [value for value in required if value not in s]
+    assert not missing, f"Saved chart gallery contract missing: {missing}"
+
+
 def test_integer_persistence_source_is_explicitly_hardened_in_model_contract():
     s = (ROOT / "models.py").read_text(encoding="utf-8")
     assert "age" in s and "birth_year" in s

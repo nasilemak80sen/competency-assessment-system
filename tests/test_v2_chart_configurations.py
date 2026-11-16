@@ -111,3 +111,54 @@ def test_chart_configuration_converts_numpy_scalars_to_json(chart_config_session
         "min_age": 35,
         "threshold": 2.5,
     }
+
+
+def test_chart_category_is_persisted_and_exposed_to_gallery(chart_config_session):
+    saved = save_chart_configuration(
+        chart_config_session,
+        11,
+        "career.analyst",
+        "Experience profile",
+        {"chart": {"dimension": "Years of RE Experience", "measure": "Age"}},
+        category="Career Progression",
+    )
+    assert saved["category"] == "Career Progression"
+
+    listed = list_chart_configurations(chart_config_session, 11)
+    assert listed[0]["category"] == "Career Progression"
+    assert listed[0]["configuration"]["chart"]["dimension"] == "Years of RE Experience"
+
+    loaded = get_chart_configuration(chart_config_session, 11, saved["id"])
+    assert loaded["category"] == "Career Progression"
+
+
+def test_chart_category_is_inferred_when_not_provided(chart_config_session):
+    competency = save_chart_configuration(
+        chart_config_session,
+        12,
+        "competency.analyst",
+        "B1 profile",
+        {"chart": {"dimension": "Department", "measure": "B1"}},
+    )
+    workforce = save_chart_configuration(
+        chart_config_session,
+        12,
+        "competency.analyst",
+        "Demographic view",
+        {"chart": {"dimension": "Department", "measure": "Age"}},
+    )
+
+    assert competency["category"] == "Competency Analysis"
+    assert workforce["category"] == "Workforce"
+
+
+def test_chart_configuration_rejects_unknown_gallery_category(chart_config_session):
+    with pytest.raises(ValueError, match="Unsupported chart category"):
+        save_chart_configuration(
+            chart_config_session,
+            13,
+            "analyst",
+            "Bad category",
+            {"chart": {"dimension": "Department", "measure": "Age"}},
+            category="Operations",
+        )

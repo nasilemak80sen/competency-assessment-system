@@ -225,6 +225,7 @@ class ChartConfiguration(Base):
     owner_username = Column(String(120), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     description = Column(String(500))
+    category = Column(String(40), nullable=True, default="Workforce", index=True)
     configuration_json = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
