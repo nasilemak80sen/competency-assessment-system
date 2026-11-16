@@ -208,6 +208,34 @@ class CVDocument(Base):
         return f"<CVDocument(id={self.id}, name={self.cv_file_name})>"
 
 
+class ChartConfiguration(Base):
+    """Saved chart setup owned by an authenticated application user."""
+
+    __tablename__ = "chart_configurations"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "name",
+            name="uq_chart_config_owner_name",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    owner_user_id = Column(Integer, nullable=False, index=True)
+    owner_username = Column(String(120), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(String(500))
+    category = Column(String(40), nullable=True, default="Workforce", index=True)
+    configuration_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
