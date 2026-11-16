@@ -154,23 +154,23 @@ def test_readiness_uses_native_readiness_analytics_stack():
         assert text in s, f"Readiness analytics dependency missing: {text}"
 
 
-def test_chart_builder_has_golden_data_analysis_and_compatibility_workflow():
+def test_chart_builder_has_guided_axes_numeric_measures_and_result_validation():
     s = CHARTS.read_text(encoding="utf-8")
     required = [
-        "📈 Step 2: Select Data Elements",
-        "🔍 Step 3: Data Analysis & Compatibility Check",
-        "✅ Data elements look good for analysis!",
-        "Data Compatibility Issues Detected",
-        "Step 4: Select Chart Type",
-        "Incompatible Chart Types (Why?)",
-        "Step 5: Generate Chart",
-        "Select up to 3 personnel",
-        "X-Axis Data Element",
-        "Y-Axis Data Element (optional, for paired charts)",
+        "Workforce Chart Builder",
+        "get_chart_builder_fields",
+        "X-axis · Group, category or explanatory variable",
+        "Y-axis · Numeric measure",
+        "Number of personnel records",
+        "aggregation_options = [\"Average\", \"Median\", \"Sum\", \"Minimum\", \"Maximum\"]",
+        "Valid Values",
+        "cb_last_chart_source_data",
+        "generate the chart again to refresh it",
+        "Compare individual competency profiles",
     ]
     missing = [x for x in required if x not in s]
     assert not missing, f"Chart Builder workflow contract missing: {missing}"
-
+    assert "Count of rows" not in s, "Record counts should be an explicit mode, not the default Y-axis."
 
 def test_integer_persistence_source_is_explicitly_hardened_in_model_contract():
     s = (ROOT / "models.py").read_text(encoding="utf-8")
