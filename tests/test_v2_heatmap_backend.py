@@ -146,3 +146,42 @@ def test_heatmap_page_guards_derived_employment_column_before_rendering():
     backend = (ROOT / "v2/core/bootstrap.py").read_text(encoding="utf-8")
     assert "return ensure_employment_type_filter(workbook_df)" in backend
     assert "Showing workbook fallback data only" in backend
+
+
+def test_competency_filter_returns_actual_matches_and_optionally_unassessed():
+    from v2.services.heatmap_service import filter_personnel_by_competency_threshold
+
+    frame = pd.DataFrame([
+        {"Name": "Five", "B1": 5},
+        {"Name": "Four", "B1": 4},
+        {"Name": "Three", "B1": 3},
+        {"Name": "Blank", "B1": None},
+    ])
+
+    assessed_only = filter_personnel_by_competency_threshold(
+        frame, "B1", 3, maximum_score=5
+    )
+    with_unassessed = filter_personnel_by_competency_threshold(
+        frame, "B1", 3, maximum_score=5, include_unassessed=True
+    )
+
+    assert assessed_only["Name"].tolist() == ["Five", "Four", "Three"]
+    assert with_unassessed["Name"].tolist() == ["Five", "Four", "Three", "Blank"]
+
+
+def test_competency_score_limit_uses_explicit_cap_or_honest_global_fallback():
+    from v2.services.heatmap_service import get_competency_score_limit
+
+    assert get_competency_score_limit("B1", {"B1": 3}) == (3, True)
+    assert get_competency_score_limit("B1", {}) == (5, False)
+
+
+def test_heatmap_competency_filter_is_visible_and_covers_all_score_elements():
+    source = (ROOT / "v2/pages/03_Competency_Heatmap.py").read_text(encoding="utf-8")
+
+    assert 'st.subheader("🎯 Competency-specific personnel filter")' in source
+    assert 'with st.expander("Find personnel by competency element"' not in source
+    assert "options=available_score_codes" in source
+    assert "include_unassessed=include_unassessed" in source
+    assert '"Section Name"' in source
+    assert '"Assessment Status"' in source

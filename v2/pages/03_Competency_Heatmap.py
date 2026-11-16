@@ -10,7 +10,7 @@ from components.navigation import render_navigation, render_header
 from config import COMP_TYPES, COMPETENCY_FULLNAMES, HEATMAP_COLORSCALE, SCORE_COLS
 from core.bootstrap import get_heatmap_data
 from services.heatmap_service import (
-    get_configured_competency_max_scores,
+    get_competency_score_limit,
     ensure_employment_type_filter,
     filter_personnel_by_competency_threshold,
 )
@@ -152,95 +152,128 @@ if f_employment:
     fdf = fdf[fdf["Employment Type Filter"].isin(f_employment)]
 
 # ---------------------------------------------------------------------------
-# OPTIONAL COMPETENCY ELEMENT FINDER
+# COMPETENCY-SPECIFIC PERSONNEL FILTER
 # ---------------------------------------------------------------------------
+# Keep this panel visible on the page: the earlier collapsed expander made
+# the feature easy to miss, and the empty per-element maxima map disabled it.
 score_filter_code: str | None = None
 score_filter_sort = "Highest to lowest"
-with st.expander("Find personnel by competency element", expanded=False):
-    enable_score_filter = st.checkbox(
-        "Enable competency score threshold filter",
-        value=False,
-        key="hm_enable_competency_threshold",
-        help="Filter the personnel shown below by one competency element and a minimum score.",
+with st.container(border=True):
+    st.subheader("🎯 Competency-specific personnel filter")
+    st.caption(
+        "Choose one competency element to find personnel by their actual recorded "
+        "score. This filter works alongside the Department, Position, Salary Grade "
+        "and Employment Type filters above."
     )
-    if enable_score_filter:
+
+    competency_labels = COMPETENCY_FULLNAMES.copy()
+    available_score_codes = [code for code in SCORE_COLS if code in fdf.columns]
+
+    if not available_score_codes:
+        st.warning("No competency score columns are available in the reconciled personnel dataset.")
+    else:
+        finder_col1, finder_col2, finder_col3, finder_col4 = st.columns([2.7, 1.1, 1.5, 1.6])
+        with finder_col1:
+            score_filter_code = st.selectbox(
+                "Competency element",
+                options=available_score_codes,
+                format_func=lambda code: f"{code} · {competency_labels.get(code, code)}",
+                key="hm_competency_element",
+                help="Type in this selector to search B1–B12, K1–K5, P1–P5 and E1–E2.",
+            )
+
         try:
-            competency_max_scores = get_configured_competency_max_scores()
-        except (TypeError, ValueError) as exc:
-            competency_max_scores = {}
-            st.error(f"Invalid competency maximum-score configuration: {exc}")
+            score_maximum, maximum_is_verified = get_competency_score_limit(score_filter_code)
+        except (TypeError, ValueError, KeyError) as exc:
+            st.error(f"Could not resolve the score limit for {score_filter_code}: {exc}")
+            score_maximum, maximum_is_verified = 5, False
 
-        available_score_codes = [code for code in SCORE_COLS if code in fdf.columns]
-        if not available_score_codes:
-            st.warning("No competency score columns are available in the current personnel dataset.")
+        with finder_col2:
+            threshold_options = list(range(1, score_maximum + 1))
+            score_threshold = st.selectbox(
+                "Score threshold",
+                options=threshold_options,
+                index=min(2, len(threshold_options) - 1),
+                format_func=lambda value: f"At least {value}",
+                key=f"hm_competency_threshold_{score_filter_code}",
+            )
+        with finder_col3:
+            score_filter_sort = st.selectbox(
+                "Sort order",
+                options=["Highest score first", "Lowest score first"],
+                key="hm_competency_sort",
+            )
+        with finder_col4:
+            include_unassessed = st.checkbox(
+                "Include unassessed",
+                value=False,
+                key="hm_competency_include_unassessed",
+                help="Include personnel with no recorded score for this competency, labelled Not assessed.",
+            )
+
+        if maximum_is_verified:
+            st.caption(
+                f"**Verified maximum attainable score: {score_maximum}** for "
+                f"{score_filter_code} · {competency_labels.get(score_filter_code, score_filter_code)}."
+            )
         else:
-            competency_labels = COMPETENCY_FULLNAMES.copy()
-            finder_col1, finder_col2, finder_col3 = st.columns([2.6, 1, 1.5])
-            with finder_col1:
-                score_filter_code = st.selectbox(
-                    "Competency element",
-                    options=available_score_codes,
-                    format_func=lambda code: f"{code} · {competency_labels.get(code, code)}",
-                    key="hm_competency_element",
-                )
+            st.info(
+                f"{score_filter_code} currently uses the system-wide score scale of 1–5. "
+                "An element-specific maximum has not yet been verified from an approved "
+                "scoring rubric. The filter is active, but this is not being presented "
+                "as the competency's verified maximum."
+            )
 
-            score_maximum = competency_max_scores.get(score_filter_code)
-            if score_maximum is None:
-                st.info(
-                    f"The maximum attainable score for {score_filter_code} has not been "
-                    "configured from an approved scoring rubric. Threshold filtering for "
-                    "this element is withheld rather than using its career-ruler target."
-                )
-                score_filter_code = None
-            else:
-                with finder_col2:
-                    score_threshold = st.selectbox(
-                        f"Minimum score (1–{score_maximum})",
-                        options=list(range(1, score_maximum + 1)),
-                        key=f"hm_competency_threshold_{score_filter_code}",
-                    )
-                with finder_col3:
-                    score_filter_sort = st.selectbox(
-                        "Sort matching personnel",
-                        options=["Highest to lowest", "Lowest to highest"],
-                        key="hm_competency_sort",
-                    )
-                st.caption(
-                    f"Configured maximum attainable score for {score_filter_code}: "
-                    f"{score_maximum}."
-                )
-                fdf = filter_personnel_by_competency_threshold(
-                    fdf,
-                    score_filter_code,
-                    score_threshold,
-                    maximum_score=score_maximum,
-                )
-                if fdf.empty:
-                    st.info(
-                        f"No personnel have a {score_filter_code} score of "
-                        f"{score_threshold} or higher."
-                    )
-                else:
-                    matching = fdf.copy()
-                    matching["Selected Competency Score"] = pd.to_numeric(
-                        matching[score_filter_code], errors="coerce"
-                    )
-                    matching = matching.sort_values(
-                        "Selected Competency Score",
-                        ascending=(score_filter_sort == "Lowest to highest"),
-                        na_position="last",
-                    )
-                    result_columns = [
-                        column for column in [
-                            "Name", "Staff ID", "Department", "Section Name",
-                            "Unit Name", "Sub Unit", "SG",
-                        ]
-                        if column in matching.columns
-                    ]
-                    result_table = matching[result_columns].copy()
-                    result_table["Selected Competency Score"] = matching["Selected Competency Score"]
-                    st.markdown(f"**Personnel meeting the {score_filter_code} threshold**")
-                    st.dataframe(result_table, use_container_width=True, hide_index=True)
+        matching = filter_personnel_by_competency_threshold(
+            fdf,
+            score_filter_code,
+            score_threshold,
+            maximum_score=score_maximum,
+            include_unassessed=include_unassessed,
+        )
+        matching["Selected Competency Score"] = pd.to_numeric(
+            matching[score_filter_code], errors="coerce"
+        )
+        matching["Assessment Status"] = matching["Selected Competency Score"].map(
+            lambda value: "Assessed" if pd.notna(value) else "Not assessed"
+        )
+        matching = matching.sort_values(
+            "Selected Competency Score",
+            ascending=(score_filter_sort == "Lowest score first"),
+            na_position="last",
+        )
+
+        st.metric("Matching personnel", len(matching))
+        result_columns = [
+            column for column in [
+                "Name", "Staff ID", "Department", "Section Name", "SG",
+            ]
+            if column in matching.columns
+        ]
+        result_table = matching[result_columns].copy()
+        result_table["Competency"] = score_filter_code
+        result_table["Competency Name"] = competency_labels.get(score_filter_code, score_filter_code)
+        result_table["Score"] = matching["Selected Competency Score"]
+        result_table["Assessment Status"] = matching["Assessment Status"]
+
+        if result_table.empty:
+            st.info(
+                f"No personnel match {score_filter_code} with a score of "
+                f"{score_threshold} or higher."
+            )
+        else:
+            st.dataframe(
+                result_table,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Score": st.column_config.NumberColumn("Score", format="%d"),
+                },
+            )
+        fdf = matching.drop(
+            columns=["Selected Competency Score", "Assessment Status"],
+            errors="ignore",
+        )
 
 value_cols: list[str] = []
 for competency_type in f_type:
@@ -315,7 +348,7 @@ if heatmap_data.empty:
 if score_filter_code:
     heatmap_data = heatmap_data.sort_values(
         score_filter_code,
-        ascending=(score_filter_sort == "Lowest to highest"),
+        ascending=(score_filter_sort == "Lowest score first"),
         na_position="last",
     )
 elif sort_option == "Name":
