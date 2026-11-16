@@ -258,7 +258,7 @@ def test_multiple_admin_secrets_example_uses_distinct_toml_tables():
     example = Path(".streamlit/secrets.toml.example").read_text(encoding="utf-8")
     assert "[admins.system]" in example
     assert "[admins.relt2026]" in example
-    assert example.count("[admins.") == 2
+    assert sum(line.strip().startswith("[admins.") for line in example.splitlines()) == 2
 
 
 def test_named_admin_table_parser_extracts_multiple_accounts():
