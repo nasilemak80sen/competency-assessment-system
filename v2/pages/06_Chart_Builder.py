@@ -8,14 +8,7 @@ import streamlit as st
 from chart_builder import ChartBuilder, ChartCompatibility, DataType
 from components.navigation import render_navigation
 from config import GAP_COLS, REQ_COLS, SCORE_COLS
-from core.auth import current_user
-from core.bootstrap import get_master_data, open_session
-from services.chart_configuration_service import (
-    delete_chart_configuration,
-    get_chart_configuration,
-    list_chart_configurations,
-    save_chart_configuration,
-)
+from core.bootstrap import get_master_data
 
 
 # Keep this page tolerant of a local chart_builder.py that has not yet been
@@ -364,117 +357,6 @@ df = get_master_data()
 if df is None or df.empty:
     st.info("No personnel data is available. Import the master workbook first.")
     st.stop()
-
-# -----------------------------------------------------------------------------
-# SAVED CHART CONFIGURATIONS
-# -----------------------------------------------------------------------------
-auth_user = current_user() or {}
-try:
-    chart_owner_id = int(auth_user.get("id")) if auth_user.get("id") is not None else None
-except (TypeError, ValueError):
-    chart_owner_id = None
-chart_owner_name = str(auth_user.get("username") or auth_user.get("display_name") or "unknown")
-
-saved_chart_rows = []
-saved_chart_load_error = None
-if chart_owner_id is not None:
-    db_session = None
-    try:
-        db_session = open_session()
-        saved_chart_rows = list_chart_configurations(db_session, chart_owner_id)
-    except Exception as exc:
-        saved_chart_load_error = str(exc)
-    finally:
-        if db_session is not None:
-            db_session.close()
-
-with st.container(border=True):
-    saved_heading, saved_hint = st.columns([1.3, 2.7], vertical_alignment="center")
-    with saved_heading:
-        st.markdown("### Saved chart setups")
-    with saved_hint:
-        st.caption(
-            "Load a previous analysis to restore its filters, axes, chart type and display settings. "
-            "Saved setups are private to your account."
-        )
-
-    if chart_owner_id is None:
-        st.info("Sign in with an application account to save and load personal chart configurations.")
-    elif saved_chart_load_error:
-        st.warning(f"Saved configurations could not be loaded: {saved_chart_load_error}")
-    else:
-        saved_label_to_id = {}
-        saved_labels = ["Choose a saved setup"]
-        for row in saved_chart_rows:
-            timestamp = row.get("updated_at")
-            updated_label = (
-                timestamp.strftime("%d %b %Y")
-                if hasattr(timestamp, "strftime") else "Saved"
-            )
-            label = f"{row['name']} · {updated_label}"
-            saved_label_to_id[label] = row["id"]
-            saved_labels.append(label)
-
-        saved_col, load_col, delete_col = st.columns([3.2, 1, 1])
-        with saved_col:
-            selected_saved_label = st.selectbox(
-                "Your saved configurations",
-                saved_labels,
-                key="cb_saved_configuration_v2",
-                help="Each saved setup is visible only to the account that created it.",
-            )
-        selected_saved_id = saved_label_to_id.get(selected_saved_label)
-        with load_col:
-            st.write("")
-            if st.button(
-                "Load setup",
-                key="cb_load_saved_configuration_v2",
-                disabled=selected_saved_id is None,
-                use_container_width=True,
-            ):
-                db_session = open_session()
-                try:
-                    saved_record = get_chart_configuration(
-                        db_session, chart_owner_id, selected_saved_id
-                    )
-                finally:
-                    db_session.close()
-                if saved_record is None:
-                    st.error("That saved configuration is no longer available.")
-                else:
-                    _restore_chart_configuration(saved_record["configuration"], df)
-                    st.session_state["_cb_loaded_config_notice"] = saved_record["name"]
-                    st.rerun()
-        with delete_col:
-            st.write("")
-            if st.button(
-                "Delete",
-                key="cb_delete_saved_configuration_v2",
-                disabled=selected_saved_id is None,
-                use_container_width=True,
-            ):
-                db_session = open_session()
-                try:
-                    deleted = delete_chart_configuration(
-                        db_session, chart_owner_id, selected_saved_id
-                    )
-                finally:
-                    db_session.close()
-                if deleted:
-                    st.success("Saved configuration deleted.")
-                    st.rerun()
-                else:
-                    st.warning("The selected configuration could not be found.")
-
-        loaded_notice = st.session_state.pop("_cb_loaded_config_notice", None)
-        if loaded_notice:
-            st.success(f"Loaded **{loaded_notice}**. Review the restored filters and chart settings below.")
-
-    st.caption(
-        f"{len(saved_chart_rows):,} saved setup(s) available"
-        if chart_owner_id is not None and not saved_chart_load_error
-        else "Create a saved setup after choosing your filters and chart settings."
-    )
 
 # Keep the existing individual competency comparison, but place it behind an
 # expander so the data-builder workflow remains the primary task.
@@ -1097,91 +979,7 @@ with main_canvas:
             top_n = None if top_n_selection == "All" else int(top_n_selection)
         else:
             top_n = None
-
-    with st.expander("💾 Save or update this chart setup", expanded=False):
-        st.caption(
-            "Save the current workforce filters, X/Y fields, chart type and display options. "
-            "Using an existing name updates that setup in your account."
-        )
-        with st.form("cb_save_chart_configuration_form", clear_on_submit=False):
-            saved_name = st.text_input(
-                "Configuration name",
-                placeholder="e.g. Department B1 competency distribution",
-                max_chars=100,
-            )
-            saved_description = st.text_input(
-                "Description (optional)",
-                placeholder="What question does this chart help answer?",
-                max_chars=500,
-            )
-            save_submitted = st.form_submit_button(
-                "💾 Save configuration",
-                type="primary",
-                use_container_width=True,
-                disabled=chart_owner_id is None,
-            )
-        if save_submitted:
-            configuration_payload = {
-                "version": 1,
-                "filters": {
-                    "search": personnel_search,
-                    "primary": {
-                        column: list(st.session_state.get(f"cb_primary_filter_v2_{column}", []))
-                        for column in primary_filter_columns
-                    },
-                    "extra_columns": list(selected_extra_columns),
-                    "extra": {
-                        column: list(st.session_state.get(f"cb_extra_filter_v2_{column}", []))
-                        for column in selected_extra_columns
-                    },
-                    "numeric_field": (
-                        numeric_filter if numeric_filter != "(None)" else None
-                    ),
-                    "numeric_range": (
-                        list(numeric_ranges[numeric_filter])
-                        if numeric_filter in numeric_ranges else None
-                    ),
-                },
-                "chart": {
-                    "template": st.session_state.get("cb_template_v2", "Custom setup"),
-                    "measure_mode": measure_mode,
-                    "x_group": x_group,
-                    "dimension": dimension,
-                    "y_group": st.session_state.get("cb_y_group_v2"),
-                    "measure": measure,
-                    "breakdown": breakdown_selection,
-                    "chart_type": selected_chart,
-                    "aggregation": aggregation,
-                    "size": size_col,
-                    "top_n": st.session_state.get("cb_top_n_v2", 10),
-                    "custom_title": st.session_state.get("cb_custom_title_v2"),
-                    "x_label": st.session_state.get("cb_x_label_v2"),
-                    "y_label": st.session_state.get("cb_y_label_v2"),
-                    "chart_height": st.session_state.get("cb_chart_height_v2"),
-                },
-            }
-            db_session = open_session()
-            try:
-                saved_record = save_chart_configuration(
-                    db_session,
-                    chart_owner_id,
-                    chart_owner_name,
-                    saved_name,
-                    configuration_payload,
-                    saved_description,
-                )
-                action_text = "updated" if not saved_record["created"] else "saved"
-                st.success(
-                    f"**{saved_record['name']}** {action_text}. "
-                    "It will be available in Saved chart setups the next time you open this page."
-                )
-            except ValueError as exc:
-                st.error(str(exc))
-            except Exception as exc:
-                st.error(f"Could not save this chart setup: {exc}")
-            finally:
-                db_session.close()
-
+    
     st.markdown('<div class="cb-section-label">04 · Create your chart</div>', unsafe_allow_html=True)
     with st.container(border=True):
         st.markdown("### Generate chart")
