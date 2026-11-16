@@ -167,6 +167,18 @@ def test_chart_builder_has_guided_axes_numeric_measures_and_result_validation():
         "cb_last_chart_source_data",
         "generate the chart again to refresh it",
         "Compare individual competency profiles",
+        "cb-hero",
+        "01 · Define your workforce",
+        "Quick search",
+        "More filters · Organisation, people and assessment",
+        "Advanced · Numeric range",
+        "cb_x_group_v2",
+        "cb_y_group_v2",
+        "03 · Choose how to visualise",
+        "04 · Create your chart",
+        "05 · Review your results",
+        "Inspect the values behind this chart",
+        "filter_signature",
     ]
     missing = [x for x in required if x not in s]
     assert not missing, f"Chart Builder workflow contract missing: {missing}"
