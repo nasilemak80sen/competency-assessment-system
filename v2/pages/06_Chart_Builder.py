@@ -8,7 +8,14 @@ import streamlit as st
 from chart_builder import ChartBuilder, ChartCompatibility, DataType
 from components.navigation import render_navigation
 from config import GAP_COLS, REQ_COLS, SCORE_COLS
-from core.bootstrap import get_master_data
+from core.auth import current_user
+from core.bootstrap import get_master_data, open_session
+from services.chart_configuration_service import (
+    delete_chart_configuration,
+    get_chart_configuration,
+    list_chart_configurations,
+    save_chart_configuration,
+)
 
 
 # Keep this page tolerant of a local chart_builder.py that has not yet been
@@ -68,6 +75,198 @@ def get_chart_builder_fields(dataframe: pd.DataFrame) -> list[str]:
 def get_chart_builder_field_label(column: str) -> str:
     """Map canonical gap storage names to the workbook-facing display name."""
     return CHART_BUILDER_FIELD_LABELS.get(column, column)
+
+
+def _values_matching_dataframe(
+    dataframe: pd.DataFrame,
+    column: str,
+    saved_values,
+) -> list:
+    """Restore saved filter values using the current dataframe's native types."""
+    if column not in dataframe.columns or not isinstance(saved_values, (list, tuple)):
+        return []
+    candidates = dataframe[column].dropna().unique().tolist()
+    lookup = {str(value): value for value in candidates}
+    return [lookup[str(value)] for value in saved_values if str(value) in lookup]
+
+
+def _restore_chart_configuration(configuration: dict, dataframe: pd.DataFrame) -> None:
+    """Restore filter and chart widget state before those widgets are rendered."""
+    filters = configuration.get("filters", {}) or {}
+    chart = configuration.get("chart", {}) or {}
+
+    for key in list(st.session_state):
+        if key.startswith((
+            "cb_primary_filter_v2_",
+            "cb_extra_filter_v2_",
+            "cb_dynamic_filter_v2_",
+        )):
+            st.session_state.pop(key, None)
+
+    st.session_state["cb_personnel_search_v2"] = str(filters.get("search") or "")
+    primary_values = filters.get("primary", {}) or {}
+    for column in ("Department", "Staff Position", "SG"):
+        st.session_state[f"cb_primary_filter_v2_{column}"] = _values_matching_dataframe(
+            dataframe, column, primary_values.get(column, [])
+        )
+
+    extra_values = filters.get("extra", {}) or {}
+    available_extra = [
+        column for column in (filters.get("extra_columns", []) or [])
+        if column in dataframe.columns
+    ]
+    st.session_state["cb_extra_filter_columns_v2"] = available_extra
+    for column in available_extra:
+        st.session_state[f"cb_extra_filter_v2_{column}"] = _values_matching_dataframe(
+            dataframe, column, extra_values.get(column, [])
+        )
+
+    numeric_field = filters.get("numeric_field")
+    numeric_available = (
+        numeric_field in dataframe.columns
+        and pd.to_numeric(dataframe[numeric_field], errors="coerce").notna().any()
+    )
+    st.session_state["cb_numeric_filter_column_v2"] = (
+        numeric_field if numeric_available else "(None)"
+    )
+    numeric_range = filters.get("numeric_range")
+    if numeric_available and isinstance(numeric_range, (list, tuple)) and len(numeric_range) == 2:
+        numeric_values = pd.to_numeric(dataframe[numeric_field], errors="coerce").dropna()
+        low, high = float(numeric_values.min()), float(numeric_values.max())
+        saved_low = max(low, min(high, float(numeric_range[0])))
+        saved_high = max(saved_low, min(high, float(numeric_range[1])))
+        st.session_state["cb_numeric_filter_range_v2"] = (saved_low, saved_high)
+    else:
+        st.session_state.pop("cb_numeric_filter_range_v2", None)
+
+    widget_values = {
+        "cb_measure_mode_v2": chart.get("measure_mode", "Numeric data element"),
+        "cb_x_group_v2": chart.get("x_group"),
+        "cb_dimension_v2": chart.get("dimension"),
+        "cb_y_group_v2": chart.get("y_group"),
+        "cb_measure_v2": chart.get("measure"),
+        "cb_breakdown_v2": chart.get("breakdown", "(None)"),
+        "cb_chart_type_v2": chart.get("chart_type"),
+        "cb_aggregation_v2": chart.get("aggregation", "Average"),
+        "cb_size_v2": chart.get("size", "(None)"),
+        "cb_top_n_v2": chart.get("top_n", 10),
+        "cb_custom_title_v2": chart.get("custom_title"),
+        "cb_x_label_v2": chart.get("x_label"),
+        "cb_y_label_v2": chart.get("y_label"),
+        "cb_chart_height_v2": chart.get("chart_height"),
+    }
+    for key, value in widget_values.items():
+        if value is not None:
+            st.session_state[key] = value
+
+    # Saved analyses are user-defined setups, even when originally started
+    # from a built-in template.
+    st.session_state["cb_template_v2"] = "Custom setup"
+    st.session_state["cb_template_last_applied_v2"] = "Custom setup"
+    st.session_state["cb_loaded_saved_configuration"] = True
+
+
+def _field_group_for(column: str) -> str | None:
+    return next(
+        (group_name for group_name, columns in CHART_FIELD_GROUPS.items() if column in columns),
+        None,
+    )
+
+
+def _build_chart_templates(
+    numeric_fields: list[str],
+    categorical_fields: list[str],
+) -> dict[str, dict]:
+    """Build guided examples only when their required fields exist."""
+    templates: dict[str, dict] = {}
+
+    def first_available(candidates, available, excluded=()):
+        return next(
+            (
+                column for column in candidates
+                if column in available and column not in excluded
+            ),
+            None,
+        )
+
+    category = first_available(
+        ["Department", "Staff Position", "Section Name", "Unit Name", "SG"],
+        categorical_fields,
+    )
+    colour = first_available(
+        ["Department", "Staff Position", "Employment Category", "Gender"],
+        categorical_fields,
+        excluded=(category,),
+    )
+    scatter_x = first_available(
+        ["Age", "Years of RE Experience", "Years in PET", "Years in Salary Grade"],
+        numeric_fields,
+    )
+    scatter_y = first_available(
+        ["Years of RE Experience", "Years in PET", "Years in Salary Grade", "Age"],
+        numeric_fields,
+        excluded=(scatter_x,),
+    )
+    bubble_x = first_available(
+        ["Years of RE Experience", "Years in PET", "Age"],
+        numeric_fields,
+    )
+    competency = first_available(
+        ["B1", *SCORE_COLS, "R-B1", *REQ_COLS, "G--B1", *GAP_COLS],
+        numeric_fields,
+    )
+    bubble_size = first_available(
+        ["Years in PET", "Years in Salary Grade", "Age", "Years of RE Experience"],
+        numeric_fields,
+        excluded=(bubble_x, competency),
+    )
+
+    if scatter_x and scatter_y:
+        templates["Scatter · Age and experience"] = {
+            "description": (
+                "Explore the relationship between age and RE experience. "
+                "Each point represents one personnel record; colour can distinguish departments."
+            ),
+            "chart_type": "Scatter Plot",
+            "dimension": scatter_x,
+            "measure": scatter_y,
+            "color": colour,
+            "size": None,
+            "aggregation": "Average",
+            "measure_mode": "Numeric data element",
+        }
+
+    if bubble_x and competency and bubble_size:
+        templates["Bubble · Experience and competency"] = {
+            "description": (
+                "Compare RE experience against a competency score. Bubble size adds a third "
+                "numeric measure, while colour can distinguish departments."
+            ),
+            "chart_type": "Bubble Chart",
+            "dimension": bubble_x,
+            "measure": competency,
+            "color": colour,
+            "size": bubble_size,
+            "aggregation": "Average",
+            "measure_mode": "Numeric data element",
+        }
+
+    if category and competency:
+        templates["Box plot · Competency distribution"] = {
+            "description": (
+                "Compare the spread of a competency score across departments or position groups. "
+                "The box shows the median and quartiles; individual points reveal outliers."
+            ),
+            "chart_type": "Box Plot",
+            "dimension": category,
+            "measure": competency,
+            "color": colour,
+            "size": None,
+            "aggregation": "Average",
+            "measure_mode": "Numeric data element",
+        }
+
+    return templates
 
 
 def _attach_aggregation_diagnostics(
@@ -165,6 +364,117 @@ df = get_master_data()
 if df is None or df.empty:
     st.info("No personnel data is available. Import the master workbook first.")
     st.stop()
+
+# -----------------------------------------------------------------------------
+# SAVED CHART CONFIGURATIONS
+# -----------------------------------------------------------------------------
+auth_user = current_user() or {}
+try:
+    chart_owner_id = int(auth_user.get("id")) if auth_user.get("id") is not None else None
+except (TypeError, ValueError):
+    chart_owner_id = None
+chart_owner_name = str(auth_user.get("username") or auth_user.get("display_name") or "unknown")
+
+saved_chart_rows = []
+saved_chart_load_error = None
+if chart_owner_id is not None:
+    db_session = None
+    try:
+        db_session = open_session()
+        saved_chart_rows = list_chart_configurations(db_session, chart_owner_id)
+    except Exception as exc:
+        saved_chart_load_error = str(exc)
+    finally:
+        if db_session is not None:
+            db_session.close()
+
+with st.container(border=True):
+    saved_heading, saved_hint = st.columns([1.3, 2.7], vertical_alignment="center")
+    with saved_heading:
+        st.markdown("### Saved chart setups")
+    with saved_hint:
+        st.caption(
+            "Load a previous analysis to restore its filters, axes, chart type and display settings. "
+            "Saved setups are private to your account."
+        )
+
+    if chart_owner_id is None:
+        st.info("Sign in with an application account to save and load personal chart configurations.")
+    elif saved_chart_load_error:
+        st.warning(f"Saved configurations could not be loaded: {saved_chart_load_error}")
+    else:
+        saved_label_to_id = {}
+        saved_labels = ["Choose a saved setup"]
+        for row in saved_chart_rows:
+            timestamp = row.get("updated_at")
+            updated_label = (
+                timestamp.strftime("%d %b %Y")
+                if hasattr(timestamp, "strftime") else "Saved"
+            )
+            label = f"{row['name']} · {updated_label}"
+            saved_label_to_id[label] = row["id"]
+            saved_labels.append(label)
+
+        saved_col, load_col, delete_col = st.columns([3.2, 1, 1])
+        with saved_col:
+            selected_saved_label = st.selectbox(
+                "Your saved configurations",
+                saved_labels,
+                key="cb_saved_configuration_v2",
+                help="Each saved setup is visible only to the account that created it.",
+            )
+        selected_saved_id = saved_label_to_id.get(selected_saved_label)
+        with load_col:
+            st.write("")
+            if st.button(
+                "Load setup",
+                key="cb_load_saved_configuration_v2",
+                disabled=selected_saved_id is None,
+                use_container_width=True,
+            ):
+                db_session = open_session()
+                try:
+                    saved_record = get_chart_configuration(
+                        db_session, chart_owner_id, selected_saved_id
+                    )
+                finally:
+                    db_session.close()
+                if saved_record is None:
+                    st.error("That saved configuration is no longer available.")
+                else:
+                    _restore_chart_configuration(saved_record["configuration"], df)
+                    st.session_state["_cb_loaded_config_notice"] = saved_record["name"]
+                    st.rerun()
+        with delete_col:
+            st.write("")
+            if st.button(
+                "Delete",
+                key="cb_delete_saved_configuration_v2",
+                disabled=selected_saved_id is None,
+                use_container_width=True,
+            ):
+                db_session = open_session()
+                try:
+                    deleted = delete_chart_configuration(
+                        db_session, chart_owner_id, selected_saved_id
+                    )
+                finally:
+                    db_session.close()
+                if deleted:
+                    st.success("Saved configuration deleted.")
+                    st.rerun()
+                else:
+                    st.warning("The selected configuration could not be found.")
+
+        loaded_notice = st.session_state.pop("_cb_loaded_config_notice", None)
+        if loaded_notice:
+            st.success(f"Loaded **{loaded_notice}**. Review the restored filters and chart settings below.")
+
+    st.caption(
+        f"{len(saved_chart_rows):,} saved setup(s) available"
+        if chart_owner_id is not None and not saved_chart_load_error
+        else "Create a saved setup after choosing your filters and chart settings."
+    )
 
 # Keep the existing individual competency comparison, but place it behind an
 # expander so the data-builder workflow remains the primary task.
@@ -426,8 +736,45 @@ if not axis_fields:
     st.warning("No usable approved axis fields remain after filtering.")
     st.stop()
 
+chart_templates = _build_chart_templates(numeric_fields, categorical_fields)
+
 with main_canvas:
     st.markdown('<div class="cb-section-label">02 · Build your chart</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("### Start with a chart template")
+        template_options = ["Custom setup"] + list(chart_templates)
+        if st.session_state.get("cb_template_v2") not in template_options:
+            st.session_state.pop("cb_template_v2", None)
+        selected_template = st.selectbox(
+            "Template examples",
+            template_options,
+            key="cb_template_v2",
+            help="Choose a guided example to prefill the X-axis, Y-axis, chart type and optional breakdown. You can customise every setting afterwards.",
+        )
+        previous_template = st.session_state.get("cb_template_last_applied_v2")
+        if selected_template != "Custom setup" and selected_template != previous_template:
+            template = chart_templates[selected_template]
+            dimension_value = template["dimension"]
+            measure_value = template["measure"]
+            size_value = template.get("size")
+            st.session_state["cb_measure_mode_v2"] = template["measure_mode"]
+            st.session_state["cb_x_group_v2"] = _field_group_for(dimension_value)
+            st.session_state["cb_dimension_v2"] = dimension_value
+            st.session_state["cb_y_group_v2"] = _field_group_for(measure_value)
+            st.session_state["cb_measure_v2"] = measure_value
+            st.session_state["cb_breakdown_v2"] = template.get("color") or "(None)"
+            st.session_state["cb_chart_type_v2"] = template["chart_type"]
+            st.session_state["cb_aggregation_v2"] = template.get("aggregation", "Average")
+            st.session_state["cb_size_v2"] = size_value or "(None)"
+            st.session_state["cb_template_last_applied_v2"] = selected_template
+            st.session_state["cb_top_n_v2"] = 10
+            st.rerun()
+        if selected_template == "Custom setup":
+            st.session_state["cb_template_last_applied_v2"] = "Custom setup"
+            st.caption("Build from scratch, or choose an example above to see how a chart type is configured.")
+        else:
+            st.info(chart_templates[selected_template]["description"])
+
     with st.container(border=True):
         st.markdown("### Choose the data elements")
         st.caption(
@@ -679,6 +1026,13 @@ with main_canvas:
             ),
             key="cb_chart_type_v2",
         )
+        st.caption(ChartCompatibility.CHART_TYPES[selected_chart]["description"])
+        if selected_chart == "Scatter Plot":
+            st.info("Scatter plot tip: choose two numeric fields to explore whether they move together.")
+        elif selected_chart == "Bubble Chart":
+            st.info("Bubble chart tip: choose a third numeric field for bubble size to add another dimension.")
+        elif selected_chart == "Box Plot":
+            st.info("Box plot tip: use a categorical X-axis and a numeric Y-axis to compare score distributions.")
     
         if selected_chart in aggregated_chart_types and measure is not None:
             aggregation_options = ["Average", "Median", "Sum", "Minimum", "Maximum"]
@@ -743,7 +1097,91 @@ with main_canvas:
             top_n = None if top_n_selection == "All" else int(top_n_selection)
         else:
             top_n = None
-    
+
+    with st.expander("💾 Save or update this chart setup", expanded=False):
+        st.caption(
+            "Save the current workforce filters, X/Y fields, chart type and display options. "
+            "Using an existing name updates that setup in your account."
+        )
+        with st.form("cb_save_chart_configuration_form", clear_on_submit=False):
+            saved_name = st.text_input(
+                "Configuration name",
+                placeholder="e.g. Department B1 competency distribution",
+                max_chars=100,
+            )
+            saved_description = st.text_input(
+                "Description (optional)",
+                placeholder="What question does this chart help answer?",
+                max_chars=500,
+            )
+            save_submitted = st.form_submit_button(
+                "💾 Save configuration",
+                type="primary",
+                use_container_width=True,
+                disabled=chart_owner_id is None,
+            )
+        if save_submitted:
+            configuration_payload = {
+                "version": 1,
+                "filters": {
+                    "search": personnel_search,
+                    "primary": {
+                        column: list(st.session_state.get(f"cb_primary_filter_v2_{column}", []))
+                        for column in primary_filter_columns
+                    },
+                    "extra_columns": list(selected_extra_columns),
+                    "extra": {
+                        column: list(st.session_state.get(f"cb_extra_filter_v2_{column}", []))
+                        for column in selected_extra_columns
+                    },
+                    "numeric_field": (
+                        numeric_filter if numeric_filter != "(None)" else None
+                    ),
+                    "numeric_range": (
+                        list(numeric_ranges[numeric_filter])
+                        if numeric_filter in numeric_ranges else None
+                    ),
+                },
+                "chart": {
+                    "template": st.session_state.get("cb_template_v2", "Custom setup"),
+                    "measure_mode": measure_mode,
+                    "x_group": x_group,
+                    "dimension": dimension,
+                    "y_group": st.session_state.get("cb_y_group_v2"),
+                    "measure": measure,
+                    "breakdown": breakdown_selection,
+                    "chart_type": selected_chart,
+                    "aggregation": aggregation,
+                    "size": size_col,
+                    "top_n": st.session_state.get("cb_top_n_v2", 10),
+                    "custom_title": st.session_state.get("cb_custom_title_v2"),
+                    "x_label": st.session_state.get("cb_x_label_v2"),
+                    "y_label": st.session_state.get("cb_y_label_v2"),
+                    "chart_height": st.session_state.get("cb_chart_height_v2"),
+                },
+            }
+            db_session = open_session()
+            try:
+                saved_record = save_chart_configuration(
+                    db_session,
+                    chart_owner_id,
+                    chart_owner_name,
+                    saved_name,
+                    configuration_payload,
+                    saved_description,
+                )
+                action_text = "updated" if not saved_record["created"] else "saved"
+                st.success(
+                    f"**{saved_record['name']}** {action_text}. "
+                    "It will be available in Saved chart setups the next time you open this page."
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Could not save this chart setup: {exc}")
+            finally:
+                db_session.close()
+
     st.markdown('<div class="cb-section-label">04 · Create your chart</div>', unsafe_allow_html=True)
     with st.container(border=True):
         st.markdown("### Generate chart")

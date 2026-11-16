@@ -228,8 +228,10 @@ class ChartCompatibility:
                 ranked.append({"chart": "Box Plot", "reason": "Useful for comparing score distributions by category."})
         if x_info.data_type == DataType.NUMERIC and y_info and y_info.data_type == DataType.NUMERIC:
             ranked.insert(0, {"chart": "Scatter Plot", "reason": "Both axes are numeric."})
-            if color_col:
-                ranked.append({"chart": "Bubble Chart", "reason": "A third dimension can be encoded by size."})
+            ranked.append({
+                "chart": "Bubble Chart",
+                "reason": "Use a third numeric field for bubble size to explore a three-dimensional relationship.",
+            })
         return ranked
 
 

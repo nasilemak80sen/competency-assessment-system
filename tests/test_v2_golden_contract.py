@@ -184,6 +184,31 @@ def test_chart_builder_has_guided_axes_numeric_measures_and_result_validation():
     assert not missing, f"Chart Builder workflow contract missing: {missing}"
     assert "Count of rows" not in s, "Record counts should be an explicit mode, not the default Y-axis."
 
+def test_chart_builder_has_saved_configurations_and_guided_chart_templates():
+    s = CHARTS.read_text(encoding="utf-8")
+    required = [
+        "Saved chart setups",
+        "Load setup",
+        "Delete",
+        "save_chart_configuration",
+        "get_chart_configuration",
+        "delete_chart_configuration",
+        "cb_save_chart_configuration_form",
+        "CHART_FIELD_GROUPS",
+        "Start with a chart template",
+        "Scatter · Age and experience",
+        "Bubble · Experience and competency",
+        "Box plot · Competency distribution",
+        "Scatter plot tip",
+        "Bubble chart tip",
+        "Box plot tip",
+        "cb_template_v2",
+        "filter_signature",
+    ]
+    missing = [value for value in required if value not in s]
+    assert not missing, f"Saved chart/template workflow missing: {missing}"
+
+
 def test_integer_persistence_source_is_explicitly_hardened_in_model_contract():
     s = (ROOT / "models.py").read_text(encoding="utf-8")
     assert "age" in s and "birth_year" in s
