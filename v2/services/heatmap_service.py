@@ -225,14 +225,35 @@ def get_configured_competency_max_scores(
     return validated
 
 
+def get_competency_score_limit(
+    competency_code: str,
+    maximum_scores: Mapping[str, Any] | None = None,
+) -> tuple[int, bool]:
+    """Return the usable threshold ceiling and whether it is element-verified.
+
+    The application score scale is 1-5. An approved per-element maximum from
+    config takes precedence; otherwise the UI can still filter against the
+    common 1-5 scale while explicitly identifying that ceiling as a fallback.
+    """
+    from config import SCORE_COLS
+
+    if competency_code not in SCORE_COLS:
+        raise KeyError(f"Unknown competency element: {competency_code!r}")
+    configured = get_configured_competency_max_scores(maximum_scores)
+    if competency_code in configured:
+        return configured[competency_code], True
+    return 5, False
+
+
 def filter_personnel_by_competency_threshold(
     frame: pd.DataFrame,
     competency_code: str,
     minimum_score: float,
     *,
     maximum_score: int | None = None,
+    include_unassessed: bool = False,
 ) -> pd.DataFrame:
-    """Keep personnel whose selected competency meets a valid minimum score."""
+    """Filter personnel by actual score; optionally retain blank/unassessed rows."""
     if competency_code not in frame.columns:
         raise KeyError(f"Competency column {competency_code!r} is not present in the personnel dataset.")
     numeric_threshold = pd.to_numeric(minimum_score, errors="coerce")
@@ -245,4 +266,7 @@ def filter_personnel_by_competency_threshold(
             f"The minimum score {numeric_threshold} exceeds the configured maximum {maximum_score} for {competency_code}."
         )
     scores = pd.to_numeric(frame[competency_code], errors="coerce")
-    return frame.loc[scores.ge(float(numeric_threshold))].copy()
+    matched = scores.ge(float(numeric_threshold))
+    if include_unassessed:
+        matched = matched | scores.isna()
+    return frame.loc[matched].copy()
