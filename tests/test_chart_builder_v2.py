@@ -194,3 +194,24 @@ def test_chart_builder_field_list_contains_all_competency_score_requirement_and_
         assert code in CHART_BUILDER_FIELDS
         assert f"R-{code}" in CHART_BUILDER_FIELDS
         assert f"G--{code}" in CHART_BUILDER_FIELDS
+
+
+def test_box_plot_generation_for_categorical_group_and_numeric_measure(workforce_df):
+    figure = ChartBuilder(workforce_df).create_chart(
+        "Box Plot",
+        "Department",
+        "Score",
+    )
+
+    assert figure.data
+    assert len(figure.data) >= 1
+    assert figure.layout.yaxis.title.text == "Score"
+
+
+def test_numeric_relationship_recommends_bubble_as_a_three_measure_option(workforce_df):
+    x = ChartCompatibility.analyze_data_element(workforce_df["SG"], "SG")
+    y = ChartCompatibility.analyze_data_element(workforce_df["Score"], "Score")
+    recommendations = ChartCompatibility.recommend(x, y)
+
+    assert recommendations[0]["chart"] == "Scatter Plot"
+    assert any(item["chart"] == "Bubble Chart" for item in recommendations)
