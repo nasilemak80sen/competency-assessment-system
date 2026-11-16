@@ -176,12 +176,16 @@ def test_competency_score_limit_uses_explicit_cap_or_honest_global_fallback():
     assert get_competency_score_limit("B1", {}) == (5, False)
 
 
-def test_heatmap_competency_filter_is_visible_and_covers_all_score_elements():
+def test_competency_personnel_filter_is_separate_from_heatmap_controls_and_matrix():
     source = (ROOT / "v2/pages/03_Competency_Heatmap.py").read_text(encoding="utf-8")
 
-    assert 'st.subheader("🎯 Competency-specific personnel filter")' in source
-    assert 'with st.expander("Find personnel by competency element"' not in source
+    heatmap_plot = source.index("st.plotly_chart(")
+    finder_section = source.index('st.subheader("🎯 Competency-specific personnel filter")')
+    assert finder_section > heatmap_plot
+    assert "competency_filter_source = df.copy()" in source
     assert "options=available_score_codes" in source
-    assert "include_unassessed=include_unassessed" in source
+    assert "filter_personnel_by_competency_threshold(" in source
     assert '"Section Name"' in source
     assert '"Assessment Status"' in source
+    assert "score_filter_code" not in source
+    assert "value_cols.append(selected_competency)" not in source
