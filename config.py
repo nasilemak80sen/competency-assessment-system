@@ -251,9 +251,7 @@ CHAT_STATUS_OPTIONS = ["Yes","No","No Need"]
 # Keep unique non-blank values in their first-observed order in the column.
 # The source also contains lowercase "staff"; the loader normalizes it to
 # "Staff". Blank cells are handled in forms as "Not specified" (None).
-ASSESSMENT_LEVELS = [
-    "UPE",
-    "Staff",
+ASSESSMENT_LEVELS = [ "UPE","Staff",
     "Principal",
     "Ongoing",
     "N/A",

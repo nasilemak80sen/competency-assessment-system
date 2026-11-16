@@ -139,8 +139,8 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
         personnel=selected,
         filters={
             "search": "",
-            "sub_department": "All",
-            "sub_unit": "All",
+            "sub_department": ["SBA", "JVM"],
+            "sub_unit": ["Cluster 2"],
             "salary_grades": ["P4", "P5"],
         },
         competency_names={"B1": "Fluid characterisation"},
@@ -197,6 +197,9 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
         assert metadata["A1"].value == "Competency Report Export"
         assert metadata["A3"].value == "Selected Personnel"
         assert metadata["B3"].value == 2
+        assert metadata["B4"].value == "SBA, JVM"
+        assert metadata["B5"].value == "Cluster 2"
+        assert metadata["B6"].value == "P4, P5"
     finally:
         exported.close()
 
@@ -271,3 +274,60 @@ def test_export_preserves_actual_repository_master_schema_and_styles():
         assert master.cell(4, staff_id_column).value == record["Staff ID"]
     finally:
         exported.close()
+
+
+
+def test_multi_select_sub_department_and_dependent_sub_unit_filters():
+    frame = pd.DataFrame(
+        [
+            {"Name": "A", "Staff ID": "1", "Unit Name": "SBA", "Sub Unit": "Cluster 1", "SG": "P3"},
+            {"Name": "B", "Staff ID": "2", "Unit Name": "SBA", "Sub Unit": "Cluster 2", "SG": "P4"},
+            {"Name": "C", "Staff ID": "3", "Unit Name": "JVM", "Sub Unit": "Cluster 1", "SG": "P5"},
+            {"Name": "D", "Staff ID": "4", "Unit Name": "JVM", "Sub Unit": "Cluster 3", "SG": "P5"},
+        ]
+    )
+
+    assert get_sub_unit_options(frame, ["SBA", "JVM"]) == [
+        "Cluster 1", "Cluster 2", "Cluster 3"
+    ]
+    assert get_sub_unit_options(frame, ["SBA"]) == ["Cluster 1", "Cluster 2"]
+
+    filtered = filter_personnel_for_export(
+        frame,
+        sub_department=["SBA", "JVM"],
+        sub_unit=["Cluster 1", "Cluster 3"],
+        salary_grades=["P5", "P3"],
+    )
+    assert filtered["Name"].tolist() == ["A", "C", "D"]
+
+
+def test_selection_keys_are_unique_and_support_missing_staff_ids():
+    from v2.services.report_export_service import build_personnel_selection_keys
+
+    frame = pd.DataFrame([
+        {"Name": "Alex", "Staff ID": "1001"},
+        {"Name": "Bea", "Staff ID": None, "Department": "DPE", "Unit Name": "SBA", "Sub Unit": "Cluster 1", "SG": "P4"},
+        {"Name": "Bea", "Staff ID": None, "Department": "DPE", "Unit Name": "SBA", "Sub Unit": "Cluster 1", "SG": "P4"},
+    ])
+    keys = build_personnel_selection_keys(frame)
+
+    assert keys[0] == "staff:1001"
+    assert keys[1] == "person:bea|dpe|sba|cluster 1|p4"
+    assert keys[2] == keys[1] + "#2"
+    assert len(set(keys)) == len(keys)
+
+
+def test_selection_changes_preserve_people_hidden_by_current_filters():
+    from v2.services.report_export_service import (
+        merge_visible_selection,
+        set_visible_selection,
+    )
+
+    first = merge_visible_selection([], ["a", "b"], [True, True])
+    assert first == ["a", "b"]
+
+    second = merge_visible_selection(first, ["b", "c"], [False, True])
+    assert second == ["a", "c"]
+
+    third = set_visible_selection(second, ["c"], selected=False)
+    assert third == ["a"]
