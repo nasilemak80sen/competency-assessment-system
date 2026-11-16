@@ -595,28 +595,35 @@ The importer recalculates the application gap rather than blindly copying the sp
 
 # 🔐 Default Administrator Bootstrap
 
-The V2 application can create the default administrator account during startup using Streamlit Secrets. The configured username is **RELT2026**. Keep the password in the deployment's private Secrets settings, not in this repository.
+The V2 application can create multiple default administrator accounts during startup using Streamlit Secrets. Each configured administrator is provisioned with the `ADMIN` role and tracked independently.
 
 For local development:
 
 1. Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`.
-2. Replace `SET_THIS_PRIVATELY` with the administrator password in the private copy.
+2. Replace both password placeholders with private, unique passwords.
 3. Start the application with `streamlit run v2/app.py`.
 
-For a hosted Streamlit deployment, paste the same TOML settings into the app's private Secrets configuration:
+For a hosted Streamlit deployment, add the following TOML structure to the app's private Secrets configuration:
 
 ```toml
-[admin]
+[admins.system]
+username = "admin"
+password = "SET_ADMIN_PASSWORD_PRIVATELY"
+display_name = "System Administrator"
+
+[admins.relt2026]
 username = "RELT2026"
-password = "SET_THIS_PRIVATELY"
+password = "SET_RELT_PASSWORD_PRIVATELY"
 display_name = "RELT Administrator"
 ```
 
-The bootstrap runs automatically when the V2 app starts. It provisions the account with the `ADMIN` role, stores a scrypt password hash (never plaintext), and records a one-time bootstrap marker so normal app reruns do not reset a password subsequently changed by an administrator. An explicit secret rotation is applied once on startup.
+Add another administrator by creating a new `[admins.<unique_key>]` section. Do not repeat the same TOML table name.
 
-Alternatively, deployments can provide `POC_ADMIN_USERNAME`, `POC_ADMIN_PASSWORD` and `POC_ADMIN_DISPLAY_NAME` as environment variables. Streamlit Secrets take precedence when both sources are configured.
+The bootstrap runs automatically at application startup. Passwords are stored as scrypt hashes, never plaintext. Each administrator has an independent one-time bootstrap marker: ordinary Streamlit reruns do not reset manually changed passwords, while an explicit change to that account's configured secret is applied once. Existing single-account `[admin]` configurations remain supported during migration.
 
-**Security:** `.streamlit/secrets.toml` is excluded by `.gitignore`. Do not commit the private file. Change the initial password after first login and use a unique credential for production rather than sharing it among administrators.
+Deployments can alternatively provide `POC_ADMIN_USERNAME`, `POC_ADMIN_PASSWORD` and `POC_ADMIN_DISPLAY_NAME` as environment variables for one administrator. When named `[admins.*]` secrets are configured, those take precedence.
+
+**Security:** `.streamlit/secrets.toml` is excluded by `.gitignore`. Never commit the private file. Use separate, unique passwords for each administrator and rotate initial credentials after first login. Removing an entry from Secrets does not automatically delete or disable its existing account; manage account access through **Admin: User Access Management**.
 
 ---
 

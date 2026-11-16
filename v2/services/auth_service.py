@@ -24,6 +24,52 @@ def _streamlit_admin_credentials() -> tuple[str, str, str]:
         pass
     return "", "", ""
 
+def _admin_credentials_from_mapping(admins) -> list[tuple[str, str, str]]:
+    """Convert a mapping of named TOML admin tables to credentials."""
+    credentials = []
+    if hasattr(admins, "items"):
+        for _, settings in admins.items():
+            if not hasattr(settings, "get"):
+                continue
+            username = str(settings.get("username", "")).strip()
+            password = str(settings.get("password", ""))
+            display_name = (
+                str(settings.get("display_name", username or "POC Administrator")).strip()
+                or username
+                or "POC Administrator"
+            )
+            if username and password:
+                credentials.append((username, password, display_name))
+    return credentials
+
+
+def _streamlit_admin_credentials_list() -> list[tuple[str, str, str]]:
+    """Read multiple named admin tables, with legacy single-admin support.
+
+    Preferred TOML structure:
+        [admins.first]
+        username = "admin"
+        password = "..."
+        display_name = "System Administrator"
+
+    Each configured account is bootstrapped and tracked independently.
+    """
+    try:
+        import streamlit as st
+
+        credentials = _admin_credentials_from_mapping(st.secrets.get("admins", {}))
+        if credentials:
+            return credentials
+    except Exception:
+        # Secrets may be unavailable during local/unit-test execution.
+        pass
+
+    # Keep existing [admin] deployments and tests working during migration.
+    username, password, display_name = _streamlit_admin_credentials()
+    if username and password:
+        return [(username, password, display_name)]
+    return []
+
 
 ROLE_USER = "USER"
 ROLE_ADMIN = "ADMIN"
@@ -55,6 +101,14 @@ def ensure_auth_table() -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS auth_bootstrap_state (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             username TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+        # Multi-admin bootstrap state tracks each configured account separately.
+        # This allows one administrator to rotate credentials without resetting
+        # the other configured administrators.
+        conn.execute("""CREATE TABLE IF NOT EXISTS auth_bootstrap_admins (
+            username TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,
             password_hash TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
@@ -112,88 +166,111 @@ def create_user(username: str, password: str, role: str, personnel_id: int | Non
 
 
 def bootstrap_admin_from_environment() -> bool:
-    """Provision the configured ADMIN and apply each configured password once.
+    """Provision every configured ADMIN account without resetting on reruns.
 
-    Streamlit Secrets are the source of truth for the initial/configured ADMIN.
-    A password hash in auth_bootstrap_state records which secret was last
-    applied. This repairs stale or inactive pre-existing admin records on the
-    first run after deployment, but does not overwrite a password that an
-    administrator later changes manually. Other user accounts are untouched.
+    Streamlit Secrets may define multiple accounts under [admins.<key>].
+    Existing single [admin] secrets and the POC_ADMIN_* environment variables
+    remain supported for backward compatibility.
+
+    Each account has an independent one-time password marker. Configured
+    credentials are hashed with scrypt; a password manually changed after the
+    initial bootstrap remains unchanged until that account's secret changes.
     """
     ensure_auth_table()
 
-    username, password, display_name = _streamlit_admin_credentials()
-    if not username or not password:
+    credentials = _streamlit_admin_credentials_list()
+    if not credentials:
         username = os.getenv("POC_ADMIN_USERNAME", "").strip()
         password = os.getenv("POC_ADMIN_PASSWORD", "")
-        display_name = os.getenv("POC_ADMIN_DISPLAY_NAME", "POC Administrator").strip() or "POC Administrator"
+        display_name = (
+            os.getenv("POC_ADMIN_DISPLAY_NAME", "POC Administrator").strip()
+            or "POC Administrator"
+        )
+        if username and password:
+            credentials = [(username, password, display_name)]
 
-    username = normalize_username(username)
-    display_name = str(display_name or username).strip() or username
-    if not username or not password:
+    # Guard against duplicate usernames in the TOML file. The last entry wins,
+    # which is deterministic and avoids attempting duplicate account updates.
+    configured = {}
+    for username, password, display_name in credentials:
+        username = normalize_username(username)
+        display_name = str(display_name or username).strip() or username
+        if username and password:
+            configured[username] = (password, display_name)
+
+    if not configured:
         return False
 
+    changed = False
     with _connect() as conn:
-        state = conn.execute(
+        # Migrate the former singleton marker into the per-account table. This
+        # preserves password-change behaviour for existing [admin] deployments.
+        legacy_state = conn.execute(
             "SELECT username, display_name, password_hash FROM auth_bootstrap_state WHERE singleton = 1"
         ).fetchone()
+        if legacy_state is not None:
+            conn.execute(
+                """INSERT OR IGNORE INTO auth_bootstrap_admins
+                   (username, display_name, password_hash, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
+                (
+                    legacy_state["username"],
+                    legacy_state["display_name"],
+                    legacy_state["password_hash"],
+                ),
+            )
 
-        # The configured password has already been applied. Do not reset it
-        # again on every Streamlit rerun, and do not undo an intentional
-        # password reset performed later through Admin: User Access.
-        if (
-            state is not None
-            and state["username"] == username
-            and state["display_name"] == display_name
-            and verify_password(password, state["password_hash"])
-        ):
+        for username, (password, display_name) in configured.items():
+            state = conn.execute(
+                """SELECT display_name, password_hash
+                   FROM auth_bootstrap_admins WHERE username = ?""",
+                (username,),
+            ).fetchone()
             existing = conn.execute(
                 "SELECT id FROM app_users WHERE username = ?", (username,)
             ).fetchone()
-            if existing is not None:
-                return False
 
-        encoded_password = hash_password(password)
+            # Do not overwrite a manual password reset when the configured
+            # secret has not changed. Repair a missing user row if necessary.
+            if (
+                state is not None
+                and state["display_name"] == display_name
+                and verify_password(password, state["password_hash"])
+                and existing is not None
+            ):
+                continue
 
-        # If the configured admin username was changed, disable the prior
-        # bootstrap-managed account instead of leaving an orphaned admin login.
-        if state is not None and state["username"] != username:
+            encoded_password = hash_password(password)
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO app_users
+                       (username, password_hash, display_name, role, personnel_id, is_active)
+                       VALUES (?, ?, ?, ?, NULL, 1)""",
+                    (username, encoded_password, display_name, ROLE_ADMIN),
+                )
+            else:
+                conn.execute(
+                    """UPDATE app_users
+                       SET password_hash = ?, display_name = ?, role = ?,
+                           personnel_id = NULL, is_active = 1
+                       WHERE id = ?""",
+                    (encoded_password, display_name, ROLE_ADMIN, existing["id"]),
+                )
+
             conn.execute(
-                "UPDATE app_users SET is_active = 0 WHERE username = ?",
-                (state["username"],),
+                """INSERT INTO auth_bootstrap_admins
+                   (username, display_name, password_hash, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(username) DO UPDATE SET
+                       display_name = excluded.display_name,
+                       password_hash = excluded.password_hash,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (username, display_name, encoded_password),
             )
+            changed = True
 
-        existing = conn.execute(
-            "SELECT id FROM app_users WHERE username = ?", (username,)
-        ).fetchone()
-        if existing is None:
-            conn.execute(
-                """INSERT INTO app_users
-                   (username, password_hash, display_name, role, personnel_id, is_active)
-                   VALUES (?, ?, ?, ?, NULL, 1)""",
-                (username, encoded_password, display_name, ROLE_ADMIN),
-            )
-        else:
-            conn.execute(
-                """UPDATE app_users
-                   SET password_hash = ?, display_name = ?, role = ?, personnel_id = NULL, is_active = 1
-                   WHERE id = ?""",
-                (encoded_password, display_name, ROLE_ADMIN, existing["id"]),
-            )
-
-        conn.execute(
-            """INSERT INTO auth_bootstrap_state
-               (singleton, username, display_name, password_hash, updated_at)
-               VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(singleton) DO UPDATE SET
-                   username = excluded.username,
-                   display_name = excluded.display_name,
-                   password_hash = excluded.password_hash,
-                   updated_at = CURRENT_TIMESTAMP""",
-            (username, display_name, encoded_password),
-        )
         conn.commit()
-        return True
+    return changed
 
 
 def list_users() -> list[dict]:

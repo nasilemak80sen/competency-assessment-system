@@ -192,6 +192,102 @@ def test_private_streamlit_admin_template_is_gitignored():
 
     assert 'username = "RELT2026"' in template
     assert 'display_name = "RELT Administrator"' in template
-    assert 'password = "SET_THIS_PRIVATELY"' in template
+    assert 'password = "SET_ADMIN_PASSWORD_PRIVATELY"' in template
+    assert 'password = "SET_RELT_PASSWORD_PRIVATELY"' in template
     assert ".streamlit/secrets.toml" in gitignore
     assert "SET_THIS_PRIVATELY" not in gitignore
+
+
+def test_multiple_named_admin_accounts_are_bootstrapped_independently(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "auth-multi-admin.db"
+    monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(
+        auth_service,
+        "_streamlit_admin_credentials_list",
+        lambda: [
+            ("admin", "SystemSecret_123!", "System Administrator"),
+            ("RELT2026", "ReltSecret_456!", "RELT Administrator"),
+        ],
+    )
+
+    assert auth_service.bootstrap_admin_from_environment() is True
+    system_admin = auth_service.authenticate("ADMIN", "SystemSecret_123!")
+    relt_admin = auth_service.authenticate("relt2026", "ReltSecret_456!")
+
+    assert system_admin is not None
+    assert system_admin["role"] == auth_service.ROLE_ADMIN
+    assert system_admin["display_name"] == "System Administrator"
+    assert relt_admin is not None
+    assert relt_admin["role"] == auth_service.ROLE_ADMIN
+    assert relt_admin["display_name"] == "RELT Administrator"
+
+    # A second bootstrap run must leave both passwords unchanged.
+    assert auth_service.bootstrap_admin_from_environment() is False
+    assert auth_service.authenticate("admin", "SystemSecret_123!") is not None
+    assert auth_service.authenticate("RELT2026", "ReltSecret_456!") is not None
+
+
+def test_rotating_one_named_admin_does_not_reset_another(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "auth-multi-admin-rotation.db"
+    monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
+    credentials = [
+        ("admin", "SystemSecret_123!", "System Administrator"),
+        ("RELT2026", "ReltSecret_456!", "RELT Administrator"),
+    ]
+    monkeypatch.setattr(
+        auth_service,
+        "_streamlit_admin_credentials_list",
+        lambda: list(credentials),
+    )
+
+    assert auth_service.bootstrap_admin_from_environment() is True
+    users = {row["username"]: row for row in auth_service.list_users()}
+    ok, message = auth_service.reset_password(users["admin"]["id"], "AdminManual_789!")
+    assert ok, message
+
+    credentials[1] = ("RELT2026", "ReltSecret_Rotated!", "RELT Administrator")
+    assert auth_service.bootstrap_admin_from_environment() is True
+
+    assert auth_service.authenticate("admin", "AdminManual_789!") is not None
+    assert auth_service.authenticate("admin", "SystemSecret_123!") is None
+    assert auth_service.authenticate("RELT2026", "ReltSecret_Rotated!") is not None
+    assert auth_service.authenticate("RELT2026", "ReltSecret_456!") is None
+
+
+def test_multiple_admin_secrets_example_uses_distinct_toml_tables():
+    example = Path(".streamlit/secrets.toml.example").read_text(encoding="utf-8")
+    assert "[admins.system]" in example
+    assert "[admins.relt2026]" in example
+    assert example.count("[admins.") == 2
+
+
+def test_named_admin_table_parser_extracts_multiple_accounts():
+    configured = {
+        "system": {
+            "username": "admin",
+            "password": "SystemSecret_123!",
+            "display_name": "System Administrator",
+        },
+        "relt2026": {
+            "username": "RELT2026",
+            "password": "ReltSecret_456!",
+            "display_name": "RELT Administrator",
+        },
+    }
+
+    assert auth_service._admin_credentials_from_mapping(configured) == [
+        ("admin", "SystemSecret_123!", "System Administrator"),
+        ("RELT2026", "ReltSecret_456!", "RELT Administrator"),
+    ]
+
+
+def test_admin_secrets_example_is_valid_toml():
+    import tomllib
+
+    example = Path(".streamlit/secrets.toml.example").read_text(encoding="utf-8")
+    parsed = tomllib.loads(example)
+
+    assert parsed["admins"]["system"]["username"] == "admin"
+    assert parsed["admins"]["relt2026"]["username"] == "RELT2026"
+    assert parsed["admins"]["system"]["display_name"] == "System Administrator"
+    assert parsed["admins"]["relt2026"]["display_name"] == "RELT Administrator"
