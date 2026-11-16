@@ -10,7 +10,7 @@ from copy import copy
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
@@ -113,19 +113,33 @@ def get_sub_department_options(frame: pd.DataFrame) -> list[str]:
     return _distinct_values(frame, column)
 
 
+def _selected_filter_values(value: str | Iterable[str] | None) -> list[str]:
+    """Normalise single- and multi-select values; an empty selection means all."""
+    if value is None:
+        return []
+    values = [value] if isinstance(value, str) else list(value)
+    return [
+        _clean_text(item)
+        for item in values
+        if _clean_text(item) and _clean_text(item).casefold() != "all"
+    ]
+
+
 def get_sub_unit_options(
     frame: pd.DataFrame,
-    sub_department: str | None = None,
+    sub_department: str | Iterable[str] | None = None,
 ) -> list[str]:
+    """Return Sub-Units belonging to one or more selected Sub-Departments."""
     sub_department_column, sub_unit_column = resolve_organisation_columns(frame)
     if not sub_unit_column:
         return []
     scoped = frame
-    selected_department = _clean_text(sub_department)
-    if selected_department and selected_department.casefold() != "all" and sub_department_column:
+    selected_departments = {
+        value.casefold() for value in _selected_filter_values(sub_department)
+    }
+    if selected_departments and sub_department_column:
         scoped = scoped[
-            scoped[sub_department_column].map(_clean_text).str.casefold()
-            == selected_department.casefold()
+            scoped[sub_department_column].map(_clean_text).str.casefold().isin(selected_departments)
         ]
     return _distinct_values(scoped, sub_unit_column)
 
@@ -134,8 +148,8 @@ def filter_personnel_for_export(
     frame: pd.DataFrame,
     *,
     search: str = "",
-    sub_department: str | None = None,
-    sub_unit: str | None = None,
+    sub_department: str | Iterable[str] | None = None,
+    sub_unit: str | Iterable[str] | None = None,
     salary_grades: list[str] | tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     """Apply name/Staff ID, Sub-Department, Sub-Unit and SG filters."""
@@ -160,14 +174,18 @@ def filter_personnel_for_export(
         )
         filtered = filtered.loc[mask]
 
-    selected_department = _clean_text(sub_department)
-    if selected_department and selected_department.casefold() != "all" and sub_department_column:
-        mask = filtered[sub_department_column].map(_clean_text).str.casefold() == selected_department.casefold()
+    selected_departments = {
+        value.casefold() for value in _selected_filter_values(sub_department)
+    }
+    if selected_departments and sub_department_column:
+        mask = filtered[sub_department_column].map(_clean_text).str.casefold().isin(selected_departments)
         filtered = filtered.loc[mask]
 
-    selected_unit = _clean_text(sub_unit)
-    if selected_unit and selected_unit.casefold() != "all" and sub_unit_column:
-        mask = filtered[sub_unit_column].map(_clean_text).str.casefold() == selected_unit.casefold()
+    selected_units = {
+        value.casefold() for value in _selected_filter_values(sub_unit)
+    }
+    if selected_units and sub_unit_column:
+        mask = filtered[sub_unit_column].map(_clean_text).str.casefold().isin(selected_units)
         filtered = filtered.loc[mask]
 
     grades = {_clean_text(value).casefold() for value in (salary_grades or []) if _clean_text(value)}
@@ -178,6 +196,65 @@ def filter_personnel_for_export(
 
     return filtered.copy()
 
+
+
+def build_personnel_selection_keys(frame: pd.DataFrame) -> list[str]:
+    """Create unique personnel keys that survive normal filter changes.
+
+    Staff ID is the primary identity. Rows without a Staff ID use a composite
+    personnel identity, with an occurrence suffix for repeated legacy records.
+    """
+    keys: list[str] = []
+    occurrences: dict[str, int] = {}
+    for position, (_, row) in enumerate(frame.iterrows()):
+        staff_id = _normalise_key(row.get("Staff ID"))
+        if staff_id:
+            base = f"staff:{staff_id}"
+        else:
+            identity_parts = [
+                _normalise_key(row.get("Name")) or "",
+                _normalise_key(row.get("Department")) or "",
+                _normalise_key(row.get("Unit Name")) or "",
+                _normalise_key(row.get("Sub Unit")) or "",
+                _normalise_key(row.get("SG")) or "",
+            ]
+            identity = "|".join(identity_parts).strip("|")
+            base = f"person:{identity}" if identity else f"person:row-{position}"
+        occurrence = occurrences.get(base, 0)
+        occurrences[base] = occurrence + 1
+        keys.append(base if occurrence == 0 else f"{base}#{occurrence + 1}")
+    return keys
+
+
+def merge_visible_selection(
+    previously_selected: Iterable[str],
+    visible_keys: Iterable[str],
+    checked_rows: Iterable[bool],
+) -> list[str]:
+    """Apply visible checkbox changes without dropping personnel hidden by filters."""
+    previous = set(previously_selected)
+    visible = list(visible_keys)
+    checked = list(checked_rows)
+    if len(visible) != len(checked):
+        raise ValueError("Visible personnel keys and selection values must have equal lengths.")
+    retained_hidden = previous - set(visible)
+    selected_visible = {
+        key for key, is_checked in zip(visible, checked) if bool(is_checked)
+    }
+    return sorted(retained_hidden | selected_visible)
+
+
+def set_visible_selection(
+    previously_selected: Iterable[str],
+    visible_keys: Iterable[str],
+    *,
+    selected: bool,
+) -> list[str]:
+    """Select or clear visible rows while retaining selections outside the filter."""
+    previous = set(previously_selected)
+    visible = set(visible_keys)
+    retained_hidden = previous - visible
+    return sorted(retained_hidden | visible) if selected else sorted(retained_hidden)
 
 def _row_value(row: Mapping[str, Any], candidates: tuple[str, ...] | list[str]) -> Any:
     for candidate in candidates:
@@ -485,13 +562,18 @@ def _build_metadata_sheet(
 ) -> None:
     worksheet = workbook.create_sheet("Report Metadata")
     filter_values = dict(filters or {})
+
+    def _display_filter(value: Any) -> str:
+        values = _selected_filter_values(value) if isinstance(value, (str, list, tuple, set)) else []
+        return ", ".join(values) if values else "All"
+
     rows = [
         ["Competency Report Export"],
         ["Exported At", exported_at.strftime("%Y-%m-%d %H:%M:%S %Z").strip()],
         ["Selected Personnel", len(personnel)],
-        ["Sub-Department", filter_values.get("sub_department") or "All"],
-        ["Sub-Unit", filter_values.get("sub_unit") or "All"],
-        ["Salary Grade", ", ".join(map(str, filter_values.get("salary_grades") or [])) or "All"],
+        ["Sub-Department", _display_filter(filter_values.get("sub_department"))],
+        ["Sub-Unit", _display_filter(filter_values.get("sub_unit"))],
+        ["Salary Grade", _display_filter(filter_values.get("salary_grades"))],
         ["Name / Staff ID Search", filter_values.get("search") or "None"],
         [],
         ["SELECTED PERSONNEL"],
