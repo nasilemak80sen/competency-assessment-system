@@ -10,6 +10,7 @@ from components.navigation import render_navigation, render_header
 from config import COMP_TYPES, COMPETENCY_FULLNAMES, HEATMAP_COLORSCALE, SCORE_COLS
 from core.bootstrap import get_heatmap_data
 from services.heatmap_service import (
+    get_competency_score_limit,
     ensure_employment_type_filter,
     filter_personnel_by_competency_threshold,
 )
