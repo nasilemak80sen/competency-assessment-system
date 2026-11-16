@@ -21,6 +21,62 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
+# Explicit chart-builder contract. Keep this list aligned with the approved
+# personnel/assessment fields exposed to users; do not surface every workbook
+# helper, audit, or calculation column in the axis selectors.
+_CHART_COMPETENCY_CODES = (
+    [f"B{i}" for i in range(1, 13)]
+    + [f"K{i}" for i in range(1, 6)]
+    + [f"P{i}" for i in range(1, 6)]
+    + ["E1", "E2"]
+)
+
+CHART_BUILDER_FIELD_GROUPS = {
+    "Personnel": (
+        "Name", "Staff ID", "Age", "Birth Year", "Gender", "Nationality",
+    ),
+    "Organisation & employment": (
+        "Department", "Section Name", "Unit Name", "Sub Unit",
+        "Staff Position", "Email Address", "Employment Category",
+    ),
+    "Career progression": (
+        "Years in PET", "Years of RE Experience", "SG",
+        "Age Promoted to Staff or Principal", "Years in Salary Grade",
+        "Length in Current Assignment",
+    ),
+    "Assessment profile": (
+        "Assessment Level", "Last Assesment Date", "Ruler Type",
+    ),
+    "Actual competency scores": tuple(_CHART_COMPETENCY_CODES),
+    "Required competency levels": tuple(f"R-{code}" for code in _CHART_COMPETENCY_CODES),
+    "Competency gaps": tuple(f"G--{code}" for code in _CHART_COMPETENCY_CODES),
+}
+CHART_BUILDER_FIELDS = tuple(
+    field
+    for group_fields in CHART_BUILDER_FIELD_GROUPS.values()
+    for field in group_fields
+)
+CHART_BUILDER_FIELD_LABELS = {
+    **{f"G--{code}": f"G-{code}" for code in _CHART_COMPETENCY_CODES},
+}
+
+
+def get_chart_builder_fields(dataframe: pd.DataFrame) -> List[str]:
+    """Return only approved chart-builder fields that contain usable data."""
+    if dataframe is None or dataframe.empty:
+        return []
+    return [
+        column
+        for column in CHART_BUILDER_FIELDS
+        if column in dataframe.columns and dataframe[column].notna().any()
+    ]
+
+
+def get_chart_builder_field_label(column: str) -> str:
+    """Return the user-facing workbook label for a canonical data column."""
+    return CHART_BUILDER_FIELD_LABELS.get(column, column)
+
+
 class DataType(Enum):
     NUMERIC = "numeric"
     CATEGORICAL = "categorical"
@@ -230,15 +286,32 @@ class ChartBuilder:
     def aggregate(self, dimension: str, measure: Optional[str] = None,
                   aggregation: str = "Count", color_col: Optional[str] = None,
                   top_n: Optional[int] = None) -> pd.DataFrame:
+        """Aggregate plotted values and retain sample-size diagnostics.
+
+        The value column is the statistic used by the chart. Records counts
+        every row in a plotted group, while Valid Values counts non-null
+        numeric observations used for a numeric statistic.
+        """
         if dimension not in self.df.columns:
             raise KeyError(dimension)
         if aggregation not in self.AGGREGATIONS:
             raise ValueError(f"Unsupported aggregation: {aggregation}")
 
-        group_cols = [dimension] + ([color_col] if color_col and color_col in self.df.columns and color_col != dimension else [])
+        group_cols = [dimension] + (
+            [color_col]
+            if color_col and color_col in self.df.columns and color_col != dimension
+            else []
+        )
         work = self.df.copy()
+
         if aggregation == "Count":
-            grouped = work.groupby(group_cols, dropna=False).size().reset_index(name="value")
+            grouped = (
+                work.groupby(group_cols, dropna=False)
+                .size()
+                .reset_index(name="value")
+            )
+            grouped["Records"] = grouped["value"].astype(int)
+            grouped["Valid Values"] = grouped["value"].astype(int)
         else:
             if not measure or measure not in work.columns:
                 raise ValueError("A numeric measure is required for this aggregation.")
@@ -246,14 +319,44 @@ class ChartBuilder:
             work = work.assign(__measure=numeric)
             grouped_series = work.groupby(group_cols, dropna=False)["__measure"]
             operation = {
-                "Sum": "sum", "Average": "mean", "Median": "median",
-                "Minimum": "min", "Maximum": "max",
+                "Sum": "sum",
+                "Average": "mean",
+                "Median": "median",
+                "Minimum": "min",
+                "Maximum": "max",
             }[aggregation]
             grouped = getattr(grouped_series, operation)().reset_index(name="value")
+            diagnostics = (
+                work.groupby(group_cols, dropna=False)
+                .agg(
+                    Records=("__measure", "size"),
+                    **{"Valid Values": ("__measure", "count")},
+                )
+                .reset_index()
+            )
+            grouped = grouped.merge(
+                diagnostics, on=group_cols, how="left", validate="one_to_one"
+            )
 
         if top_n:
-            ranked = grouped.groupby(dimension, dropna=False)["value"].sum().sort_values(ascending=False).head(top_n)
-            grouped = grouped[grouped[dimension].isin(ranked.index)]
+            if aggregation == "Count":
+                ranking = work.groupby(dimension, dropna=False).size()
+            else:
+                numeric = pd.to_numeric(work[measure], errors="coerce")
+                ranking_frame = work.assign(__measure=numeric)
+                ranking_group = ranking_frame.groupby(dimension, dropna=False)["__measure"]
+                if aggregation == "Sum":
+                    ranking = ranking_group.sum()
+                elif aggregation == "Median":
+                    ranking = ranking_group.median()
+                elif aggregation == "Minimum":
+                    ranking = ranking_group.min()
+                elif aggregation == "Maximum":
+                    ranking = ranking_group.max()
+                else:
+                    ranking = ranking_group.mean()
+            selected = ranking.sort_values(ascending=False).head(top_n).index
+            grouped = grouped[grouped[dimension].isin(selected)]
 
         return grouped
 
@@ -273,16 +376,34 @@ class ChartBuilder:
         if chart_type in {"Bar Chart", "Stacked Bar Chart", "Pie Chart"} and aggregation:
             if aggregation == "Count" or y_col:
                 grouped = self.aggregate(x_col, y_col, aggregation, color_col,
-                                         top_n if chart_type != "Pie Chart" else (top_n or 10))
+                                         top_n)
                 if chart_type == "Pie Chart":
-                    grouped = grouped.groupby(x_col, dropna=False)["value"].sum().reset_index()
-                    fig = px.pie(grouped, names=x_col, values="value", title=title)
+                    pie_aggregation = (
+                        grouped.groupby(x_col, dropna=False)["value"].sum().reset_index()
+                    )
+                    fig = px.pie(pie_aggregation, names=x_col, values="value", title=title)
                 else:
-                    fig = px.bar(grouped, x=x_col, y="value", color=color_col,
-                                 title=title,
-                                 barmode="stack" if chart_type == "Stacked Bar Chart" else "group",
-                                 hover_data=self._hover_columns(grouped))
-                fig.update_layout(xaxis_title=x_col, yaxis_title=f"{aggregation} of {y_col}" if y_col else "Count")
+                    fig = px.bar(
+                        grouped,
+                        x=x_col,
+                        y="value",
+                        color=color_col,
+                        title=title,
+                        barmode="stack" if chart_type == "Stacked Bar Chart" else "group",
+                        hover_data=[
+                            column for column in ("Records", "Valid Values")
+                            if column in grouped.columns
+                        ],
+                    )
+                y_axis_title = (
+                    "Personnel records"
+                    if aggregation == "Count" or not y_col
+                    else f"{aggregation} of {get_chart_builder_field_label(y_col)}"
+                )
+                fig.update_layout(
+                    xaxis_title=get_chart_builder_field_label(x_col),
+                    yaxis_title=y_axis_title,
+                )
                 return self._finish(fig)
 
         if chart_type == "Histogram":

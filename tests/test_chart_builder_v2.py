@@ -119,3 +119,78 @@ def test_bubble_drops_missing_size_values(workforce_df):
     )
     assert figure.data
     assert len(figure.data[0].x) == 4
+
+
+def test_chart_builder_field_allowlist_excludes_unrelated_workbook_columns():
+    from chart_builder import (
+        CHART_BUILDER_FIELDS,
+        get_chart_builder_field_label,
+        get_chart_builder_fields,
+    )
+
+    dataframe = pd.DataFrame({
+        "Name": ["A"],
+        "Department": ["DPE"],
+        "Age": [37],
+        "R-B1": [3.0],
+        "G--B1": [-1.0],
+        "Contract Expire Date": [pd.Timestamp("2027-01-01")],
+        "Last Assesment Date Source": ["2026"],
+        "Helper Column": [99],
+    })
+
+    selected = get_chart_builder_fields(dataframe)
+    assert selected == ["Name", "Age", "Department", "R-B1", "G--B1"]
+    assert "Contract Expire Date" not in CHART_BUILDER_FIELDS
+    assert "Helper Column" not in selected
+    assert get_chart_builder_field_label("G--B1") == "G-B1"
+
+
+def test_numeric_aggregation_returns_actual_measure_and_sample_sizes():
+    dataframe = pd.DataFrame({
+        "Department": ["DPE", "DPE", "PSR"],
+        "Score": [4.0, None, 2.0],
+    })
+
+    result = ChartBuilder(dataframe).aggregate(
+        "Department", "Score", aggregation="Average"
+    )
+    by_department = result.set_index("Department")
+
+    assert by_department.loc["DPE", "value"] == pytest.approx(4.0)
+    assert by_department.loc["DPE", "Records"] == 2
+    assert by_department.loc["DPE", "Valid Values"] == 1
+    assert by_department.loc["PSR", "value"] == pytest.approx(2.0)
+    assert by_department.loc["PSR", "Records"] == 1
+    assert by_department.loc["PSR", "Valid Values"] == 1
+
+
+def test_numeric_bar_chart_uses_aggregated_measure_not_row_count():
+    dataframe = pd.DataFrame({
+        "Department": ["DPE", "DPE", "PSR"],
+        "Score": [4.0, 2.0, 5.0],
+    })
+
+    figure = ChartBuilder(dataframe).create_chart(
+        "Bar Chart", "Department", "Score", aggregation="Average"
+    )
+
+    trace = figure.data[0]
+    plotted = dict(zip(trace.x, trace.y))
+    assert plotted["DPE"] == pytest.approx(3.0)
+    assert plotted["PSR"] == pytest.approx(5.0)
+    assert figure.layout.yaxis.title.text == "Average of Score"
+
+
+def test_chart_builder_field_list_contains_all_competency_score_requirement_and_gap_columns():
+    from chart_builder import CHART_BUILDER_FIELDS
+
+    for code in (
+        [f"B{i}" for i in range(1, 13)]
+        + [f"K{i}" for i in range(1, 6)]
+        + [f"P{i}" for i in range(1, 6)]
+        + ["E1", "E2"]
+    ):
+        assert code in CHART_BUILDER_FIELDS
+        assert f"R-{code}" in CHART_BUILDER_FIELDS
+        assert f"G--{code}" in CHART_BUILDER_FIELDS
