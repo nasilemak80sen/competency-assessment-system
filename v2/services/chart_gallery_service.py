@@ -34,9 +34,14 @@ def _apply_saved_filters(dataframe: pd.DataFrame, filters: dict) -> pd.DataFrame
         group = filters.get(group_name, {}) or {}
         if isinstance(group, dict):
             for column, values in group.items():
+                if not isinstance(values, (list, tuple)) or not values:
+                    continue
+                if column not in dataframe.columns:
+                    return dataframe.iloc[0:0].copy()
                 matched = _native_values(dataframe, column, values)
-                if matched:
-                    categorical[column] = matched
+                if not matched:
+                    return dataframe.iloc[0:0].copy()
+                categorical[column] = matched
 
     numeric_ranges = {}
     numeric_field = filters.get("numeric_field")

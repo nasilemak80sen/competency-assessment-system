@@ -187,8 +187,8 @@ def test_chart_builder_has_guided_axes_numeric_measures_and_result_validation():
 def test_chart_builder_has_saved_configurations_and_guided_chart_templates():
     s = CHARTS.read_text(encoding="utf-8")
     required = [
-        "Saved chart setups",
-        "Load setup",
+        "Saved chart gallery",
+        "Open setup",
         "Delete",
         "save_chart_configuration",
         "get_chart_configuration",
