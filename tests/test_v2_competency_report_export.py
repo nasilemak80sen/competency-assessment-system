@@ -139,8 +139,8 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
         personnel=selected,
         filters={
             "search": "",
-            "sub_department": "All",
-            "sub_unit": "All",
+            "sub_department": ["SBA", "JVM"],
+            "sub_unit": ["Cluster 2"],
             "salary_grades": ["P4", "P5"],
         },
         competency_names={"B1": "Fluid characterisation"},
@@ -197,6 +197,9 @@ def test_export_preserves_source_master_headers_and_overlays_current_values(tmp_
         assert metadata["A1"].value == "Competency Report Export"
         assert metadata["A3"].value == "Selected Personnel"
         assert metadata["B3"].value == 2
+        assert metadata["B4"].value == "SBA, JVM"
+        assert metadata["B5"].value == "Cluster 2"
+        assert metadata["B6"].value == "P4, P5"
     finally:
         exported.close()
 

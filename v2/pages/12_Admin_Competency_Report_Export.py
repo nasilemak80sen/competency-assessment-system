@@ -298,6 +298,37 @@ if not selected_personnel.empty:
             hide_index=True,
             height=min(360, 38 + 35 * len(selected_preview)),
         )
+
+        selected_labels: list[str] = []
+        selected_label_to_key: dict[str, str] = {}
+        for _, row in selected_personnel.iterrows():
+            name_value = row.get("Name")
+            staff_value = row.get("Staff ID")
+            name = "Unknown" if pd.isna(name_value) else str(name_value).strip()
+            staff_id = "" if pd.isna(staff_value) else str(staff_value).strip()
+            label = f"{name or 'Unknown'} · {staff_id or 'No Staff ID'}"
+            if label in selected_label_to_key:
+                label = f"{label} · {len(selected_labels) + 1}"
+            selected_labels.append(label)
+            selected_label_to_key[label] = str(row["__selection_key"])
+
+        remove_labels = st.multiselect(
+            "Remove individual people from this export",
+            options=selected_labels,
+            key=f"report_export_remove_people_{hashlib.sha1('|'.join(selected_labels).encode('utf-8')).hexdigest()[:10]}",
+            placeholder="Choose people to remove",
+        )
+        if st.button(
+            "Remove selected people",
+            key="report_export_remove_people_action",
+            disabled=not remove_labels,
+        ):
+            removed_keys = {selected_label_to_key[label] for label in remove_labels}
+            st.session_state[SELECTION_STATE_KEY] = sorted(
+                set(st.session_state[SELECTION_STATE_KEY]) - removed_keys
+            )
+            st.session_state[SELECTION_VERSION_KEY] += 1
+            st.rerun()
 else:
     st.info("No personnel selected yet. Select individual rows above or use Select all.")
 
@@ -308,7 +339,8 @@ st.markdown("---")
 st.subheader("04 · Export Excel report")
 st.caption(
     "One workbook will contain the original Personnel Master layout plus separate "
-    "competency, assessment and export-metadata worksheets."
+    "competency, assessment and export-metadata worksheets. Retained selections are "
+    "included even when they are outside the current filter results."
 )
 
 if selected_personnel.empty:
