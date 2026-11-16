@@ -228,14 +228,13 @@ edited_selection = st.data_editor(
             "Select",
             help="Select this person for the export.",
             default=False,
-            width="small",
         ),
-        "Name": st.column_config.TextColumn("Personnel", width="large"),
-        "Staff ID": st.column_config.TextColumn("Staff ID", width="small"),
+        "Name": st.column_config.TextColumn("Personnel"),
+        "Staff ID": st.column_config.TextColumn("Staff ID"),
         "Department": st.column_config.TextColumn("Department"),
         "Sub-Department": st.column_config.TextColumn("Sub-Department"),
         "Sub-Unit": st.column_config.TextColumn("Sub-Unit"),
-        "SG": st.column_config.TextColumn("SG", width="small"),
+        "SG": st.column_config.TextColumn("SG"),
     },
 )
 
