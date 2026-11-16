@@ -273,7 +273,7 @@ class ChartBuilder:
         if chart_type in {"Bar Chart", "Stacked Bar Chart", "Pie Chart"} and aggregation:
             if aggregation == "Count" or y_col:
                 grouped = self.aggregate(x_col, y_col, aggregation, color_col,
-                                         top_n if chart_type != "Pie Chart" else (top_n or 10))
+                                         top_n)
                 if chart_type == "Pie Chart":
                     grouped = grouped.groupby(x_col, dropna=False)["value"].sum().reset_index()
                     fig = px.pie(grouped, names=x_col, values="value", title=title)
