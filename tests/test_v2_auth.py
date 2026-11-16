@@ -155,3 +155,43 @@ def test_configured_admin_secret_rotation_is_applied_once(monkeypatch, tmp_path:
     assert auth_service.authenticate("admin", "RotatedPass456") is not None
     assert auth_service.authenticate("admin", "ConfiguredPass123") is None
     assert auth_service.bootstrap_admin_from_environment() is False
+
+
+def test_relt2026_is_bootstrapped_as_admin_from_private_streamlit_secrets(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(
+        auth_service,
+        "_streamlit_admin_credentials",
+        lambda: ("RELT2026", "TestOnlySecret_934!", "RELT Administrator"),
+    )
+
+    assert auth_service.bootstrap_admin_from_environment() is True
+    admin = auth_service.authenticate("relt2026", "TestOnlySecret_934!")
+    assert admin is not None
+    assert admin["username"] == "relt2026"
+    assert admin["role"] == auth_service.ROLE_ADMIN
+    assert admin["personnel_id"] is None
+    assert auth_service.bootstrap_admin_from_environment() is False
+
+    # The database stores only the one-way scrypt verifier, not the password.
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        encoded = conn.execute(
+            "SELECT password_hash FROM app_users WHERE username = ?",
+            ("relt2026",),
+        ).fetchone()[0]
+    assert encoded.startswith("scrypt$")
+    assert encoded != "TestOnlySecret_934!"
+
+
+def test_private_streamlit_admin_template_is_gitignored():
+    template = Path(".streamlit/secrets.toml.example").read_text(encoding="utf-8")
+    gitignore = Path(".gitignore").read_text(encoding="utf-8-sig")
+
+    assert 'username = "RELT2026"' in template
+    assert 'display_name = "RELT Administrator"' in template
+    assert 'password = "SET_THIS_PRIVATELY"' in template
+    assert ".streamlit/secrets.toml" in gitignore
+    assert "SET_THIS_PRIVATELY" not in gitignore

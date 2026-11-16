@@ -593,6 +593,33 @@ The importer recalculates the application gap rather than blindly copying the sp
 
 ---
 
+# 🔐 Default Administrator Bootstrap
+
+The V2 application can create the default administrator account during startup using Streamlit Secrets. The configured username is **RELT2026**. Keep the password in the deployment's private Secrets settings, not in this repository.
+
+For local development:
+
+1. Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`.
+2. Replace `SET_THIS_PRIVATELY` with the administrator password in the private copy.
+3. Start the application with `streamlit run v2/app.py`.
+
+For a hosted Streamlit deployment, paste the same TOML settings into the app's private Secrets configuration:
+
+```toml
+[admin]
+username = "RELT2026"
+password = "SET_THIS_PRIVATELY"
+display_name = "RELT Administrator"
+```
+
+The bootstrap runs automatically when the V2 app starts. It provisions the account with the `ADMIN` role, stores a scrypt password hash (never plaintext), and records a one-time bootstrap marker so normal app reruns do not reset a password subsequently changed by an administrator. An explicit secret rotation is applied once on startup.
+
+Alternatively, deployments can provide `POC_ADMIN_USERNAME`, `POC_ADMIN_PASSWORD` and `POC_ADMIN_DISPLAY_NAME` as environment variables. Streamlit Secrets take precedence when both sources are configured.
+
+**Security:** `.streamlit/secrets.toml` is excluded by `.gitignore`. Do not commit the private file. Change the initial password after first login and use a unique credential for production rather than sharing it among administrators.
+
+---
+
 # 🛠️ Administrative Capabilities
 
 The current Beta release provides administrative workflows for:
@@ -634,7 +661,7 @@ The database includes audit-log infrastructure capable of recording:
 
 This provides a foundation for stronger governance as authentication, role-based access and enterprise deployment capabilities are introduced in future releases.
 
-> **Important:** Authentication and role-based access control are not yet implemented in the current Beta release.
+> The V2 application includes SQLite-backed authentication, USER / ADMIN roles and an administrator-only User Access Management page. Configure the bootstrap administrator through private Streamlit Secrets as described above.
 
 ---
 

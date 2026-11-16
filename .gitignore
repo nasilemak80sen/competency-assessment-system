@@ -25,3 +25,8 @@ env/
 *.tmp
 *.temp
 ~$*
+
+# Private Streamlit credentials
+.streamlit/secrets.toml
+.streamlit/secrets.toml.*
+!.streamlit/secrets.toml.example
