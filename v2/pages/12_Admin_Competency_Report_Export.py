@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from io import BytesIO
 import hashlib
+import zipfile
 
 import pandas as pd
 import streamlit as st
@@ -10,12 +12,14 @@ import streamlit as st
 from components.navigation import render_header, render_navigation
 from config import COMPETENCY_FULLNAMES, EXCEL_PATH, SCORE_COLS
 from core.auth import require_roles
-from core.bootstrap import get_heatmap_data
+from core.bootstrap import get_heatmap_data, get_ruler_data, open_session
 from services.auth_service import ROLE_ADMIN
 from services.heatmap_service import (
     ensure_employment_type_filter,
     get_configured_competency_max_scores,
 )
+from services.assessment_report_service import build_personnel_assessment_pdf
+from models import Personnel, SummaryScore
 from services.report_export_service import (
     build_competency_report_workbook,
     build_personnel_selection_keys,
@@ -332,18 +336,17 @@ else:
     st.info("No personnel selected yet. Select individual rows above or use Select all.")
 
 # -----------------------------------------------------------------------------
-# 04 · EXPORT WORKBOOK
+# 04 · EXPORT REPORTS
 # -----------------------------------------------------------------------------
 st.markdown("---")
-st.subheader("04 · Export Excel report")
+st.subheader("04 · Export reports")
 st.caption(
-    "One workbook will contain the original Personnel Master layout plus separate "
-    "competency, assessment and export-metadata worksheets. Retained selections are "
-    "included even when they are outside the current filter results."
+    "Generate the original multi-sheet Excel workbook and individual PDF "
+    "assessment reports for the same selected personnel."
 )
 
 if selected_personnel.empty:
-    st.info("Select at least one person to enable the Excel export.")
+    st.info("Select at least one person to enable Excel and PDF exports.")
 else:
     try:
         maximum_scores = get_configured_competency_max_scores()
@@ -364,8 +367,8 @@ else:
         "sub_unit": selected_units,
         "salary_grades": selected_grades,
     }
-
     export_personnel = selected_personnel.drop(columns=["__selection_key"], errors="ignore")
+
     try:
         workbook_bytes = build_competency_report_workbook(
             source_workbook_path=EXCEL_PATH,
@@ -375,20 +378,173 @@ else:
             maximum_scores=maximum_scores,
         )
     except Exception as exc:
-        st.error(f"Unable to generate the competency report: {exc}")
-    else:
-        filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        export_col, note_col = st.columns([1.35, 2.65])
-        with export_col:
+        workbook_bytes = None
+        st.error(f"Unable to generate the Excel report: {exc}")
+
+    pdf_payload = None
+    pdf_filename = None
+    pdf_mime = None
+    pdf_label = None
+    pdf_reports = []
+    pdf_failures = []
+    try:
+        ruler_map, _tech_labels = get_ruler_data()
+        session = open_session()
+        try:
+            summary_fields = [
+                "next_grade_base", "next_grade_keys", "next_grade_pacing", "next_grade_emerging", "next_grade_cti",
+                "staff_base", "staff_keys", "staff_pacing", "staff_emerging", "staff_cti",
+                "principal_base", "principal_keys", "principal_pacing", "principal_emerging", "principal_cti",
+                "custodian_base", "custodian_keys", "custodian_pacing", "custodian_emerging", "custodian_cti",
+            ]
+            with st.spinner(f"Preparing {len(export_personnel):,} individual assessment PDF report(s)…"):
+                for _, person in export_personnel.iterrows():
+                    staff_value = person.get("Staff ID")
+                    staff_id = "" if pd.isna(staff_value) else str(staff_value).strip()
+                    if staff_id.endswith(".0") and staff_id[:-2].isdigit():
+                        staff_id = staff_id[:-2]
+
+                    database_person = None
+                    if staff_id:
+                        database_person = (
+                            session.query(Personnel)
+                            .filter(
+                                Personnel.staff_id == staff_id,
+                                (Personnel.is_deleted.is_(False) | Personnel.is_deleted.is_(None)),
+                            )
+                            .first()
+                        )
+                    if database_person is None:
+                        name_value = person.get("Name")
+                        name = "" if pd.isna(name_value) else str(name_value).strip()
+                        if name:
+                            database_person = (
+                                session.query(Personnel)
+                                .filter(
+                                    Personnel.name == name,
+                                    (Personnel.is_deleted.is_(False) | Personnel.is_deleted.is_(None)),
+                                )
+                                .first()
+                            )
+
+                    history = []
+                    summary_data = None
+                    if database_person is not None:
+                        for assessment in sorted(
+                            database_person.assessments or [],
+                            key=lambda item: item.assessment_date or datetime.min.date(),
+                        ):
+                            for score in assessment.scores or []:
+                                history.append({
+                                    "date": assessment.assessment_date,
+                                    "type": score.competency_type,
+                                    "actual": score.actual_score,
+                                })
+
+                        summary_record = (
+                            session.query(SummaryScore)
+                            .filter(SummaryScore.personnel_id == database_person.id)
+                            .first()
+                        )
+                        if summary_record is not None:
+                            summary_data = {
+                                field: getattr(summary_record, field, None)
+                                for field in summary_fields
+                            }
+
+                    try:
+                        pdf_bytes = build_personnel_assessment_pdf(
+                            person,
+                            ruler_map,
+                            history=history,
+                            summary=summary_data,
+                            target_mode="Next salary grade",
+                        )
+                    except Exception as exc:
+                        name_value = person.get("Name")
+                        label = "Unknown personnel" if pd.isna(name_value) else str(name_value)
+                        pdf_failures.append(f"{label}: {exc}")
+                        continue
+
+                    name_value = person.get("Name")
+                    name_part = "personnel" if pd.isna(name_value) else str(name_value)
+                    safe_name = "".join(
+                        character if character.isalnum() or character in "-_" else "_"
+                        for character in name_part
+                    ).strip("_") or "personnel"
+                    staff_part = f"_{staff_id}" if staff_id else ""
+                    pdf_reports.append((f"Assessment_{safe_name}{staff_part}.pdf", pdf_bytes))
+        finally:
+            session.close()
+
+        if pdf_failures:
+            st.error(
+                "PDF generation failed for one or more selected personnel. "
+                "No partial PDF bundle has been prepared."
+            )
+            for failure in pdf_failures:
+                st.caption(f"• {failure}")
+        elif len(pdf_reports) == 1:
+            pdf_filename, pdf_payload = pdf_reports[0]
+            pdf_mime = "application/pdf"
+            pdf_label = "⬇️ Download PDF report (.pdf)"
+        elif len(pdf_reports) > 1:
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+                used_names = set()
+                for filename, content in pdf_reports:
+                    candidate = filename
+                    suffix = 2
+                    while candidate.casefold() in used_names:
+                        candidate = f"{filename[:-4]}_{suffix}.pdf"
+                        suffix += 1
+                    used_names.add(candidate.casefold())
+                    archive.writestr(candidate, content)
+            pdf_payload = zip_buffer.getvalue()
+            pdf_filename = f"assessment_reports_{datetime.now():%Y%m%d_%H%M%S}.zip"
+            pdf_mime = "application/zip"
+            pdf_label = "⬇️ Download PDF reports (.zip)"
+    except Exception as exc:
+        st.error(f"Unable to prepare the selected personnel PDF reports: {exc}")
+
+    excel_col, pdf_col = st.columns(2)
+    with excel_col:
+        if workbook_bytes is not None:
             st.download_button(
                 "⬇️ Download Excel report (.xlsx)",
                 data=workbook_bytes,
-                file_name=f"competency_reports_{filename_timestamp}.xlsx",
+                file_name=f"competency_reports_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 use_container_width=True,
             )
-        with note_col:
-            st.caption(
-                f"Ready to export **{len(export_personnel):,} personnel** across four worksheets."
+        else:
+            st.button("Excel report unavailable", disabled=True, use_container_width=True)
+
+    with pdf_col:
+        if pdf_payload is not None and pdf_filename and pdf_mime and pdf_label:
+            st.download_button(
+                pdf_label,
+                data=pdf_payload,
+                file_name=pdf_filename,
+                mime=pdf_mime,
+                type="primary",
+                use_container_width=True,
             )
+        else:
+            st.button(
+                "PDF report unavailable",
+                disabled=True,
+                use_container_width=True,
+                help="Select personnel and resolve any report-generation errors first.",
+            )
+
+    if pdf_payload is not None:
+        output_description = (
+            "one PDF file" if pdf_mime == "application/pdf"
+            else f"{len(pdf_reports)} individual PDF files in one ZIP archive"
+        )
+        st.caption(
+            f"Ready: **{len(export_personnel):,} personnel** · Excel workbook plus {output_description}. "
+            "Each PDF uses the Individual Assessment page's default Next salary grade target."
+        )
