@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from io import BytesIO
-import html
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,6 +21,7 @@ from components.navigation import render_header, render_navigation
 from config import COMPETENCY_FULLNAMES, COMP_TYPES, EXCEL_PATH
 from core.bootstrap import get_master_data, get_ruler_data, open_session
 from models import CVDocument, Personnel, SummaryScore
+from services.assessment_report_service import generate_assessment_pdf
 
 
 def _text(value, fallback="Not Applicable"):
@@ -224,156 +223,18 @@ def _render_competency_strength_class(person, competency_type):
 
 
 
-def _pdf(person, gap, metrics, future_gap=None, target=None):
-    """Generate the complete assessment report with chart and future-grade gaps."""
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
-
-    buffer = BytesIO()
-    document = SimpleDocTemplate(
-        buffer, pagesize=landscape(A4),
-        leftMargin=10 * mm, rightMargin=10 * mm,
-        topMargin=10 * mm, bottomMargin=10 * mm,
+def _pdf(person, gap, metrics, future_gap=None, target=None, history=None, summary=None, career_ruler=None):
+    """Compatibility wrapper around the shared assessment PDF generator."""
+    return generate_assessment_pdf(
+        person,
+        gap,
+        metrics,
+        future_gap=future_gap,
+        target=target,
+        career_ruler=career_ruler,
+        history=history,
+        summary=summary,
     )
-    styles = getSampleStyleSheet()
-    styles["BodyText"].fontSize = 8
-    story = [
-        Paragraph("DPE Reservoir Engineering — Individual Competency Assessment", styles["Title"]),
-        Spacer(1, 3 * mm),
-        Paragraph(
-            f"<b>Name:</b> {html.escape(_text(person.get('Name')))} &nbsp;&nbsp; "
-            f"<b>Staff ID:</b> {html.escape(_text(person.get('Staff ID')))} &nbsp;&nbsp; "
-            f"<b>Nationality:</b> {html.escape(_text(person.get('Nationality')))}",
-            styles["BodyText"],
-        ),
-        Paragraph(
-            f"<b>Position:</b> {html.escape(_text(person.get('Staff Position')))} &nbsp;&nbsp; "
-            f"<b>Current Grade:</b> {html.escape(_text(person.get('SG')))} &nbsp;&nbsp; "
-            f"<b>Department:</b> {html.escape(_text(person.get('Department')))} &nbsp;&nbsp; "
-            f"<b>Section:</b> {html.escape(_text(person.get('Section Name')))}",
-            styles["BodyText"],
-        ),
-        Spacer(1, 3 * mm),
-        Paragraph("Assessment Summary", styles["Heading2"]),
-    ]
-    summary_rows = [
-        ["Target SG", "Weighted Readiness", "Strict Readiness", "Met", "Minor Gaps", "Major Gaps", "Not Assessed"],
-        [_text(target), f"{metrics['weighted_readiness']:.1f}%", f"{metrics['strict_readiness']:.1f}%",
-         metrics["met"], metrics["minor"], metrics["major"], metrics["not_assessed"]],
-    ]
-    t = Table(summary_rows, repeatRows=1)
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-    ]))
-    story.extend([t, Spacer(1, 4 * mm)])
-
-    # Export the same Plotly Actual-vs-Target chart used by the page.
-    chart_gap = gap.dropna(subset=["Target"]).copy()
-    if not chart_gap.empty:
-        comparison, _radar = build_actual_target_figures(chart_gap)
-        comparison.update_layout(height=330, margin={"l": 40, "r": 15, "t": 55, "b": 70})
-        try:
-            image_bytes = comparison.to_image(format="png", width=1200, height=420, scale=1)
-        except Exception:
-            # Kaleido v1 requires a system Chrome/Chromium binary. If the
-            # deployment environment has not finished provisioning Chromium,
-            # keep PDF generation alive rather than crashing the whole page.
-            image_bytes = None
-
-        if image_bytes:
-            image_buffer = BytesIO(image_bytes)
-            image_buffer.seek(0)
-            story.extend([
-                Image(image_buffer, width=250 * mm, height=82 * mm),
-                Spacer(1, 3 * mm),
-            ])
-        else:
-            story.extend([
-                Paragraph(
-                    "Actual vs Target chart image could not be rendered in the current "
-                    "deployment environment. The interactive chart remains available in the dashboard.",
-                    styles["BodyText"],
-                ),
-                Spacer(1, 3 * mm),
-            ])
-
-    story.append(Paragraph("Full Competency Breakdown", styles["Heading2"]))
-    current_rows = [["Code", "Competency", "Current SG", "Target SG", "Actual", "Target", "Gap", "Status"]]
-    for _, record in gap.iterrows():
-        current_rows.append([
-            record["Competency"], record["Competency Name"], _text(record["Current Grade"]),
-            _text(record["Target Grade"]),
-            "—" if pd.isna(record["Actual"]) else f"{float(record['Actual']):.1f}",
-            "—" if pd.isna(record["Target"]) else f"{float(record['Target']):.1f}",
-            "—" if pd.isna(record["Gap"]) else f"{float(record['Gap']):.1f}",
-            record["Status"],
-        ])
-    current_table = Table(current_rows, repeatRows=1,
-        colWidths=[18*mm, 67*mm, 22*mm, 22*mm, 18*mm, 18*mm, 18*mm, 35*mm])
-    current_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ("FONTSIZE", (0, 0), (-1, -1), 7),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    story.extend([current_table, PageBreak()])
-
-    if future_gap is not None and not future_gap.empty:
-        story.append(Paragraph(
-            f"Forward-Looking Promotion Gap Matrix — Current {html.escape(_text(person.get('SG')))} to Higher Salary Grades",
-            styles["Heading2"],
-        ))
-        story.append(Paragraph(
-            "Actual scores are held constant and compared with each higher salary-grade requirement. "
-            "All competency codes are retained so the promotion path is visible end-to-end.",
-            styles["BodyText"],
-        ))
-        future_summary = _future_grade_summary(future_gap)
-        if not future_summary.empty:
-            matrix = [list(future_summary.columns)] + future_summary.fillna("—").astype(str).values.tolist()
-            summary_table = Table(matrix, repeatRows=1)
-            summary_table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("FONTSIZE", (0, 0), (-1, -1), 7),
-            ]))
-            story.extend([summary_table, Spacer(1, 4 * mm)])
-
-        future_rows = [["Target SG", "Code", "Competency", "Category", "Actual", "Target", "Gap", "Status"]]
-        for _, record in future_gap.iterrows():
-            future_rows.append([
-                record["Target SG"], record["Competency"], record["Competency Name"], record["Category"],
-                "—" if pd.isna(record["Actual"]) else f"{float(record['Actual']):.1f}",
-                "—" if pd.isna(record["Target"]) else f"{float(record['Target']):.1f}",
-                "—" if pd.isna(record["Gap"]) else f"{float(record['Gap']):.1f}",
-                record["Status"],
-            ])
-        future_table = Table(future_rows, repeatRows=1,
-            colWidths=[18*mm, 15*mm, 65*mm, 25*mm, 18*mm, 18*mm, 18*mm, 40*mm])
-        future_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#20419A")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-            ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ]))
-        story.append(future_table)
-
-    document.build(story)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
 
 
 def render_page():
@@ -790,7 +651,16 @@ def render_page():
     if not gap.empty:
         st.download_button(
             "📥 Download PDF Report",
-            _pdf(person, gap, metrics, future_gap=future_gap, target=target),
+            _pdf(
+                person,
+                gap,
+                metrics,
+                future_gap=future_gap,
+                target=target,
+                history=history,
+                summary=summary,
+                career_ruler=ruler,
+            ),
             f"Assessment_{_safe_name(selected_name)}_{target or 'target'}_{datetime.now():%Y%m%d}.pdf",
             "application/pdf",
             width="stretch",
