@@ -5,16 +5,82 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from chart_builder import (
-    ChartBuilder,
-    ChartCompatibility,
-    DataType,
-    get_chart_builder_field_label,
-    get_chart_builder_fields,
-)
+from chart_builder import ChartBuilder, ChartCompatibility, DataType
 from components.navigation import render_navigation
-from config import SCORE_COLS
+from config import GAP_COLS, REQ_COLS, SCORE_COLS
 from core.bootstrap import get_master_data
+
+
+# Keep this page tolerant of a local chart_builder.py that has not yet been
+# updated. The approved data contract belongs to the page's v2 workflow; the
+# root engine still supplies the reusable chart classes and calculations.
+CHART_BUILDER_FIELDS = tuple(
+    [
+        "Name", "Staff ID", "Age", "Birth Year", "Gender", "Nationality",
+        "Department", "Section Name", "Unit Name", "Sub Unit", "Staff Position",
+        "Email Address", "Employment Category",
+        "Years in PET", "Years of RE Experience", "SG",
+        "Age Promoted to Staff or Principal", "Years in Salary Grade",
+        "Length in Current Assignment",
+        "Assessment Level", "Last Assesment Date", "Ruler Type",
+    ]
+    + list(SCORE_COLS)
+    + list(REQ_COLS)
+    + list(GAP_COLS)
+)
+CHART_BUILDER_FIELD_LABELS = {
+    column: column.replace("G--", "G-", 1)
+    for column in GAP_COLS
+}
+
+
+def get_chart_builder_fields(dataframe: pd.DataFrame) -> list[str]:
+    """List only approved fields that exist and contain non-null values."""
+    if dataframe is None or dataframe.empty:
+        return []
+    return [
+        column for column in CHART_BUILDER_FIELDS
+        if column in dataframe.columns and dataframe[column].notna().any()
+    ]
+
+
+def get_chart_builder_field_label(column: str) -> str:
+    """Map canonical gap storage names to the workbook-facing display name."""
+    return CHART_BUILDER_FIELD_LABELS.get(column, column)
+
+
+def _attach_aggregation_diagnostics(
+    chart_data: pd.DataFrame,
+    dataframe: pd.DataFrame,
+    dimension: str,
+    measure: str | None,
+    aggregation: str,
+    color_col: str | None,
+) -> pd.DataFrame:
+    """Add sample sizes when running against an older chart_builder module."""
+    if {"Records", "Valid Values"}.issubset(chart_data.columns):
+        return chart_data
+    group_cols = [dimension] + (
+        [color_col] if color_col and color_col in dataframe.columns and color_col != dimension else []
+    )
+    grouped = dataframe.groupby(group_cols, dropna=False)
+    if aggregation == "Count" or measure is None:
+        diagnostics = grouped.size().rename("Records").reset_index()
+        diagnostics["Valid Values"] = diagnostics["Records"]
+    else:
+        numeric = pd.to_numeric(dataframe[measure], errors="coerce")
+        numeric_frame = dataframe[group_cols].copy()
+        numeric_frame["__measure"] = numeric
+        numeric_grouped = numeric_frame.groupby(group_cols, dropna=False)["__measure"]
+        diagnostics = numeric_frame.groupby(
+            group_cols, dropna=False
+        ).agg(
+            Records=("__measure", "size"),
+            **{"Valid Values": ("__measure", "count")},
+        ).reset_index()
+    return chart_data.merge(
+        diagnostics, on=group_cols, how="left", validate="one_to_one"
+    )
 
 
 render_navigation()
@@ -466,6 +532,15 @@ with main_canvas:
                     chart_color_col,
                     top_n,
                 )
+                if not {"Records", "Valid Values"}.issubset(chart_data.columns):
+                    chart_data = _attach_aggregation_diagnostics(
+                        chart_data,
+                        working_df,
+                        dimension,
+                        measure,
+                        aggregation,
+                        chart_color_col,
+                    )
                 is_aggregated = True
             else:
                 required = [dimension, measure]
