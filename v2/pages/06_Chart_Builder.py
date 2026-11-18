@@ -1026,7 +1026,7 @@ with chart_controls_col:
                 with st.expander("Technical details"):
                     st.exception(exc)
 
-with chart_col:
+with chart_workspace_col:
     st.markdown("### Chart workspace")
     st.caption("Your generated chart, supporting values and export actions stay in this wide workspace.")
     with st.expander("Data check & diagnostics", expanded=False):
