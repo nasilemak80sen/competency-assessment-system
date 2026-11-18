@@ -55,3 +55,14 @@ def test_openglobus_personnel_directory_generates_assessment_profile_links():
     assert "View profile" in html
     assert "Profile not linked" in html
 
+
+def test_globe_initial_camera_uses_a_north_up_vector():
+    html=_build_openglobus_html(_records_from_map_df(_sample_map_df(),_sample_people_df()))
+
+    assert ",Vec3} from " in html
+    assert "const northUp=" in html
+    assert "Vec3.NORTH" in html
+    assert "new Vec3(0,1,0)" in html
+    assert "      northUp\n    );" in html
+    assert 'navigation:{mode:"lockNorth"' in html
+
