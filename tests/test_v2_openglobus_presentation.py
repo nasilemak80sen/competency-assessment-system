@@ -12,6 +12,7 @@ def _sample_records():
             "representation": "100.0%",
             "people": [
                 {
+                    "personnel_id": 9001,
                     "Name": "Example Person",
                     "Staff Position": "Reservoir Engineer",
                     "Department": "Development",
@@ -24,16 +25,14 @@ def _sample_records():
     ]
 
 
-def test_globe_defaults_to_selected_only_labels_and_offers_density_options():
+def test_globe_replaces_permanent_country_labels_with_hover_popups():
     html = _build_openglobus_html(_sample_records())
 
-    assert '<option value="selected">Labels: selected only</option>' in html
-    assert '<option value="top">Labels: top 5</option>' in html
-    assert '<option value="all">Labels: all</option>' in html
-    assert '<option value="none">Labels: off</option>' in html
-    assert 'labelMode.value==="selected"' in html
-    assert 'labelMode.value==="top"' in html
-    assert 'labelMode.value==="all"' in html
+    assert 'id="hovercard"' in html
+    assert "pointermove" in html
+    assert "positionHoverCard" in html
+    assert 'id="labelMode"' not in html
+    assert "entityOptions.label" not in html
 
 
 def test_globe_uses_hover_summary_and_preserves_click_detail_and_fly_to():
@@ -46,12 +45,15 @@ def test_globe_uses_hover_summary_and_preserves_click_detail_and_fly_to():
     assert "Personnel directory" in html
 
 
-def test_globe_labels_are_added_conditionally_not_to_every_marker():
+def test_globe_personnel_rows_link_to_the_correct_assessment_profile():
     html = _build_openglobus_html(_sample_records())
 
-    assert "if(showLabel){" in html
-    assert 'entityOptions.label={' in html
-    assert 'label:{text:record.nationality+" · "+count' not in html
+    assert "assessmentProfileUrl" in html
+    assert 'target="_blank"' in html
+    assert "personnel_id" in html
+    assert "individual-assessment" in html
+    assert "View profile" in html
+    assert "Profile not linked" in html
 
 
 def test_globe_initially_focuses_the_largest_nationality_at_country_level_zoom():
