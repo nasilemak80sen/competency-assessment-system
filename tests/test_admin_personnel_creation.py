@@ -14,7 +14,8 @@ def test_admin_exposes_directory_first_personnel_creation_workflow():
         '"Full name *"',
         '"Staff ID *"',
         '"Create personnel record" if is_add else "Save profile changes"',
-        'ok, message, new_id = add_personnel(session, payload)',
+        'ok, message, new_id = add_personnel(',
+        'session, payload, changed_by=_current_admin_actor()',
         'st.cache_data.clear()',
         'st.session_state["admin_selected_person_id"] = new_id',
         'st.rerun()',
@@ -36,5 +37,6 @@ def test_admin_creation_validates_required_identity_and_uses_existing_service():
 
 def test_personnel_service_keeps_existing_create_boundary():
     source = SERVICE.read_text(encoding="utf-8")
-    assert "def add(session, data:" in source
+    assert "def add(" in source
+    assert "changed_by: str = \"system\"" in source
     assert "return db_ops.add_personnel(session, data, by=changed_by)" in source

@@ -22,7 +22,7 @@ _NATIONALITY_COUNTRY_NAMES = {
     "Indian": "India",
     "Iranian": "Iran",
     "Nigerian": "Nigeria",
-    "Russian": "Russia",
+    "Russia": "Russian Federation",
     "Sudanese": "Sudan",
     "Turkmen": "Turkmenistan",
     "Venezuelan": "Venezuela",

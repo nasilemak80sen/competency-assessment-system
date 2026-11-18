@@ -26,7 +26,8 @@ def test_admin_has_complete_golden_personnel_field_contract():
     missing = [x for x in fields if x not in s]
     assert not missing, f"Admin field contract missing: {missing}"
     assert '"Create personnel record" if is_add else "Save profile changes"' in s
-    assert "add_personnel(session, payload)" in s
+    assert "add_personnel(" in s
+    assert "changed_by=_current_admin_actor()" in s
     assert "Edit personnel profile" in s
 
 
