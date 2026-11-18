@@ -37,4 +37,4 @@ def test_admin_creation_validates_required_identity_and_uses_existing_service():
 def test_personnel_service_keeps_existing_create_boundary():
     source = SERVICE.read_text(encoding="utf-8")
     assert "def add(session, data:" in source
-    assert "return db_ops.add_personnel(session, data)" in source
+    assert "return db_ops.add_personnel(session, data, by=changed_by)" in source

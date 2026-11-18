@@ -14,7 +14,7 @@ def test_phase_a_batch_is_explicit_and_within_inventory():
 def test_personnel_service_delegates_without_reimplementing_rules(monkeypatch):
     session=object(); payload={"staff_id":"123"}; expected=(True,"ok",7); delegate=Mock(return_value=expected)
     monkeypatch.setattr(personnel_service.db_ops,"add_personnel",delegate)
-    assert personnel_service.add(session,payload)==expected; delegate.assert_called_once_with(session,payload)
+    assert personnel_service.add(session,payload)==expected; delegate.assert_called_once_with(session,payload,by="system")
 
 
 def test_assessment_service_delegates_without_reimplementing_rules(monkeypatch):

@@ -6,12 +6,13 @@ write so the header, competency scores, and personnel summary commit together.
 """
 
 from datetime import date, datetime
+import json
 import math
 from typing import Dict, Optional, Tuple
 
 import db_ops
 from config import SCORE_COLS
-from models import Assessment, CompetencyScore, Personnel
+from models import Assessment, AuditLog, CompetencyScore, Personnel
 
 
 def add_assessment(session, personnel_id: int, data: Dict) -> Tuple[bool, str, Optional[int]]:
@@ -46,6 +47,7 @@ def save_assessment_transaction(
     personnel_id: int,
     assessment_data: Dict,
     scores: Dict[str, Dict],
+    actor: dict | None = None,
 ) -> Tuple[bool, str, Optional[int]]:
     """Save one assessment header and its complete competency matrix atomically.
 
@@ -142,6 +144,34 @@ def save_assessment_transaction(
         person.last_assessment_date = assessment_date
         person.updated_at = datetime.utcnow()
 
+        actor_name = "system"
+        actor_display_name = None
+        if isinstance(actor, dict):
+            actor_name = str(actor.get("username") or actor.get("display_name") or "system")[:100]
+            actor_display_name = actor.get("display_name")
+        session.add(
+            AuditLog(
+                entity_type="Assessment",
+                entity_id=int(assessment.id),
+                action="CREATE",
+                changed_by=actor_name,
+                old_values=json.dumps({}, ensure_ascii=False),
+                new_values=json.dumps(
+                    {
+                        "personnel_id": int(person.id),
+                        "assessment_date": assessment_date.isoformat(),
+                        "assessment_level": assessment_level,
+                        "assessor1": assessment.assessor1,
+                        "assessor2": assessment.assessor2,
+                        "supervisor": assessment.supervisor,
+                        "score_count": len(validated_scores),
+                        "actor_display_name": actor_display_name,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+        )
         session.commit()
         return True, f"Assessment saved with all {len(validated_scores)} competency scores.", int(assessment.id)
     except Exception as exc:

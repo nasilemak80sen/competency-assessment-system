@@ -7,14 +7,15 @@ import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models import Base, Personnel
+from models import AuditLog, Base, Personnel
 from v2.services.import_service import (
     build_personnel_import_preview,
     build_cv_import_preview,
     resolve_personnel_import,
     resolve_cv_import,
 )
-from v2.services import auth_service
+from v2.services import auth_service, personnel_service
+from v2.services.assessment_service import save_assessment_transaction
 
 
 def _session():
@@ -438,6 +439,80 @@ def test_duplicate_personnel_link_and_last_admin_lockout_are_prevented(monkeypat
     assert "last active administrator" in demote_message.lower()
 
 
+def test_personnel_crud_audit_uses_the_signed_in_administrator():
+    engine, session = _session()
+    try:
+        ok, message, personnel_id = personnel_service.add(
+            session,
+            {"staff_id": "AUDIT-1", "name": "Audited Person"},
+            changed_by="admin.audit",
+        )
+        assert ok, message
+
+        ok, message = personnel_service.update(
+            session, personnel_id, {"department": "DPE"},
+            changed_by="admin.audit",
+        )
+        assert ok, message
+        ok, message = personnel_service.delete(
+            session, personnel_id, changed_by="admin.audit"
+        )
+        assert ok, message
+
+        entries = (
+            session.query(AuditLog)
+            .filter_by(entity_type="Personnel", entity_id=personnel_id)
+            .order_by(AuditLog.id.asc())
+            .all()
+        )
+        assert [entry.action for entry in entries] == ["CREATE", "UPDATE", "DELETE"]
+        assert all(entry.changed_by == "admin.audit" for entry in entries)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_assessment_audit_records_authenticated_administrator_in_the_save_transaction():
+    engine, session = _session()
+    try:
+        person = Personnel(
+            staff_id="ASSESS-AUDIT-1",
+            name="Assessment Audit Person",
+            is_deleted=False,
+            is_active=True,
+        )
+        session.add(person)
+        session.commit()
+        from config import SCORE_COLS
+        scores = {code: {"actual": 3.0, "req": 4.0} for code in SCORE_COLS}
+        ok, message, assessment_id = save_assessment_transaction(
+            session,
+            person.id,
+            {
+                "assessment_date": pd.Timestamp("2026-11-18").date(),
+                "assessment_level": "Staff",
+            },
+            scores,
+            actor={
+                "id": 4,
+                "username": "admin.audit",
+                "display_name": "Audit Administrator",
+            },
+        )
+        assert ok, message
+        audit = (
+            session.query(AuditLog)
+            .filter_by(entity_type="Assessment", entity_id=assessment_id)
+            .one()
+        )
+        assert audit.action == "CREATE"
+        assert audit.changed_by == "admin.audit"
+        assert '"score_count": 24' in audit.new_values
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_admin_pages_expose_reconciliation_search_and_audit_controls():
     root = Path(__file__).resolve().parents[1]
     import_page = (root / "v2/pages/08_Admin_Import_Data.py").read_text(encoding="utf-8")
@@ -453,5 +528,6 @@ def test_admin_pages_expose_reconciliation_search_and_audit_controls():
     for token in [
         "Searchable user directory", "Search accounts", "Save role and personnel link",
         "Administrator activity log", "list_auth_audit", "actor=user",
+        "Personnel and assessment changes", "_load_personnel_assessment_audit",
     ]:
         assert token in user_page

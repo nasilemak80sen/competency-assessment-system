@@ -39,15 +39,20 @@ def _safe(val):
 
 def _log(session: Session, entity_type: str, entity_id: Optional[int],
          action: str, old: dict, new: dict, by: str = "system"):
-    try:
-        session.add(AuditLog(
-            entity_type=entity_type, entity_id=int(entity_id) if entity_id is not None else None,
-            action=action, changed_by=by,
-            old_values=json.dumps(old), new_values=json.dumps(new)
-        ))
-        session.commit()
-    except Exception:
-        pass
+    """Stage an audit record in the caller's transaction.
+
+    Audit serialization and insertion failures are allowed to propagate so the
+    associated personnel mutation can roll back instead of succeeding silently.
+    """
+    session.add(AuditLog(
+        entity_type=entity_type,
+        entity_id=int(entity_id) if entity_id is not None else None,
+        action=action,
+        changed_by=str(by or "system")[:100],
+        old_values=json.dumps(old, ensure_ascii=False, default=str),
+        new_values=json.dumps(new, ensure_ascii=False, default=str),
+    ))
+    session.flush()
 
 def _normalise_matching_name(value):
     """
@@ -243,7 +248,11 @@ def _coerce_numeric(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
-def add_personnel(session: Session, data: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
+def add_personnel(
+    session: Session,
+    data: Dict[str, Any],
+    by: str = "system",
+) -> Tuple[bool, str, Optional[int]]:
     try:
         existing = session.query(Personnel).filter_by(staff_id=data.get("staff_id")).first()
         if existing:
@@ -295,14 +304,19 @@ def add_personnel(session: Session, data: Dict[str, Any]) -> Tuple[bool, str, Op
         )
         session.add(p)
         session.flush()
+        _log(session, "Personnel", cast(int, p.id), "CREATE", {}, data, by=by)
         session.commit()
-        _log(session, "Personnel", cast(int, p.id), "CREATE", {}, data)
         return True, f"Added: {p.name}", cast(int, p.id)
     except Exception as e:
         session.rollback()
         return False, str(e), None
 
-def update_personnel(session: Session, pid: int, data: Dict[str, Any]) -> Tuple[bool, str]:
+def update_personnel(
+    session: Session,
+    pid: int,
+    data: Dict[str, Any],
+    by: str = "system",
+) -> Tuple[bool, str]:
     try:
         p = session.query(Personnel).filter_by(id=pid).first()
         if not p:
@@ -337,22 +351,26 @@ def update_personnel(session: Session, pid: int, data: Dict[str, Any]) -> Tuple[
                 latest_assessment.updated_at = datetime.utcnow()
 
         setattr(p, "updated_at", datetime.utcnow())
+        _log(session, "Personnel", pid, "UPDATE", old, data, by=by)
         session.commit()
-        _log(session, "Personnel", pid, "UPDATE", old, data)
         return True, f"Updated: {p.name}"
     except Exception as e:
         session.rollback()
         return False, str(e)
 
-def delete_personnel(session: Session, pid: int) -> Tuple[bool, str]:
+def delete_personnel(
+    session: Session,
+    pid: int,
+    by: str = "system",
+) -> Tuple[bool, str]:
     try:
         p = session.query(Personnel).filter_by(id=pid).first()
         if not p:
             return False, "Not found."
         setattr(p, "is_deleted", True)
         setattr(p, "is_active", False)
+        _log(session, "Personnel", pid, "DELETE", {"name": p.name}, {}, by=by)
         session.commit()
-        _log(session, "Personnel", pid, "DELETE", {"name": p.name}, {})
         return True, f"Deleted: {p.name}"
     except Exception as e:
         session.rollback()

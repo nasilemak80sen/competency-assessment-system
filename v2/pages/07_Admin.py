@@ -18,6 +18,7 @@ from config import (
     POSITIONS,
     POSITION_TO_SG,
 )
+from core.auth import current_user
 from core.bootstrap import get_master_data, open_session
 from services.personnel_service import (
     add as add_personnel,
@@ -36,6 +37,11 @@ from services.assessment_service import (
 # Shared helpers. Persistence rules remain in the existing service/db_ops
 # modules; this page only shapes the admin experience and calls those services.
 # ---------------------------------------------------------------------------
+
+def _current_admin_actor() -> str:
+    actor = current_user() or {}
+    return str(actor.get("username") or actor.get("display_name") or "system")[:100]
+
 
 def _is_missing(value) -> bool:
     try:
@@ -791,7 +797,9 @@ with add_tab:
         else:
             session = open_session()
             try:
-                ok, message, new_id = add_personnel(session, payload)
+                ok, message, new_id = add_personnel(
+                    session, payload, changed_by=_current_admin_actor()
+                )
                 if ok:
                     st.success(f"Personnel record created: {payload['name']} (Staff ID {payload['staff_id']}).")
                     st.cache_data.clear()
@@ -851,7 +859,10 @@ with edit_tab:
                 else:
                     session = open_session()
                     try:
-                        ok, message = update_personnel(session, edit_id, payload)
+                        ok, message = update_personnel(
+                            session, edit_id, payload,
+                            changed_by=_current_admin_actor(),
+                        )
                         if ok:
                             st.success(f"Profile updated for {payload['name']}.")
                             st.cache_data.clear()
@@ -1133,6 +1144,7 @@ with assessment_tab:
                                 "remarks": remarks_entry.strip() or None,
                             },
                             score_inputs,
+                            actor=current_user(),
                         )
                         if ok:
                             st.cache_data.clear()
@@ -1307,7 +1319,9 @@ with archive_tab:
             if archive_clicked:
                 session = open_session()
                 try:
-                    ok, message = delete_personnel(session, archive_id)
+                    ok, message = delete_personnel(
+                        session, archive_id, changed_by=_current_admin_actor()
+                    )
                     if ok:
                         st.success(f"Archived {archive_person['name']}.")
                         st.cache_data.clear()
@@ -1356,7 +1370,8 @@ with archive_tab:
                     # Reuse the existing generic update service. No DB service,
                     # model, schema or backend implementation is changed.
                     ok, message = update_personnel(
-                        session, restore_id, {"is_deleted": False, "is_active": True}
+                        session, restore_id, {"is_deleted": False, "is_active": True},
+                        changed_by=_current_admin_actor(),
                     )
                     if ok:
                         st.success(f"Restored {restore_person['name']} to the active directory.")

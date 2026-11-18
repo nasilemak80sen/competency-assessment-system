@@ -12,16 +12,29 @@ import pandas as pd
 import db_ops
 
 
-def add(session, data: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
-    return db_ops.add_personnel(session, data)
+def add(
+    session,
+    data: Dict[str, Any],
+    changed_by: str = "system",
+) -> Tuple[bool, str, Optional[int]]:
+    return db_ops.add_personnel(session, data, by=changed_by)
 
 
-def update(session, personnel_id: int, data: Dict[str, Any]) -> Tuple[bool, str]:
-    return db_ops.update_personnel(session, personnel_id, data)
+def update(
+    session,
+    personnel_id: int,
+    data: Dict[str, Any],
+    changed_by: str = "system",
+) -> Tuple[bool, str]:
+    return db_ops.update_personnel(session, personnel_id, data, by=changed_by)
 
 
-def delete(session, personnel_id: int) -> Tuple[bool, str]:
-    return db_ops.delete_personnel(session, personnel_id)
+def delete(
+    session,
+    personnel_id: int,
+    changed_by: str = "system",
+) -> Tuple[bool, str]:
+    return db_ops.delete_personnel(session, personnel_id, by=changed_by)
 
 
 def all(session, include_deleted: bool = False) -> pd.DataFrame:

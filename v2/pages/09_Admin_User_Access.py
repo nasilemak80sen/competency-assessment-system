@@ -7,7 +7,7 @@ import streamlit as st
 from components.navigation import render_header, render_navigation
 from core.auth import current_user, require_roles
 from core.bootstrap import open_session
-from models import Personnel
+from models import AuditLog, Personnel
 from services.auth_service import (
     ROLE_ADMIN,
     ROLE_USER,
@@ -47,6 +47,52 @@ def _load_personnel_options() -> tuple[dict[str, int], str | None]:
         }, None
     except Exception as exc:
         return {}, str(exc)
+    finally:
+        session.close()
+
+
+def _load_personnel_assessment_audit(search_term: str = "", limit: int = 500) -> list[dict]:
+    """Read ORM audit entries for personnel and assessment operations."""
+    session = open_session()
+    try:
+        rows = (
+            session.query(AuditLog)
+            .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+            .limit(max(1, min(int(limit), 1000)))
+            .all()
+        )
+        term = str(search_term or "").strip().casefold()
+        records = []
+        for row in rows:
+            details = " ".join(
+                value or "" for value in (row.old_values, row.new_values)
+            )
+            searchable = " ".join(
+                str(value or "")
+                for value in (
+                    row.changed_by, row.entity_type, row.entity_id,
+                    row.action, details,
+                )
+            ).casefold()
+            if term and term not in searchable:
+                continue
+            records.append(
+                {
+                    "Time (UTC)": (
+                        row.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                        if row.timestamp else "—"
+                    ),
+                    "Administrator": row.changed_by or "system",
+                    "Entity": row.entity_type or "—",
+                    "Record ID": row.entity_id if row.entity_id is not None else "—",
+                    "Action": row.action or "—",
+                    "Previous values": row.old_values or "—",
+                    "New values": row.new_values or "—",
+                }
+            )
+        return records
+    except Exception as exc:
+        return [{"Error": str(exc)}]
     finally:
         session.close()
 
@@ -245,19 +291,19 @@ with directory_tab:
 with audit_tab:
     st.subheader("Administrator activity log")
     st.caption(
-        "Each user-management change is recorded with the signed-in administrator's "
-        "username and user ID. Passwords and password hashes are never stored in audit details."
+        "User-access and data-change audit records identify the administrator who "
+        "performed the action. Passwords and password hashes are never stored."
     )
     audit_search = st.text_input(
         "Search audit records",
-        placeholder="Administrator, action or affected username",
+        placeholder="Administrator, action, entity or affected account",
         key="user_audit_search",
     )
-    audit_rows = list_auth_audit(audit_search, limit=300)
-    if not audit_rows:
-        st.info("No matching user-access changes have been recorded.")
-    else:
-        audit_display = pd.DataFrame(
+
+    st.markdown("#### User access and import activity")
+    access_rows = list_auth_audit(audit_search, limit=300)
+    if access_rows:
+        access_display = pd.DataFrame(
             [
                 {
                     "Time (UTC)": row["created_at"],
@@ -265,12 +311,21 @@ with audit_tab:
                         f"{row['actor_display_name']} ({row['actor_username']})"
                     ),
                     "Action": row["action"],
-                    "Affected account": row["target_username"] or "—",
+                    "Affected account / file": row["target_username"] or "—",
                     "Details": ", ".join(
                         f"{key}: {value}" for key, value in row["details"].items()
                     ) or "—",
                 }
-                for row in audit_rows
+                for row in access_rows
             ]
         )
-        st.dataframe(audit_display, width="stretch", hide_index=True)
+        st.dataframe(access_display, width="stretch", hide_index=True)
+    else:
+        st.info("No matching user-access or import activity was found.")
+
+    st.markdown("#### Personnel and assessment changes")
+    data_rows = _load_personnel_assessment_audit(audit_search, limit=500)
+    if data_rows:
+        st.dataframe(pd.DataFrame(data_rows), width="stretch", hide_index=True)
+    else:
+        st.info("No matching personnel or assessment changes were found.")
