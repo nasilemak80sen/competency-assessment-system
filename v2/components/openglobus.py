@@ -145,6 +145,14 @@ function visibleCount(record){
   return people===null?Number(record.count||0):people.length;
 }
 
+// Focus the initial camera and marker on the largest nationality. With the
+// default filters empty, visibleCount reflects the full workforce count.
+const defaultFocusRecord=records.reduce((largest,record)=>
+  visibleCount(record)>visibleCount(largest)?record:largest,
+  records[0]
+);
+selectedRecord=defaultFocusRecord;
+
 function markerSvg(proportion,selected=false){
   const radius=7+Math.max(0,Math.min(1,proportion))*8;
   const center=22;
@@ -337,9 +345,14 @@ try{
     globe.renderer.addControl(new control.KeyboardNavigation());
   }
 
-  // Start over Southeast Asia so workforce markers are visible immediately.
+  // Start on the nationality with the largest workforce representation.
+  // 4.5 Mm is a country-level view; 12 Mm showed nearly the whole globe.
   if(globe.planet?.camera){
-    globe.planet.camera.setLonLat(new LonLat(101.9758,4.2105,12000000));
+    globe.planet.camera.setLonLat(new LonLat(
+      defaultFocusRecord.longitude,
+      defaultFocusRecord.latitude,
+      4500000
+    ));
   }
 
   globe.renderer.events.on("mousemove",event=>{
