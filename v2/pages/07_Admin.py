@@ -1,319 +1,1072 @@
-"""Administration — native v2 CRUD and assessment entry page."""
+"""Personnel administration — directory-first CRUD workspace for v2."""
 from __future__ import annotations
+
 from datetime import date, datetime
+import hashlib
+
 import pandas as pd
 import streamlit as st
+
 from components.navigation import render_navigation, render_header
+from config import (
+    ASSESSMENT_LEVELS,
+    CHAT_STATUS_OPTIONS,
+    COMP_TYPES,
+    DEPARTMENTS,
+    POSITIONS,
+    POSITION_TO_SG,
+)
 from core.bootstrap import get_master_data, open_session
-from models import Personnel
-from services.personnel_service import add as add_personnel, update as update_personnel, delete as delete_personnel
+from services.personnel_service import (
+    add as add_personnel,
+    all as get_all_personnel,
+    delete as delete_personnel,
+    update as update_personnel,
+)
 from services.assessment_service import add_assessment, add_competency_scores
-from config import SCORE_COLS, ASSESSMENT_LEVELS, CHAT_STATUS_OPTIONS, COMP_TYPES, DEPARTMENTS, POSITIONS, POSITION_TO_SG
 
-render_navigation()
-render_header("⚙️ Admin: Personnel Database Settings", "Maintain personnel records and enter competency assessments")
 
-def _safe_int(value, default=0, minimum=None, maximum=None):
+# ---------------------------------------------------------------------------
+# Shared helpers. Persistence rules remain in the existing service/db_ops
+# modules; this page only shapes the admin experience and calls those services.
+# ---------------------------------------------------------------------------
+
+def _is_missing(value) -> bool:
     try:
-        if value is None or pd.isna(value): return default
-    except (TypeError, ValueError): return default
-    if isinstance(value,(pd.Timestamp,datetime,date)): n=int(value.year)
+        return value is None or bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return value is None
+
+
+def _text(row, key, default="") -> str:
+    value = row.get(key, default) if row is not None else default
+    if _is_missing(value):
+        return default
+    return str(value).strip()
+
+
+def _normalise_staff_id(value) -> str:
+    if _is_missing(value):
+        return ""
+    key = str(value).strip()
+    if key.endswith(".0") and key[:-2].isdigit():
+        key = key[:-2]
+    return key.casefold()
+
+
+def _safe_int(value, default=0, minimum=None, maximum=None) -> int:
+    if _is_missing(value):
+        return default
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        number = int(value.year)
     else:
-        x=pd.to_numeric(value,errors="coerce")
-        if pd.notna(x): n=int(round(float(x)))
+        numeric = pd.to_numeric(value, errors="coerce")
+        if pd.notna(numeric):
+            number = int(round(float(numeric)))
         else:
-            d=pd.to_datetime(value,errors="coerce")
-            if pd.isna(d): return default
-            n=int(d.year)
-    if minimum is not None and n<minimum: return default
-    if maximum is not None and n>maximum: return default
-    return n
+            parsed = pd.to_datetime(value, errors="coerce")
+            if pd.isna(parsed):
+                return default
+            number = int(parsed.year)
+    if minimum is not None and number < minimum:
+        return default
+    if maximum is not None and number > maximum:
+        return default
+    return number
 
-def _safe_birth_year(value, default=1980):
-    try:
-        if value is None or pd.isna(value): return default
-    except (TypeError,ValueError): return default
-    if isinstance(value,(pd.Timestamp,datetime,date)):
-        y=int(value.year); return y if 1950<=y<=2010 else default
-    x=pd.to_numeric(value,errors="coerce")
-    if pd.notna(x):
-        x=float(x)
-        if 1950<=x<=2010: return int(round(x))
-        if 10000<=x<=60000:
-            d=pd.to_datetime(x,unit="D",origin="1899-12-30",errors="coerce")
-            if pd.notna(d) and 1950<=d.year<=2010: return int(d.year)
-        if abs(x)>1_000_000_000:
-            d=pd.to_datetime(int(x),unit="ns",errors="coerce")
-            if pd.notna(d) and 1950<=d.year<=2010: return int(d.year)
-    d=pd.to_datetime(value,errors="coerce")
-    return int(d.year) if pd.notna(d) and 1950<=d.year<=2010 else default
 
-def _text(row,key,default=""):
-    v=row.get(key)
-    try:
-        if pd.isna(v): return default
-    except (TypeError,ValueError): pass
-    return str(v).strip()
+def _safe_birth_year(value, default=1980) -> int:
+    if _is_missing(value):
+        return default
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        year = int(value.year)
+        return year if 1950 <= year <= 2010 else default
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.notna(numeric):
+        number = float(numeric)
+        if 1950 <= number <= 2010:
+            return int(round(number))
+        if 10000 <= number <= 60000:
+            parsed = pd.to_datetime(number, unit="D", origin="1899-12-30", errors="coerce")
+            if pd.notna(parsed) and 1950 <= parsed.year <= 2010:
+                return int(parsed.year)
+        if abs(number) > 1_000_000_000:
+            parsed = pd.to_datetime(int(number), unit="ns", errors="coerce")
+            if pd.notna(parsed) and 1950 <= parsed.year <= 2010:
+                return int(parsed.year)
+    parsed = pd.to_datetime(value, errors="coerce")
+    return int(parsed.year) if pd.notna(parsed) and 1950 <= parsed.year <= 2010 else default
 
-def _first_text(row, *keys, default=""):
-    for key in keys:
-        value=_text(row,key,"")
-        if value: return value
-    return default
 
-def _num(value,default=0.0,lo=0.0,hi=600.0):
-    x=pd.to_numeric(value,errors="coerce")
-    return float(x) if pd.notna(x) and lo<=float(x)<=hi else float(default)
+def _number(value, default=0.0, minimum=0.0, maximum=600.0) -> float:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.notna(numeric) and minimum <= float(numeric) <= maximum:
+        return float(numeric)
+    return float(default)
 
-def _date(value):
-    d=pd.to_datetime(value,errors="coerce")
-    return date.today() if pd.isna(d) else d.date()
+
+def _optional_date(value):
+    """Return a real date or None; never invent today's date for blank fields."""
+    if _is_missing(value) or str(value).strip() in {"", "NaT", "nan", "None"}:
+        return None
+    parsed = pd.to_datetime(value, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
 
 def _assessment_level_options(source_df, current_value=None):
-    """Expose workbook values without duplicate variants such as Staff/staff."""
-    # A neutral sentinel preserves blank source values instead of defaulting
-    # an unassigned record to Staff merely because a selectbox needs a choice.
     options = ["Not specified", *ASSESSMENT_LEVELS]
-    seen = {value.casefold() for value in options}
-
-    if source_df is not None and "Assessment Level" in source_df.columns:
-        for raw_value in source_df["Assessment Level"].dropna():
-            value = str(raw_value).strip()
-            key = value.casefold()
-            if value and key not in seen:
+    seen = {str(value).casefold() for value in options}
+    if source_df is not None and not source_df.empty and "Assessment Level" in source_df.columns:
+        for raw in source_df["Assessment Level"].dropna():
+            value = str(raw).strip()
+            if value and value.casefold() not in seen:
                 options.append(value)
-                seen.add(key)
-
-    # Preserve an unusual existing value rather than silently changing it to
-    # the first dropdown option on save.
-    if current_value is not None:
+                seen.add(value.casefold())
+    if current_value:
         value = str(current_value).strip()
-        key = value.casefold()
-        if value and key not in seen:
+        if value and value.casefold() not in seen:
             options.append(value)
-            seen.add(key)
     return options
 
-df=get_master_data()
-if df is None or df.empty: st.info("No personnel available. Import data first."); st.stop()
-names=sorted(df["Name"].dropna().astype(str).unique())
-selected_name=st.selectbox("Select Personnel",names,key="personnel_db_selector")
-row=df[df["Name"].astype(str)==selected_name].iloc[0]
-pid=_safe_int(row.get("id"),0,1) if "id" in row.index and pd.notna(row.get("id")) else None
-if pid is None:
-    s=open_session()
-    try:
-        sid=row.get("Staff ID")
-        p=s.query(Personnel).filter(Personnel.staff_id==str(sid)).first() if pd.notna(sid) else None
-        if p is None: p=s.query(Personnel).filter(Personnel.name==selected_name).first()
-        pid=p.id if p else None
-    finally: s.close()
-if pid is None: st.warning("No database personnel ID found for this person. Import data to enable editing."); st.stop()
 
-st.caption(f"Editing: **{selected_name}**")
-prefix=f"personnel_db_{pid}"
-add_tab,personnel_tab,assessment_tab,delete_tab=st.tabs(["➕ Add New Personnel","✏️ Edit Personnel Info","🧾 Assessment Entry","🗑️ Delete Personnel"])
+# Map database fields to the historical workbook headers used by the existing
+# admin form and assessment-entry defaults. Database values win when populated.
+_DB_TO_DISPLAY = {
+    "Name": "name",
+    "Staff ID": "staff_id",
+    "Email Address": "email",
+    "Gender": "gender",
+    "Age": "age",
+    "Birth Year": "birth_year",
+    "Nationality": "nationality",
+    "Employment Category": "employment_category",
+    "Department": "department",
+    "Section Name": "section_name",
+    "Unit Name": "unit_name",
+    "Sub Unit": "sub_unit",
+    "Staff Position": "staff_position",
+    "SG": "sg",
+    "Joining Date": "joining_date",
+    "Contract Expire Date": "contract_expire_date",
+    "Years in PET": "years_in_pet",
+    "Years of RE Experience": "years_re_experience",
+    "Years in Salary Grade": "sg_years",
+    "SG Start Date": "sg_start_date",
+    "Date of Appointment to Current Grade": "sg_start_date",
+    "Age Promoted to Staff or Principal": "age_promoted",
+    "Current Assignment": "current_assignment",
+    "Current Location:": "current_assignment",
+    "Assignment Date": "assignment_date",
+    "Date in Position": "assignment_date",
+    "Length in Current Assignment": "assignment_length",
+    "Chat Status": "chat_status",
+    "Chat Date": "chat_date",
+    "Assessment Level": "assessment_level",
+    "Last Assessment Date": "last_assessment_date",
+    "Last Assesment Date": "last_assessment_date",
+    "Sub-Disciplines": "sub_disciplines",
+    "Potential": "potential",
+    "Strength": "strength",
+    "Recommendation": "recommendation",
+    "Resource/SME": "resource_sme",
+    "Interest": "interest",
+    "Preference": "preference",
+    "Comment/Suggestion": "comment",
+    "Comment": "comment",
+    "Assesor1": "assessor1",
+    "Assessor1": "assessor1",
+    "Assessor2": "assessor2",
+    "Supervisor": "supervisor",
+    "Remarks": "remarks",
+}
+
+
+def _profile_row(person: dict, master_df: pd.DataFrame) -> dict:
+    """Combine the DB profile with workbook score columns for legacy parity."""
+    staff_key = _normalise_staff_id(person.get("staff_id"))
+    profile = {}
+    if (
+        master_df is not None
+        and not master_df.empty
+        and "Staff ID" in master_df.columns
+        and staff_key
+    ):
+        matches = master_df[
+            master_df["Staff ID"].map(_normalise_staff_id) == staff_key
+        ]
+        if not matches.empty:
+            profile = matches.iloc[0].to_dict()
+
+    for display_column, db_column in _DB_TO_DISPLAY.items():
+        value = person.get(db_column)
+        # Assessment Level is intentionally nullable in SQLite and is already
+        # treated as authoritative by the shared data reader.
+        if db_column == "assessment_level":
+            profile[display_column] = value
+        elif not _is_missing(value) and not (
+            isinstance(value, str) and not value.strip()
+        ):
+            profile[display_column] = value
+
+    profile["id"] = person.get("id")
+    profile["Staff ID"] = person.get("staff_id")
+    profile["Name"] = person.get("name")
+    return profile
+
+
+def _load_people(include_deleted=True) -> pd.DataFrame:
+    session = open_session()
+    try:
+        records = get_all_personnel(session, include_deleted=include_deleted)
+        return records if records is not None else pd.DataFrame()
+    finally:
+        session.close()
+
+
+def _save_personnel_form(form_key: str, prefix: str, row: dict | None, master_df):
+    """Render a structured create/edit form and return (submitted, payload)."""
+    source = row or {}
+    is_add = row is None
+
+    gender_value = _text(source, "Gender", "Not specified")
+    gender_options = ["Not specified", "M", "F", "Other"]
+    if gender_value not in gender_options:
+        gender_options.append(gender_value)
+
+    employment_value = _text(source, "Employment Category", "Not specified")
+    employment_options = ["Not specified", "Permanent", "CDH"]
+    if employment_value not in employment_options:
+        employment_options.append(employment_value)
+
+    department_options = list(DEPARTMENTS[:-1]) or ["Not specified"]
+    department_value = _text(source, "Department", department_options[0])
+    if department_value and department_value not in department_options:
+        department_options.append(department_value)
+
+    position_options = list(POSITIONS[:-1]) or ["Not specified"]
+    position_value = _text(source, "Staff Position", position_options[0])
+    if position_value and position_value not in position_options:
+        position_options.append(position_value)
+
+    chat_options = list(CHAT_STATUS_OPTIONS)
+    chat_value = _text(source, "Chat Status", "No Need")
+    if chat_value not in chat_options:
+        chat_options.append(chat_value)
+
+    assessment_options = _assessment_level_options(
+        master_df, _text(source, "Assessment Level")
+    )
+    assessment_value = _text(source, "Assessment Level", "Not specified")
+    if assessment_value not in assessment_options:
+        assessment_options.append(assessment_value)
+
+    with st.form(form_key, clear_on_submit=False):
+        st.caption("Fields marked * are required. Dates remain blank until a date is deliberately entered.")
+
+        with st.expander("1 · Personal identity", expanded=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                name = st.text_input("Full name *", _text(source, "Name"), key=f"{prefix}_name")
+                staff_id = st.text_input("Staff ID *", _text(source, "Staff ID"), key=f"{prefix}_staff_id")
+                email = st.text_input("Email address", _text(source, "Email Address"), key=f"{prefix}_email")
+            with c2:
+                gender = st.selectbox(
+                    "Gender", gender_options,
+                    index=gender_options.index(gender_value),
+                    key=f"{prefix}_gender",
+                )
+                nationality = st.text_input(
+                    "Nationality", _text(source, "Nationality", "Malaysia"),
+                    key=f"{prefix}_nationality",
+                )
+                age = st.number_input(
+                    "Age", min_value=18, max_value=100,
+                    value=_safe_int(source.get("Age"), 30, 18, 100),
+                    step=1, format="%d", key=f"{prefix}_age",
+                )
+                birth_year = st.number_input(
+                    "Birth year", min_value=1950, max_value=2010,
+                    value=_safe_birth_year(source.get("Birth Year")),
+                    step=1, format="%d", key=f"{prefix}_birth_year",
+                )
+
+        with st.expander("2 · Employment placement", expanded=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                employment_category = st.selectbox(
+                    "Employment category", employment_options,
+                    index=employment_options.index(employment_value),
+                    key=f"{prefix}_employment_category",
+                    help="Use Permanent or CDH so dashboard filters remain consistent.",
+                )
+                department = st.selectbox(
+                    "Department", department_options,
+                    index=department_options.index(department_value),
+                    key=f"{prefix}_department",
+                )
+                section_name = st.text_input(
+                    "Section", _text(source, "Section Name"),
+                    key=f"{prefix}_section",
+                )
+                unit_name = st.text_input(
+                    "Unit", _text(source, "Unit Name"),
+                    key=f"{prefix}_unit",
+                )
+                sub_unit = st.text_input(
+                    "Sub-unit", _text(source, "Sub Unit"),
+                    key=f"{prefix}_subunit",
+                )
+            with c2:
+                staff_position = st.selectbox(
+                    "Staff position", position_options,
+                    index=position_options.index(position_value),
+                    key=f"{prefix}_position",
+                )
+                sg_default = _text(source, "SG") or POSITION_TO_SG.get(staff_position, "")
+                sg = st.text_input("Salary grade (SG)", sg_default, key=f"{prefix}_sg")
+                current_assignment = st.text_input(
+                    "Current assignment / location",
+                    _text(source, "Current Assignment") or _text(source, "Current Location:"),
+                    key=f"{prefix}_assignment",
+                )
+                joining_date = st.date_input(
+                    "Joining date", value=_optional_date(source.get("Joining Date")),
+                    format="DD/MM/YYYY", key=f"{prefix}_joining",
+                )
+                contract_expire_date = st.date_input(
+                    "Contract expiry date", value=_optional_date(source.get("Contract Expire Date")),
+                    format="DD/MM/YYYY", key=f"{prefix}_contract",
+                )
+
+        with st.expander("3 · Career and assessment profile", expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                years_in_pet = st.number_input(
+                    "Years in PET", 0.0, 60.0,
+                    _number(source.get("Years in PET")), 0.5,
+                    key=f"{prefix}_pet",
+                )
+                years_re_experience = st.number_input(
+                    "Years of RE experience", 0.0, 60.0,
+                    _number(source.get("Years of RE Experience")), 0.5,
+                    key=f"{prefix}_re",
+                )
+                sg_years = st.number_input(
+                    "Years in salary grade", 0.0, 60.0,
+                    _number(source.get("Years in Salary Grade")), 0.5,
+                    key=f"{prefix}_sgyears",
+                )
+                age_promoted = st.number_input(
+                    "Age promoted to Staff / Principal", 18.0, 100.0,
+                    _number(source.get("Age Promoted to Staff or Principal"), 30, 18, 100),
+                    1.0, key=f"{prefix}_ageprom",
+                )
+            with c2:
+                assignment_length = st.number_input(
+                    "Length in current assignment (months)", 0.0, 600.0,
+                    _number(source.get("Length in Current Assignment")), 1.0,
+                    key=f"{prefix}_assignlen",
+                )
+                assignment_date = st.date_input(
+                    "Assignment start date",
+                    value=_optional_date(source.get("Assignment Date") or source.get("Date in Position")),
+                    format="DD/MM/YYYY", key=f"{prefix}_assignmentdate",
+                )
+                sg_start_date = st.date_input(
+                    "Salary grade start date",
+                    value=_optional_date(source.get("SG Start Date") or source.get("Date of Appointment to Current Grade")),
+                    format="DD/MM/YYYY", key=f"{prefix}_sgstart",
+                )
+                chat_status = st.selectbox(
+                    "Career chat status", chat_options,
+                    index=chat_options.index(chat_value), key=f"{prefix}_chat",
+                )
+                chat_date = st.date_input(
+                    "Career chat date", value=_optional_date(source.get("Chat Date")),
+                    format="DD/MM/YYYY", key=f"{prefix}_chatdate",
+                )
+                assessment_level = st.selectbox(
+                    "Assessment level", assessment_options,
+                    index=assessment_options.index(assessment_value),
+                    key=f"{prefix}_level",
+                )
+                last_assessment_date = st.date_input(
+                    "Last assessment date",
+                    value=_optional_date(source.get("Last Assessment Date") or source.get("Last Assesment Date")),
+                    format="DD/MM/YYYY", key=f"{prefix}_lastdate",
+                )
+
+        with st.expander("4 · Development notes and contacts", expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                sub_disciplines = st.text_input(
+                    "Sub-disciplines", _text(source, "Sub-Disciplines"),
+                    key=f"{prefix}_subdisc",
+                )
+                potential = st.text_input(
+                    "Potential", _text(source, "Potential"),
+                    key=f"{prefix}_potential",
+                )
+                resource_sme = st.text_input(
+                    "Resource / SME", _text(source, "Resource/SME"),
+                    key=f"{prefix}_resource",
+                )
+                interest = st.text_input(
+                    "Interest", _text(source, "Interest"),
+                    key=f"{prefix}_interest",
+                )
+                preference = st.text_input(
+                    "Preference", _text(source, "Preference"),
+                    key=f"{prefix}_preference",
+                )
+            with c2:
+                assessor1 = st.text_input(
+                    "Assessor 1", _text(source, "Assesor1") or _text(source, "Assessor1"),
+                    key=f"{prefix}_assessor1",
+                )
+                assessor2 = st.text_input(
+                    "Assessor 2", _text(source, "Assessor2"),
+                    key=f"{prefix}_assessor2",
+                )
+                supervisor = st.text_input(
+                    "Supervisor", _text(source, "Supervisor"),
+                    key=f"{prefix}_supervisor",
+                )
+                strength = st.text_area(
+                    "Strengths", _text(source, "Strength"),
+                    height=100, key=f"{prefix}_strength",
+                )
+                recommendation = st.text_area(
+                    "Recommendations", _text(source, "Recommendation"),
+                    height=100, key=f"{prefix}_recommendation",
+                )
+                comment = st.text_area(
+                    "Comments / suggestions",
+                    _text(source, "Comment/Suggestion") or _text(source, "Comment"),
+                    height=100, key=f"{prefix}_comment",
+                )
+                remarks = st.text_area(
+                    "Remarks", _text(source, "Remarks"),
+                    height=100, key=f"{prefix}_remarks",
+                )
+
+        submitted = st.form_submit_button(
+            "Create personnel record" if is_add else "Save profile changes",
+            type="primary", use_container_width=True,
+        )
+
+    payload = {
+        "name": name.strip(),
+        "staff_id": staff_id.strip(),
+        "email": email.strip() or None,
+        "gender": None if gender == "Not specified" else gender,
+        "age": int(age) if age is not None else None,
+        "birth_year": int(birth_year) if birth_year is not None else None,
+        "nationality": nationality.strip() or None,
+        "employment_category": None if employment_category == "Not specified" else employment_category,
+        "department": department,
+        "section_name": section_name.strip() or None,
+        "unit_name": unit_name.strip() or None,
+        "sub_unit": sub_unit.strip() or None,
+        "staff_position": staff_position,
+        "sg": sg.strip() or POSITION_TO_SG.get(staff_position, ""),
+        "joining_date": joining_date,
+        "contract_expire_date": contract_expire_date,
+        "years_in_pet": float(years_in_pet),
+        "years_re_experience": float(years_re_experience),
+        "sg_years": float(sg_years),
+        "sg_start_date": sg_start_date,
+        "age_promoted": float(age_promoted),
+        "current_assignment": current_assignment.strip() or None,
+        "assignment_date": assignment_date,
+        "assignment_length": float(assignment_length),
+        "chat_status": chat_status,
+        "chat_date": chat_date,
+        "assessment_level": None if assessment_level == "Not specified" else assessment_level,
+        "last_assessment_date": last_assessment_date,
+        "sub_disciplines": sub_disciplines.strip() or None,
+        "potential": potential.strip() or None,
+        "strength": strength.strip() or None,
+        "recommendation": recommendation.strip() or None,
+        "resource_sme": resource_sme.strip() or None,
+        "interest": interest.strip() or None,
+        "preference": preference.strip() or None,
+        "comment": comment.strip() or None,
+        "assessor1": assessor1.strip() or None,
+        "assessor2": assessor2.strip() or None,
+        "supervisor": supervisor.strip() or None,
+        "remarks": remarks.strip() or None,
+    }
+    return submitted, payload
+
+
+# ---------------------------------------------------------------------------
+# Page and data loading
+# ---------------------------------------------------------------------------
+
+render_navigation()
+render_header(
+    "👥 Personnel & Database Management",
+    "Find personnel records, maintain employee profiles, and manage archive status.",
+)
+
+# Workbook data is used only as a supplementary source for score/assessment
+# defaults. The directory and CRUD identity come from the existing DB service.
+master_df = pd.DataFrame()
+master_data_error = None
+try:
+    loaded = get_master_data()
+    if isinstance(loaded, pd.DataFrame):
+        master_df = loaded
+except Exception as exc:
+    master_data_error = str(exc)
+
+try:
+    all_people = _load_people(include_deleted=True)
+except Exception as exc:
+    st.error(f"Unable to load personnel records from the database: {exc}")
+    st.stop()
+
+if all_people.empty:
+    all_people = pd.DataFrame(
+        columns=[
+            "id", "staff_id", "name", "department", "section_name", "sg",
+            "employment_category", "staff_position", "is_deleted", "is_active",
+            "updated_at",
+        ]
+    )
+
+for column, default in {
+    "is_deleted": False,
+    "is_active": True,
+    "staff_id": "",
+    "name": "",
+    "department": "",
+    "section_name": "",
+    "sg": "",
+    "employment_category": "",
+    "staff_position": "",
+}.items():
+    if column not in all_people.columns:
+        all_people[column] = default
+
+all_people["is_deleted"] = all_people["is_deleted"].fillna(False).astype(bool)
+active_people = all_people[~all_people["is_deleted"]].copy()
+archived_people = all_people[all_people["is_deleted"]].copy()
+
+total_active = len(active_people)
+permanent_count = int(
+    active_people["employment_category"].astype(str).str.strip().str.casefold().eq("permanent").sum()
+)
+cdh_count = int(
+    active_people["employment_category"].astype(str).str.strip().str.casefold().eq("cdh").sum()
+)
+
+metric_cols = st.columns(4)
+metric_cols[0].metric("Active personnel", f"{total_active:,}")
+metric_cols[1].metric("Permanent", f"{permanent_count:,}")
+metric_cols[2].metric("CDH", f"{cdh_count:,}")
+metric_cols[3].metric("Archived", f"{len(archived_people):,}")
+
+st.caption(
+    "The directory is database-backed. Workbook data is used only to supplement "
+    "historical competency and assessment values where available."
+)
+
+directory_tab, add_tab, edit_tab, assessment_tab, archive_tab = st.tabs(
+    [
+        "📋 Personnel Directory",
+        "➕ Add Personnel",
+        "✏️ Edit Profile",
+        "🧾 Assessment Entry",
+        "🗄️ Archive & Restore",
+    ]
+)
+
+
+# ---------------------------------------------------------------------------
+# Personnel Directory
+# ---------------------------------------------------------------------------
+
+with directory_tab:
+    st.subheader("Personnel Directory")
+    st.caption("Search and filter active database records. Select a row to carry that employee into Edit Profile.")
+
+    f1, f2, f3, f4 = st.columns([2.4, 1.3, 1.3, 1.0])
+    with f1:
+        search_term = st.text_input(
+            "Search personnel",
+            placeholder="Name, Staff ID or department",
+            key="personnel_directory_search",
+        ).strip().casefold()
+    with f2:
+        departments = sorted(
+            value for value in active_people["department"].dropna().astype(str).unique()
+            if value.strip()
+        )
+        department_filter = st.selectbox(
+            "Department", ["All departments", *departments],
+            key="personnel_directory_department",
+        )
+    with f3:
+        employment_values = sorted(
+            value for value in active_people["employment_category"].dropna().astype(str).unique()
+            if value.strip()
+        )
+        employment_filter = st.selectbox(
+            "Employment", ["All types", *employment_values],
+            key="personnel_directory_employment",
+        )
+    with f4:
+        grades = sorted(
+            value for value in active_people["sg"].dropna().astype(str).unique()
+            if value.strip()
+        )
+        grade_filter = st.selectbox(
+            "Salary grade", ["All grades", *grades],
+            key="personnel_directory_grade",
+        )
+
+    filtered_people = active_people.copy()
+    if search_term:
+        searchable = (
+            filtered_people[["name", "staff_id", "department", "section_name", "email"]]
+            if "email" in filtered_people.columns
+            else filtered_people[["name", "staff_id", "department", "section_name"]]
+        )
+        mask = searchable.fillna("").astype(str).apply(
+            lambda column: column.str.casefold().str.contains(search_term, regex=False)
+        ).any(axis=1)
+        filtered_people = filtered_people[mask]
+    if department_filter != "All departments":
+        filtered_people = filtered_people[
+            filtered_people["department"].astype(str) == department_filter
+        ]
+    if employment_filter != "All types":
+        filtered_people = filtered_people[
+            filtered_people["employment_category"].astype(str) == employment_filter
+        ]
+    if grade_filter != "All grades":
+        filtered_people = filtered_people[filtered_people["sg"].astype(str) == grade_filter]
+
+    directory_display = pd.DataFrame(
+        {
+            "Name": filtered_people["name"].fillna(""),
+            "Staff ID": filtered_people["staff_id"].fillna(""),
+            "Position": filtered_people["staff_position"].fillna(""),
+            "Department": filtered_people["department"].fillna(""),
+            "Section": filtered_people["section_name"].fillna(""),
+            "Employment": filtered_people["employment_category"].fillna(""),
+            "SG": filtered_people["sg"].fillna(""),
+            "Status": filtered_people["is_active"].map(
+                lambda value: "Active" if bool(value) else "Inactive"
+            ),
+        },
+        index=filtered_people.index,
+    )
+
+    st.caption(f"Showing {len(filtered_people):,} of {total_active:,} active records.")
+    if filtered_people.empty:
+        st.info("No personnel match the current search and filters. Clear a filter or add a new record.")
+    else:
+        directory_key = hashlib.sha1(
+            ",".join(str(value) for value in filtered_people["id"].tolist()).encode("utf-8")
+        ).hexdigest()[:12]
+        selection_event = st.dataframe(
+            directory_display,
+            width="stretch",
+            hide_index=True,
+            height=420,
+            on_select="rerun",
+            selection_mode="single-row",
+            key=f"personnel_directory_{directory_key}",
+        )
+        selected_rows = list(selection_event.selection.rows)
+        if selected_rows:
+            selected_index = int(selected_rows[0])
+            selected_person = filtered_people.iloc[selected_index]
+            selected_id = int(selected_person["id"])
+            st.session_state["admin_selected_person_id"] = selected_id
+            selected_name_label = f"{selected_person['name']} · {selected_person['staff_id']}"
+            st.session_state.pop("admin_edit_person_picker", None)
+            st.session_state["admin_edit_person_picker_default"] = selected_name_label
+
+        selected_id = st.session_state.get("admin_selected_person_id")
+        selected_record = (
+            active_people[active_people["id"] == selected_id]
+            if selected_id is not None and "id" in active_people.columns
+            else pd.DataFrame()
+        )
+        if not selected_record.empty:
+            person = selected_record.iloc[0]
+            with st.container(border=True):
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.markdown(f"**{person.get('name', 'Unnamed personnel')}**")
+                    st.caption(
+                        f"Staff ID: {person.get('staff_id', '—')} · "
+                        f"{person.get('staff_position', 'Position not specified')} · "
+                        f"{person.get('department', 'Department not specified')}"
+                    )
+                with c2:
+                    st.info("Selected")
+                st.caption("This employee is selected for the Edit Profile and Assessment Entry sections.")
+        else:
+            st.info("Select a row in the directory to choose an employee.")
+
+    if archived_people.empty:
+        st.caption("There are no archived personnel records.")
+
+
+# ---------------------------------------------------------------------------
+# Add Personnel — available even when the database is empty
+# ---------------------------------------------------------------------------
 
 with add_tab:
-    st.info("Add a single personnel record directly to the database. Excel Import remains available for bulk updates.")
-    with st.form("add_personnel_form"):
-        st.markdown("### Personal")
-        c1,c2,c3=st.columns(3)
-        with c1:
-            name_new=st.text_input("Name",key="add_personnel_name")
-            staff_id_new=st.text_input("Staff ID",key="add_personnel_staff_id")
-            email_new=st.text_input("Email",key="add_personnel_email")
-        with c2:
-            gender_new=st.selectbox("Gender",["M","F","Other"],key="add_personnel_gender")
-            age_new=st.number_input("Age",min_value=18,max_value=100,value=30,step=1,format="%d",key="add_personnel_age")
-            birth_year_new=st.number_input("Birth Year",min_value=1950,max_value=2010,value=1996,step=1,format="%d",key="add_personnel_birth_year")
-            nationality_new=st.text_input("Nationality","Malaysia",key="add_personnel_nationality")
-        with c3:
-            employment_category_new=st.text_input("Employment Category",key="add_personnel_employment_category")
-            dopt=list(DEPARTMENTS[:-1]); department_new=st.selectbox("Department",dopt,key="add_personnel_department")
-            popt=list(POSITIONS[:-1]); staff_position_new=st.selectbox("Staff Position",popt,key="add_personnel_position")
-            sg_new=st.text_input("SG",POSITION_TO_SG.get(staff_position_new,""),key="add_personnel_sg")
-        st.markdown("### Employment")
-        e1,e2,e3=st.columns(3)
-        with e1:
-            section_name_new=st.text_input("Section Name",key="add_personnel_section")
-            unit_name_new=st.text_input("Unit Name",key="add_personnel_unit")
-            sub_unit_new=st.text_input("Sub Unit",key="add_personnel_subunit")
-            current_assignment_new=st.text_input("Current Assignment",key="add_personnel_assignment")
-        with e2:
-            joining_date_new=st.date_input("Joining Date",date.today(),key="add_personnel_joining")
-            contract_expire_date_new=st.date_input("Contract Expire Date",date.today(),key="add_personnel_contract")
-            assignment_date_new=st.date_input("Assignment Date",date.today(),key="add_personnel_assignmentdate")
-            sg_start_date_new=st.date_input("SG Start Date",date.today(),key="add_personnel_sgstart")
-        with e3:
-            years_in_pet_new=st.number_input("Years in PET",0.0,60.0,0.0,0.5,key="add_personnel_pet")
-            years_re_experience_new=st.number_input("Years of RE Experience",0.0,60.0,0.0,0.5,key="add_personnel_re")
-            sg_years_new=st.number_input("Years in Salary Grade",0.0,60.0,0.0,0.5,key="add_personnel_sgyears")
-            age_promoted_new=st.number_input("Age Promoted",18.0,100.0,30.0,1.0,key="add_personnel_ageprom")
-            assignment_length_new=st.number_input("Length in Current Assignment",0.0,600.0,0.0,1.0,key="add_personnel_assignlen")
-        st.markdown("### Tenure")
-        t1,t2=st.columns(2)
-        with t1:
-            chat_status_new=st.selectbox("Chat Status",list(CHAT_STATUS_OPTIONS),key="add_personnel_chat")
-            chat_date_new=st.date_input("Chat Date",date.today(),key="add_personnel_chatdate")
-            assessment_level_new=st.selectbox("Assessment Level",list(ASSESSMENT_LEVELS),key="add_personnel_level")
-            last_assessment_date_new=st.date_input("Last Assessment Date",date.today(),key="add_personnel_lastdate")
-        with t2:
-            sub_disciplines_new=st.text_input("Sub-disciplines",key="add_personnel_subdisc")
-            potential_new=st.text_input("Potential",key="add_personnel_potential")
-            resource_sme_new=st.text_input("Resource / SME",key="add_personnel_resource")
-            interest_new=st.text_input("Interest",key="add_personnel_interest")
-        st.markdown("### Assessment / Notes")
-        a1,a2=st.columns(2)
-        with a1:
-            strength_new=st.text_area("Strength",height=120,key="add_personnel_strength")
-            recommendation_new=st.text_area("Recommendation",height=120,key="add_personnel_recommendation")
-        with a2:
-            preference_new=st.text_input("Preference",key="add_personnel_preference")
-            comment_new=st.text_area("Comment / Suggestion",height=120,key="add_personnel_comment")
-            assessor1_new=st.text_input("Assessor 1",key="add_personnel_assessor1")
-            assessor2_new=st.text_input("Assessor 2",key="add_personnel_assessor2")
-            supervisor_new=st.text_input("Supervisor",key="add_personnel_supervisor")
-            remarks_new=st.text_area("Remarks",height=100,key="add_personnel_remarks")
-        create_personnel=st.form_submit_button("➕ Add Personnel",type="primary")
-    if create_personnel:
-        if not name_new.strip():
-            st.error("Name is required.")
-        elif not staff_id_new.strip():
+    st.subheader("Add a new personnel record")
+    st.caption(
+        "Register one employee directly in the database. For large batches, "
+        "use Admin: Import Data instead."
+    )
+    submitted, payload = _save_personnel_form(
+        "add_personnel_form_v2", "add_personnel", None, master_df
+    )
+    if submitted:
+        if not payload["name"]:
+            st.error("Full name is required.")
+        elif not payload["staff_id"]:
             st.error("Staff ID is required.")
         else:
-            payload={"name":name_new.strip(),"staff_id":staff_id_new.strip(),"email":email_new.strip() or None,"gender":gender_new,"age":int(age_new),"birth_year":int(birth_year_new),"nationality":nationality_new.strip() or "Malaysia","employment_category":employment_category_new.strip() or None,"department":department_new,"section_name":section_name_new.strip() or None,"unit_name":unit_name_new.strip() or None,"sub_unit":sub_unit_new.strip() or None,"staff_position":str(staff_position_new),"sg":sg_new.strip() or POSITION_TO_SG.get(str(staff_position_new),""),"joining_date":joining_date_new,"contract_expire_date":contract_expire_date_new,"years_in_pet":float(years_in_pet_new),"years_re_experience":float(years_re_experience_new),"sg_years":float(sg_years_new),"sg_start_date":sg_start_date_new,"age_promoted":float(age_promoted_new),"current_assignment":current_assignment_new.strip() or None,"assignment_date":assignment_date_new,"assignment_length":float(assignment_length_new),"chat_status":chat_status_new,"chat_date":chat_date_new,"assessment_level":assessment_level_new,"last_assessment_date":last_assessment_date_new,"sub_disciplines":sub_disciplines_new.strip() or None,"potential":potential_new.strip() or None,"strength":strength_new.strip() or None,"recommendation":recommendation_new.strip() or None,"resource_sme":resource_sme_new.strip() or None,"interest":interest_new.strip() or None,"preference":preference_new.strip() or None,"comment":comment_new.strip() or None,"assessor1":assessor1_new.strip() or None,"assessor2":assessor2_new.strip() or None,"supervisor":supervisor_new.strip() or None,"remarks":remarks_new.strip() or None}
-            s=open_session()
+            session = open_session()
             try:
-                ok,msg,new_id=add_personnel(s,payload)
+                ok, message, new_id = add_personnel(session, payload)
                 if ok:
-                    st.success(f"✅ {msg}")
+                    st.success(f"Personnel record created: {payload['name']} (Staff ID {payload['staff_id']}).")
                     st.cache_data.clear()
+                    st.session_state["admin_selected_person_id"] = new_id
                     st.rerun()
                 else:
-                    st.error(msg)
+                    st.error(message)
             except Exception as exc:
-                s.rollback(); st.error(f"Unable to add personnel: {exc}")
+                session.rollback()
+                st.error(f"Unable to create personnel record: {exc}")
             finally:
-                s.close()
+                session.close()
 
-with personnel_tab:
-    with st.form("personnel_database_form"):
-        st.markdown("### Personal")
-        c1,c2,c3=st.columns(3)
-        with c1:
-            name=st.text_input("Name",_text(row,"Name"),key=f"{prefix}_name")
-            staff_id=st.text_input("Staff ID",_text(row,"Staff ID"),key=f"{prefix}_staff_id")
-            email=st.text_input("Email",_text(row,"Email Address"),key=f"{prefix}_email")
-        with c2:
-            gopts=["M","F","Other"]; gv=_text(row,"Gender","M")
-            gender=st.selectbox("Gender",gopts,index=gopts.index(gv) if gv in gopts else 0,key=f"{prefix}_gender")
-            age=st.number_input("Age",min_value=18,max_value=100,value=_safe_int(row.get("Age"),30,18,100),step=1,format="%d",key=f"{prefix}_age")
-            birth_year=st.number_input("Birth Year",min_value=1950,max_value=2010,value=_safe_birth_year(row.get("Birth Year")),step=1,format="%d",key=f"{prefix}_birth_year")
-            nationality=st.text_input("Nationality",_text(row,"Nationality","Malaysia"),key=f"{prefix}_nationality")
-        with c3:
-            employment_category=st.text_input("Employment Category",_text(row,"Employment Category"),key=f"{prefix}_employment_category")
-            dopt=list(DEPARTMENTS[:-1]); dv=_text(row,"Department",dopt[0]); department=st.selectbox("Department",dopt,index=dopt.index(dv) if dv in dopt else 0,key=f"{prefix}_department")
-            popt=list(POSITIONS[:-1]); pv=_text(row,"Staff Position",popt[0]); staff_position=st.selectbox("Staff Position",popt,index=popt.index(pv) if pv in popt else 0,key=f"{prefix}_position")
-            sg=st.text_input("SG",_text(row,"SG") or POSITION_TO_SG.get(pv,""),key=f"{prefix}_sg")
-        st.markdown("### Employment")
-        e1,e2,e3=st.columns(3)
-        with e1:
-            section_name=st.text_input("Section Name",_text(row,"Section Name"),key=f"{prefix}_section")
-            unit_name=st.text_input("Unit Name",_text(row,"Unit Name"),key=f"{prefix}_unit")
-            sub_unit=st.text_input("Sub Unit",_text(row,"Sub Unit"),key=f"{prefix}_subunit")
-            current_assignment=st.text_input("Current Assignment",_first_text(row,"Current Assignment","Current Location:",default=""),key=f"{prefix}_assignment")
-        with e2:
-            joining_date=st.date_input("Joining Date",_date(row.get("Joining Date")),key=f"{prefix}_joining")
-            contract_expire_date=st.date_input("Contract Expire Date",_date(row.get("Contract Expire Date")),key=f"{prefix}_contract")
-            assignment_date=st.date_input("Assignment Date",_date(row.get("Assignment Date") or row.get("Date in Position") or row.get("Date of Appointment to Current Grade")),key=f"{prefix}_assignmentdate")
-            sg_start_date=st.date_input("SG Start Date",_date(row.get("SG Start Date") or row.get("Date of Appointment to Current Grade")),key=f"{prefix}_sgstart")
-        with e3:
-            years_in_pet=st.number_input("Years in PET",0.0,60.0,_num(row.get("Years in PET")),0.5,key=f"{prefix}_pet")
-            years_re_experience=st.number_input("Years of RE Experience",0.0,60.0,_num(row.get("Years of RE Experience")),0.5,key=f"{prefix}_re")
-            sg_years=st.number_input("Years in Salary Grade",0.0,60.0,_num(row.get("Years in Salary Grade")),0.5,key=f"{prefix}_sgyears")
-            age_promoted=st.number_input("Age Promoted",18.0,100.0,_num(row.get("Age Promoted to Staff or Principal"),30,18,100),1.0,key=f"{prefix}_ageprom")
-            assignment_length=st.number_input("Length in Current Assignment",0.0,600.0,_num(row.get("Length in Current Assignment")),1.0,key=f"{prefix}_assignlen")
-        st.markdown("### Tenure")
-        t1,t2=st.columns(2)
-        with t1:
-            copts=list(CHAT_STATUS_OPTIONS); cv=_text(row,"Chat Status","No Need"); chat_status=st.selectbox("Chat Status",copts,index=copts.index(cv) if cv in copts else 0,key=f"{prefix}_chat")
-            chat_date=st.date_input("Chat Date",_date(row.get("Chat Date")),key=f"{prefix}_chatdate")
-            lv=_assessment_level_options(df, _text(row,"Assessment Level")); av=_text(row,"Assessment Level",lv[0]); assessment_level=st.selectbox("Assessment Level",lv,index=lv.index(av) if av in lv else 0,key=f"{prefix}_level")
-            last_assessment_date=st.date_input("Last Assessment Date",_date(row.get("Last Assessment Date") or row.get("Last Assesment Date")),key=f"{prefix}_lastdate")
-        with t2:
-            sub_disciplines=st.text_input("Sub-disciplines",_text(row,"Sub-Disciplines"),key=f"{prefix}_subdisc")
-            potential=st.text_input("Potential",_text(row,"Potential"),key=f"{prefix}_potential")
-            resource_sme=st.text_input("Resource / SME",_text(row,"Resource/SME"),key=f"{prefix}_resource")
-            interest=st.text_input("Interest",_text(row,"Interest"),key=f"{prefix}_interest")
-        st.markdown("### Assessment")
-        a1,a2=st.columns(2)
-        with a1:
-            strength=st.text_area("Strength",_text(row,"Strength"),height=140,key=f"{prefix}_strength")
-            recommendation=st.text_area("Recommendation",_text(row,"Recommendation"),height=140,key=f"{prefix}_recommendation")
-        with a2:
-            preference=st.text_input("Preference",_text(row,"Preference"),key=f"{prefix}_preference")
-            comment=st.text_area("Comment / Suggestion",_text(row,"Comment/Suggestion") or _text(row,"Comment"),height=140,key=f"{prefix}_comment")
-            assessor1=st.text_input("Assessor 1",_text(row,"Assesor1") or _text(row,"Assessor1"),key=f"{prefix}_assessor1")
-            assessor2=st.text_input("Assessor 2",_text(row,"Assessor2"),key=f"{prefix}_assessor2")
-            supervisor=st.text_input("Supervisor",_text(row,"Supervisor"),key=f"{prefix}_supervisor")
-            remarks=st.text_area("Remarks",_text(row,"Remarks"),height=120,key=f"{prefix}_remarks")
-        submitted=st.form_submit_button("💾 Save Personnel Info",type="primary")
-    if submitted:
-        payload={"name":name.strip(),"staff_id":staff_id.strip(),"email":email.strip() or None,"gender":gender,"age":int(age),"birth_year":int(birth_year),"nationality":nationality.strip() or "Malaysia","employment_category":employment_category.strip() or None,"department":department,"section_name":section_name.strip() or None,"unit_name":unit_name.strip() or None,"sub_unit":sub_unit.strip() or None,"staff_position":str(staff_position),"sg":sg.strip() or POSITION_TO_SG.get(str(staff_position),""),"joining_date":joining_date,"contract_expire_date":contract_expire_date,"years_in_pet":float(years_in_pet),"years_re_experience":float(years_re_experience),"sg_years":float(sg_years),"sg_start_date":sg_start_date,"age_promoted":float(age_promoted),"current_assignment":current_assignment.strip() or None,"assignment_date":assignment_date,"assignment_length":float(assignment_length),"chat_status":chat_status,"chat_date":chat_date,"assessment_level":None if assessment_level=="Not specified" else assessment_level,"last_assessment_date":last_assessment_date,"sub_disciplines":sub_disciplines.strip() or None,"potential":potential.strip() or None,"strength":strength.strip() or None,"recommendation":recommendation.strip() or None,"resource_sme":resource_sme.strip() or None,"interest":interest.strip() or None,"preference":preference.strip() or None,"comment":comment.strip() or None,"assessor1":assessor1.strip() or None,"assessor2":assessor2.strip() or None,"supervisor":supervisor.strip() or None,"remarks":remarks.strip() or None}
-        s=open_session()
-        try:
-            ok,msg=update_personnel(s,pid,payload)
-            if ok: st.success(msg); st.cache_data.clear(); st.rerun()
-            else: st.error(msg)
-        except Exception as exc: s.rollback(); st.error(f"Unable to update personnel: {exc}")
-        finally: s.close()
+
+# ---------------------------------------------------------------------------
+# Edit Personnel — separate from creation
+# ---------------------------------------------------------------------------
+
+with edit_tab:
+    st.subheader("Edit personnel profile")
+    if active_people.empty:
+        st.info("There are no active database records to edit yet. Use Add Personnel to create the first record.")
+    else:
+        labels = {
+            int(record["id"]): f"{record['name']} · {record['staff_id']}"
+            for _, record in active_people.sort_values(["name", "staff_id"]).iterrows()
+        }
+        label_to_id = {label: personnel_id for personnel_id, label in labels.items()}
+        current_id = st.session_state.get("admin_selected_person_id")
+        current_label = labels.get(current_id)
+        preferred_label = st.session_state.pop(
+            "admin_edit_person_picker_default", current_label
+        )
+        label_options = list(label_to_id)
+        default_index = label_options.index(preferred_label) if preferred_label in label_options else 0
+        selected_label = st.selectbox(
+            "Choose employee",
+            label_options,
+            index=default_index,
+            key="admin_edit_person_picker",
+            help="Staff ID is included to distinguish employees with similar names.",
+        )
+        edit_id = label_to_id[selected_label]
+        st.session_state["admin_selected_person_id"] = edit_id
+
+        db_row = active_people[active_people["id"] == edit_id].iloc[0].to_dict()
+        profile = _profile_row(db_row, master_df)
+        with st.container(border=True):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Staff ID", str(db_row.get("staff_id") or "—"))
+            c2.metric("Department", str(db_row.get("department") or "—"))
+            c3.metric("Salary grade", str(db_row.get("sg") or "—"))
+            updated_at = db_row.get("updated_at")
+            if not _is_missing(updated_at):
+                st.caption(f"Last updated: {pd.to_datetime(updated_at).strftime('%d %b %Y, %H:%M')}")
+
+        submitted, payload = _save_personnel_form(
+            f"edit_personnel_form_{edit_id}",
+            f"edit_personnel_{edit_id}",
+            profile,
+            master_df,
+        )
+        if submitted:
+            if not payload["name"]:
+                st.error("Full name is required.")
+            elif not payload["staff_id"]:
+                st.error("Staff ID is required.")
+            else:
+                session = open_session()
+                try:
+                    ok, message = update_personnel(session, edit_id, payload)
+                    if ok:
+                        st.success(f"Profile updated for {payload['name']}.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(message)
+                except Exception as exc:
+                    session.rollback()
+                    st.error(f"Unable to update personnel profile: {exc}")
+                finally:
+                    session.close()
+
+
+# ---------------------------------------------------------------------------
+# Assessment Entry — kept on the existing service path (Phase 2 will redesign)
+# ---------------------------------------------------------------------------
 
 with assessment_tab:
-    st.markdown(f"### Assessment Entry for **{selected_name}**")
-    st.markdown(f"**{_text(row,'Staff Position')}** • **{_text(row,'Department')}** • **{_text(row,'SG')}**")
-    with st.form("assessment_entry_form"):
-        c1,c2=st.columns(2)
-        with c1:
-            adate=st.date_input("Assessment Date",date.today(),key="admin_assessment_date")
-            level_options=_assessment_level_options(df, _text(row, "Assessment Level"))
-            current_level=_text(row, "Assessment Level", level_options[0])
-            level=st.selectbox("Assessment Level",level_options,index=level_options.index(current_level) if current_level in level_options else 0,key="admin_assessment_level")
-        with c2:
-            assessor1_entry=st.text_input("Assessor 1",key="admin_assessor1")
-            supervisor_entry=st.text_input("Supervisor",key="admin_supervisor")
-        st.markdown("### Competency Scores")
-        st.caption("Actual / Target — leave target as the previous value if unsure.")
-        score_inputs={}
-        for ctype,info in COMP_TYPES.items():
-            with st.expander(f"{info['label']} ({ctype})",expanded=(ctype=="B")):
-                for code in info["cols"]:
-                    actual_prev=pd.to_numeric(row.get(code),errors="coerce"); req_prev=pd.to_numeric(row.get(f"R-{code}"),errors="coerce")
-                    left,right=st.columns(2)
-                    with left: actual=st.number_input(f"{code} Actual",min_value=0.0,max_value=5.0,value=float(actual_prev) if pd.notna(actual_prev) else 0.0,step=0.5,key=f"admin_act_{code}_{pid}")
-                    with right: requirement=st.number_input(f"{code} Target",min_value=0.0,max_value=5.0,value=float(req_prev) if pd.notna(req_prev) else 3.0,step=0.5,key=f"admin_req_{code}_{pid}")
-                    score_inputs[code]={"actual":actual,"req":requirement,"gap":round(max(requirement-actual,0),2)}
-        save_assessment=st.form_submit_button("💾 Save Assessment",type="primary")
-    if save_assessment:
-        s=open_session()
-        try:
-            ok,msg,aid=add_assessment(s,pid,{"assessment_date":adate,"assessment_level":None if level=="Not specified" else level,"assessor1":assessor1_entry.strip() or None,"supervisor":supervisor_entry.strip() or None})
-            if ok:
-                ok2,msg2=add_competency_scores(s,aid,pid,score_inputs)
-                if ok2: st.success(f"✅ Assessment saved for {selected_name} on {adate}"); st.cache_data.clear()
-                else: st.error(msg2)
-            else: st.error(msg)
-        except Exception as exc: s.rollback(); st.error(f"Unable to save assessment: {exc}")
-        finally: s.close()
+    st.subheader("Assessment entry")
+    st.caption("Create a new assessment for a selected employee. Assessment workflow redesign is reserved for Phase 2.")
+    if active_people.empty:
+        st.info("Add or import personnel before creating an assessment.")
+    else:
+        assessment_labels = {
+            int(record["id"]): f"{record['name']} · {record['staff_id']}"
+            for _, record in active_people.sort_values(["name", "staff_id"]).iterrows()
+        }
+        assessment_label_to_id = {label: person_id for person_id, label in assessment_labels.items()}
+        current_assessment_id = st.session_state.get("admin_selected_person_id")
+        assessment_options = list(assessment_label_to_id)
+        assessment_default = (
+            assessment_options.index(assessment_labels[current_assessment_id])
+            if current_assessment_id in assessment_labels
+            else 0
+        )
+        assessment_person_label = st.selectbox(
+            "Employee being assessed",
+            assessment_options,
+            index=assessment_default,
+            key="admin_assessment_person_picker",
+        )
+        assessment_person_id = assessment_label_to_id[assessment_person_label]
+        assessment_person = active_people[
+            active_people["id"] == assessment_person_id
+        ].iloc[0].to_dict()
+        assessment_row = _profile_row(assessment_person, master_df)
 
-with delete_tab:
-    st.warning(f"⚠️ This will soft-delete **{selected_name}** (Staff ID: {_text(row,'Staff ID','N/A')}).")
-    confirm_name=st.text_input("Type the person name to confirm deletion",key="personnel_delete_confirm")
-    if st.button("Confirm Soft Delete",type="primary",disabled=(confirm_name.strip()!=selected_name.strip())):
-        s=open_session()
-        try:
-            ok,msg=delete_personnel(s,pid)
-            if ok: st.success(msg); st.cache_data.clear(); st.rerun()
-            else: st.error(msg)
-        except Exception as exc: s.rollback(); st.error(f"Unable to delete personnel: {exc}")
-        finally: s.close()
+        st.markdown(
+            f"**{assessment_person.get('name', 'Unnamed')}** · "
+            f"{assessment_person.get('staff_position') or 'Position not specified'} · "
+            f"{assessment_person.get('department') or 'Department not specified'} · "
+            f"{assessment_person.get('sg') or 'SG not specified'}"
+        )
+        with st.form(f"assessment_entry_form_{assessment_person_id}"):
+            c1, c2 = st.columns(2)
+            with c1:
+                assessment_date = st.date_input(
+                    "Assessment date", value=date.today(),
+                    format="DD/MM/YYYY", key=f"admin_assessment_date_{assessment_person_id}",
+                )
+                level_options = _assessment_level_options(
+                    master_df, _text(assessment_row, "Assessment Level")
+                )
+                current_level = _text(assessment_row, "Assessment Level", level_options[0])
+                level = st.selectbox(
+                    "Assessment level", level_options,
+                    index=level_options.index(current_level) if current_level in level_options else 0,
+                    key=f"admin_assessment_level_{assessment_person_id}",
+                )
+            with c2:
+                assessor1_entry = st.text_input(
+                    "Assessor 1", key=f"admin_assessor1_{assessment_person_id}"
+                )
+                supervisor_entry = st.text_input(
+                    "Supervisor", key=f"admin_supervisor_{assessment_person_id}"
+                )
+
+            score_inputs = {}
+            st.markdown("#### Competency scores")
+            st.caption("Enter Actual and Target scores from 0 to 5. Existing workbook values are shown where available.")
+            for competency_type, info in COMP_TYPES.items():
+                with st.expander(f"{info['label']} ({competency_type})", expanded=(competency_type == "B")):
+                    for code in info["cols"]:
+                        actual_previous = pd.to_numeric(
+                            assessment_row.get(code), errors="coerce"
+                        )
+                        target_previous = pd.to_numeric(
+                            assessment_row.get(f"R-{code}"), errors="coerce"
+                        )
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            actual = st.number_input(
+                                f"{code} Actual", min_value=0.0, max_value=5.0,
+                                value=float(actual_previous) if pd.notna(actual_previous) else 0.0,
+                                step=0.5, key=f"admin_act_{code}_{assessment_person_id}",
+                            )
+                        with c2:
+                            target = st.number_input(
+                                f"{code} Target", min_value=0.0, max_value=5.0,
+                                value=float(target_previous) if pd.notna(target_previous) else 3.0,
+                                step=0.5, key=f"admin_req_{code}_{assessment_person_id}",
+                            )
+                        score_inputs[code] = {
+                            "actual": actual,
+                            "req": target,
+                            "gap": round(max(target - actual, 0), 2),
+                        }
+
+            save_assessment = st.form_submit_button(
+                "Save assessment", type="primary", use_container_width=True
+            )
+
+        if save_assessment:
+            session = open_session()
+            try:
+                ok, message, assessment_id = add_assessment(
+                    session,
+                    assessment_person_id,
+                    {
+                        "assessment_date": assessment_date,
+                        "assessment_level": None if level == "Not specified" else level,
+                        "assessor1": assessor1_entry.strip() or None,
+                        "supervisor": supervisor_entry.strip() or None,
+                    },
+                )
+                if ok:
+                    scores_ok, score_message = add_competency_scores(
+                        session, assessment_id, assessment_person_id, score_inputs
+                    )
+                    if scores_ok:
+                        st.success(
+                            f"Assessment saved for {assessment_person.get('name')} "
+                            f"on {assessment_date:%d %b %Y}."
+                        )
+                        st.cache_data.clear()
+                    else:
+                        st.error(score_message)
+                else:
+                    st.error(message)
+            except Exception as exc:
+                session.rollback()
+                st.error(f"Unable to save assessment: {exc}")
+            finally:
+                session.close()
+
+
+# ---------------------------------------------------------------------------
+# Archive and Restore — soft-delete semantics are unchanged
+# ---------------------------------------------------------------------------
+
+with archive_tab:
+    st.subheader("Archive and restore personnel")
+    st.caption(
+        "Archiving hides a record from active directory views. It does not hard-delete "
+        "the personnel row or its historical assessment records."
+    )
+
+    archive_column, restore_column = st.columns(2)
+
+    with archive_column:
+        st.markdown("#### Archive active personnel")
+        if active_people.empty:
+            st.info("There are no active personnel records to archive.")
+        else:
+            archive_options = {
+                f"{record['name']} · {record['staff_id']}": int(record["id"])
+                for _, record in active_people.sort_values(["name", "staff_id"]).iterrows()
+            }
+            archive_label = st.selectbox(
+                "Select record to archive",
+                list(archive_options),
+                key="admin_archive_picker",
+            )
+            archive_id = archive_options[archive_label]
+            archive_person = active_people[active_people["id"] == archive_id].iloc[0]
+            archive_staff_id = str(archive_person["staff_id"])
+            st.warning(
+                f"Archive **{archive_person['name']}** (Staff ID: **{archive_staff_id}**)? "
+                "The record will disappear from active views but remain recoverable."
+            )
+            confirmation = st.text_input(
+                "Type the Staff ID to confirm",
+                key=f"admin_archive_confirm_{archive_id}",
+            )
+            archive_clicked = st.button(
+                "Archive personnel",
+                type="primary",
+                disabled=(confirmation.strip() != archive_staff_id),
+                key=f"admin_archive_button_{archive_id}",
+                use_container_width=True,
+            )
+            if archive_clicked:
+                session = open_session()
+                try:
+                    ok, message = delete_personnel(session, archive_id)
+                    if ok:
+                        st.success(f"Archived {archive_person['name']}.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(message)
+                except Exception as exc:
+                    session.rollback()
+                    st.error(f"Unable to archive personnel: {exc}")
+                finally:
+                    session.close()
+
+    with restore_column:
+        st.markdown("#### Restore archived personnel")
+        if archived_people.empty:
+            st.info("There are no archived records to restore.")
+        else:
+            restore_options = {
+                f"{record['name']} · {record['staff_id']}": int(record["id"])
+                for _, record in archived_people.sort_values(["name", "staff_id"]).iterrows()
+            }
+            restore_label = st.selectbox(
+                "Select archived record",
+                list(restore_options),
+                key="admin_restore_picker",
+            )
+            restore_id = restore_options[restore_label]
+            restore_person = archived_people[archived_people["id"] == restore_id].iloc[0]
+            st.info(
+                f"Restore **{restore_person['name']}** (Staff ID: **{restore_person['staff_id']}**) "
+                "to the active personnel directory?"
+            )
+            restore_confirmed = st.checkbox(
+                "I confirm this personnel record should be restored.",
+                key=f"admin_restore_confirm_{restore_id}",
+            )
+            if st.button(
+                "Restore personnel",
+                type="primary",
+                disabled=not restore_confirmed,
+                key=f"admin_restore_button_{restore_id}",
+                use_container_width=True,
+            ):
+                session = open_session()
+                try:
+                    # Reuse the existing generic update service. No DB service,
+                    # model, schema or backend implementation is changed.
+                    ok, message = update_personnel(
+                        session, restore_id, {"is_deleted": False, "is_active": True}
+                    )
+                    if ok:
+                        st.success(f"Restored {restore_person['name']} to the active directory.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(message)
+                except Exception as exc:
+                    session.rollback()
+                    st.error(f"Unable to restore personnel: {exc}")
+                finally:
+                    session.close()
+
+    if master_data_error and not master_df.empty:
+        st.caption("Workbook supplement warning: " + master_data_error)
