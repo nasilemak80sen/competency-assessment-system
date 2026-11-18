@@ -165,30 +165,38 @@ def test_chart_builder_has_guided_axes_numeric_measures_and_result_validation():
     required = [
         "Workforce Chart Builder",
         "get_chart_builder_fields",
-        "X-axis · Group, category or explanatory variable",
-        "Y-axis · Numeric measure",
+        "X-axis field",
+        "Y-axis measure",
         "Number of personnel records",
-        "aggregation_options = [\"Average\", \"Median\", \"Sum\", \"Minimum\", \"Maximum\"]",
+        'aggregation_options = ["Average", "Median", "Sum", "Minimum", "Maximum"]',
         "Valid Values",
         "cb_last_chart_source_data",
         "generate the chart again to refresh it",
         "Compare individual competency profiles",
         "cb-hero",
         "01 · Define your workforce",
-        "Quick search",
-        "More filters · Organisation, people and assessment",
-        "Advanced · Numeric range",
-        "cb_x_group_v2",
-        "cb_y_group_v2",
+        "Personnel search",
+        "More workforce filters",
+        "Numeric range filter",
         "03 · Choose how to visualise",
         "04 · Create your chart",
         "05 · Review your results",
         "Inspect the values behind this chart",
         "filter_signature",
+        "WORKFORCE FILTER TOOLBAR",
+        'chart_controls_col, chart_workspace_col = st.columns([3, 9]',
+        "with chart_workspace_col:",
+        "cb_live_update_v2",
+        "cb_reset_filters_v2",
+        "cb_reset_chart_setup_v2",
     ]
     missing = [x for x in required if x not in s]
     assert not missing, f"Chart Builder workflow contract missing: {missing}"
     assert "Count of rows" not in s, "Record counts should be an explicit mode, not the default Y-axis."
+    assert "X-axis · Group, category or explanatory variable" not in s
+    assert "Y-axis · Numeric measure" not in s
+    assert "with chart_col:" not in s
+
 
 def test_integer_persistence_source_is_explicitly_hardened_in_model_contract():
     s = (ROOT / "models.py").read_text(encoding="utf-8")
