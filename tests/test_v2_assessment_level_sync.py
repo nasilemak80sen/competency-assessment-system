@@ -7,7 +7,10 @@ from sqlalchemy.orm import sessionmaker
 
 import db_ops
 from models import Assessment, Base, Personnel
-from v2.core.bootstrap import _overlay_database_assessment_levels
+from v2.core.bootstrap import (
+    _overlay_database_assessment_levels,
+    _overlay_database_personnel_fields,
+)
 
 
 def _session():
@@ -114,3 +117,53 @@ def test_creating_assessment_updates_personnel_summary_fields():
         assert person.last_assessment_date == date(2026, 3, 1)
     finally:
         session.close()
+
+
+def test_database_personnel_name_and_profile_edits_overlay_workbook_by_staff_id():
+    """A renamed DB person must be the name shown by workbook-backed pages."""
+    session = _session()
+    try:
+        person = Personnel(
+            staff_id="1001",
+            name="Original Workbook Name",
+            department="Original Department",
+        )
+        session.add(person)
+        session.commit()
+
+        ok, message = db_ops.update_personnel(
+            session,
+            person.id,
+            {
+                "name": "Updated Database Name",
+                "department": "Updated Department",
+            },
+        )
+        assert ok, message
+        session.refresh(person)
+
+        # The cached workbook still contains the original identity/profile.
+        workbook = pd.DataFrame(
+            [
+                {
+                    "Staff ID": "1001",
+                    "Name": "Original Workbook Name",
+                    "Department": "Original Department",
+                    "B1": 4,
+                    "R-B1": 3,
+                }
+            ]
+        )
+
+        result = _overlay_database_personnel_fields(workbook, [person])
+
+        assert result.loc[0, "Name"] == "Updated Database Name"
+        assert result.loc[0, "Department"] == "Updated Department"
+        # This overlay is deliberately limited to personnel metadata. The
+        # master workbook remains the baseline for competency scores/targets.
+        assert result.loc[0, "B1"] == 4
+        assert result.loc[0, "R-B1"] == 3
+        assert workbook.loc[0, "Name"] == "Original Workbook Name"
+    finally:
+        session.close()
+
