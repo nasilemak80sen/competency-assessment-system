@@ -10,7 +10,7 @@ OPEN_GLOBUS_JS = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERS
 OPEN_GLOBUS_CSS = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/og.css"
 OPEN_GLOBUS_RESOURCES = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/res"
 OPEN_GLOBUS_FONTS = f"https://cdn.jsdelivr.net/npm/@openglobus/og@{OPEN_GLOBUS_VERSION}/lib/res/fonts"
-PERSONNEL_FIELDS = ["Staff ID","Name","Staff Position","Department","SG","Employment Category","Section Name","Current Location:"]
+PERSONNEL_FIELDS = ["personnel_id","Staff ID","Name","Staff Position","Department","SG","Employment Category","Section Name","Current Location:"]
 
 def _normalise_nationality(value: object) -> str:
     value = "" if value is None or pd.isna(value) else str(value).strip()
@@ -29,6 +29,12 @@ def _personnel_records(personnel_df: pd.DataFrame, valid_nationalities: set[str]
             for field in PERSONNEL_FIELDS:
                 if field in personnel_df.columns:
                     value=row.get(field,"")
+                    if field == "personnel_id":
+                        try:
+                            person[field] = int(value) if pd.notna(value) else None
+                        except (TypeError, ValueError):
+                            person[field] = None
+                        continue
                     if pd.isna(value): value=""
                     person[field]=str(value)
             records.append(person)
@@ -67,7 +73,7 @@ html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:t
 #globus{position:absolute;inset:0;width:100%;height:100%}
 #hud{position:absolute;left:16px;top:14px;z-index:30;pointer-events:none;padding:9px 12px;border-radius:10px;background:rgba(255,255,255,.88);backdrop-filter:blur(8px);box-shadow:0 5px 18px rgba(18,47,53,.10);color:#183238}
 #hud .title{font-size:13px;font-weight:700}.subtitle{margin-top:2px;font-size:10px;opacity:.68}
-#hovercard{position:absolute;left:16px;top:76px;z-index:32;display:none;min-width:190px;max-width:min(290px,calc(100% - 32px));box-sizing:border-box;padding:10px 12px;border:1px solid rgba(0,161,156,.2);border-radius:10px;background:rgba(255,255,255,.94);backdrop-filter:blur(10px);box-shadow:0 7px 22px rgba(18,47,53,.13);color:#183238;pointer-events:none}
+#hovercard{position:absolute;left:0;top:0;transform:translate(-50%,-100%);z-index:32;display:none;min-width:190px;max-width:min(290px,calc(100% - 24px));box-sizing:border-box;padding:10px 12px;border:1px solid rgba(0,161,156,.2);border-radius:10px;background:rgba(255,255,255,.96);backdrop-filter:blur(10px);box-shadow:0 7px 22px rgba(18,47,53,.16);color:#183238;pointer-events:none}
 #hovercard.visible{display:block}#hovercard strong{display:block;font-size:12px}#hovercard .meta{display:block;margin-top:3px;font-size:10px;color:#52676b}#hovercard .hint{display:block;margin-top:5px;font-size:9px;color:#00a19c;font-weight:700}
 #toolbar{position:absolute;left:16px;bottom:16px;z-index:40;width:min(430px,calc(100% - 32px));padding:10px;border-radius:12px;background:rgba(255,255,255,.93);backdrop-filter:blur(10px);box-shadow:0 8px 28px rgba(18,47,53,.16)}
 #toolbar .row{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px}
@@ -80,22 +86,22 @@ html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:t
 #details h3{margin:0 28px 3px 0;font-size:16px}.muted{font-size:10px;color:#63767a}
 #details .kpi{display:flex;gap:22px;margin:13px 0;padding:10px 0;border-top:1px solid #edf1f1;border-bottom:1px solid #edf1f1}.kpi strong{display:block;font-size:19px;letter-spacing:-.02em;color:#20419a}
 .people-head{display:flex;align-items:center;justify-content:space-between;margin-top:10px;font-size:11px;color:#183238}.people-head span{font-size:9px;color:#63767a}
-.person{padding:8px 0;border-top:1px solid #e7eeee;font-size:10px;line-height:1.45}.person strong{font-size:11px;color:#183238}#people{margin-top:5px}
+#people{margin-top:5px}.person{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid #e7eeee;font-size:10px;line-height:1.45}.person-info{min-width:0;flex:1}.person strong{font-size:11px;color:#183238}.profile-link{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;padding:6px 8px;border:1px solid #b8d6d5;border-radius:7px;background:#f2fbfa;color:#087d79;text-decoration:none;font-size:10px;font-weight:700;white-space:nowrap}.profile-link:hover{background:#e3f6f4;border-color:#00a19c}.profile-unavailable{flex:0 0 auto;color:#87979a;font-size:9px;white-space:nowrap}
 #status{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:50;padding:12px 16px;border-radius:10px;background:rgba(255,255,255,.94);box-shadow:0 8px 28px rgba(18,47,53,.15);color:#183238;font-size:13px}.hidden{display:none}
 #legend{position:absolute;right:16px;bottom:16px;z-index:30;padding:8px 10px;border-radius:9px;background:rgba(255,255,255,.86);backdrop-filter:blur(8px);color:#52676b;font-size:9px;box-shadow:0 4px 14px rgba(18,47,53,.08)}
 .legend-dot{display:inline-block;border-radius:50%;background:#00a19c;vertical-align:middle;margin:0 4px;border:1px solid rgba(255,255,255,.9)}
 #attribution{position:absolute;right:12px;top:8px;z-index:30;padding:4px 7px;border-radius:6px;background:rgba(255,255,255,.72);color:#4a6065;font-size:8px}#attribution a{color:#34666c;text-decoration:none}
-@media(max-width:700px){#details{width:calc(100% - 32px);max-height:46%;top:auto;bottom:112px}#hovercard{left:12px;top:72px;max-width:calc(100% - 24px)}#legend,#attribution{display:none}}
+@media(max-width:700px){#details{width:calc(100% - 32px);max-height:46%;top:auto;bottom:112px}#hovercard{max-width:calc(100% - 24px)}#legend,#attribution{display:none}}
 </style></head>
 <body><div id="shell"><div id="globus"></div>
 <div id="hud"><div class="title">🌍 RE Workforce Geography</div><div class="subtitle">Nationality distribution · Select a marker to explore</div></div>
-<div id="hovercard" aria-live="polite"><strong id="hoverTitle"></strong><span class="meta" id="hoverMeta"></span><span class="hint">Click marker to view workforce profile</span></div>
+<div id="hovercard" aria-live="polite"><strong id="hoverTitle"></strong><span class="meta" id="hoverMeta"></span><span class="hint">Click marker to view personnel profiles</span></div>
 <div id="status">Loading 3D Earth…</div>
 <div id="details"><button class="close" id="closeDetails">×</button><h3 id="detailNationality">Nationality</h3><div class="muted" id="detailRepresentation"></div>
 <div class="kpi"><div><strong id="detailCount">0</strong><span class="muted">personnel</span></div><div><strong id="detailSections">0</strong><span class="muted">sections</span></div></div>
 <button id="flyTo" style="width:100%;padding:8px;border:0;border-radius:8px;background:#00a19c;color:white;font-weight:700;cursor:pointer">📍 Fly to nationality</button><div class="people-head"><strong>Personnel directory</strong><span id="peopleMeta"></span></div><div id="people"></div></div>
 <div id="toolbar"><div class="row"><select id="employmentFilter"><option value="">All Employment Categories</option></select><select id="sgFilter"><option value="">All Salary Grades</option></select></div>
-<div class="row"><select id="sectionFilter"><option value="">All Sections</option></select><select id="labelMode" aria-label="Country label visibility"><option value="selected">Labels: selected only</option><option value="top">Labels: top 5</option><option value="all">Labels: all</option><option value="none">Labels: off</option></select></div><div class="row"><button class="wide" id="resetFilters">↺ Reset Filters</button></div><div id="stats"></div></div>
+<div class="row"><select id="sectionFilter" class="wide"><option value="">All Sections</option></select></div><div class="row"><button class="wide" id="resetFilters">↺ Reset Filters</button></div><div id="stats"></div></div>
 <div id="legend"><span class="legend-dot" style="width:7px;height:7px"></span> Lower <span class="legend-dot" style="width:12px;height:12px"></span> Medium <span class="legend-dot" style="width:17px;height:17px"></span> Higher <span style="margin-left:5px">· Bubble size = personnel</span></div>
 <div id="attribution">OpenGlobus · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></div></div>
 <script type="module">
@@ -108,10 +114,18 @@ const stats=document.getElementById("stats");
 const employmentFilter=document.getElementById("employmentFilter");
 const sgFilter=document.getElementById("sgFilter");
 const sectionFilter=document.getElementById("sectionFilter");
-const labelMode=document.getElementById("labelMode");
+
 const hoverCard=document.getElementById("hovercard");
 const hoverTitle=document.getElementById("hoverTitle");
 const hoverMeta=document.getElementById("hoverMeta");
+const shell=document.getElementById("shell");
+const globeHost=document.getElementById("globus");
+
+let pointerPosition={x:0,y:0};
+globeHost.addEventListener("pointermove",event=>{
+  const bounds=shell.getBoundingClientRect();
+  pointerPosition={x:event.clientX-bounds.left,y:event.clientY-bounds.top};
+},{passive:true});
 
 let globe=null;
 let nationalityLayer=null;
@@ -171,16 +185,8 @@ function renderLayer(){
   const ranked=records.map(record=>({record,count:visibleCount(record)}))
     .filter(item=>item.count>0);
   const maxCount=Math.max(...ranked.map(item=>item.count),1);
-  const topFive=new Set(
-    [...ranked].sort((a,b)=>b.count-a.count).slice(0,5).map(item=>item.record.nationality)
-  );
-
   const entities=ranked.map(({record,count})=>{
     const selected=Boolean(selectedRecord&&selectedRecord.nationality===record.nationality);
-    const showLabel=
-      labelMode.value==="all"||
-      (labelMode.value==="top"&&topFive.has(record.nationality))||
-      (labelMode.value==="selected"&&selected);
 
     const entityOptions={
       name:record.nationality,
@@ -199,16 +205,6 @@ function renderLayer(){
       }
     };
 
-    if(showLabel){
-      entityOptions.label={
-        text:record.nationality,
-        size:selected?15:11,
-        offset:[0,34,0],
-        color:selected?"rgba(32,65,154,.98)":"rgba(35,62,67,.94)",
-        outlineColor:"rgba(255,255,255,.98)",
-        outline:3
-      };
-    }
     return new Entity(entityOptions);
   });
 
@@ -224,15 +220,37 @@ function escapeHtml(value){
   }[char]));
 }
 
+function positionHoverCard(){
+  const margin=12;
+  const cardWidth=hoverCard.offsetWidth||190;
+  const cardHeight=hoverCard.offsetHeight||60;
+  const shellWidth=shell.clientWidth;
+  const shellHeight=shell.clientHeight;
+  const x=Math.max(cardWidth/2+margin,Math.min(pointerPosition.x,shellWidth-cardWidth/2-margin));
+  let top=pointerPosition.y-14;
+  let transform="translate(-50%,-100%)";
+
+  if(top-cardHeight<margin){
+    top=pointerPosition.y+14;
+    transform="translate(-50%,0)";
+  }
+  top=Math.max(margin,Math.min(top,shellHeight-cardHeight-margin));
+  hoverCard.style.left=x+"px";
+  hoverCard.style.top=top+"px";
+  hoverCard.style.transform=transform;
+}
+
 function showHover(record){
-  if(hoveredNationality===record.nationality)return;
-  hoveredNationality=record.nationality;
-  const people=visiblePeople(record);
-  const count=people===null?Number(record.count||0):people.length;
-  hoverTitle.textContent=record.nationality;
-  hoverMeta.textContent=count.toLocaleString()+" personnel · "+
-    (record.representation||"—")+" workforce representation";
+  if(hoveredNationality!==record.nationality){
+    hoveredNationality=record.nationality;
+    const people=visiblePeople(record);
+    const count=people===null?Number(record.count||0):people.length;
+    hoverTitle.textContent=record.nationality;
+    hoverMeta.textContent=count.toLocaleString()+" personnel · "+
+      (record.representation||"—")+" workforce representation";
+  }
   hoverCard.classList.add("visible");
+  positionHoverCard();
 }
 
 function hideHover(){
@@ -265,13 +283,18 @@ function showDetails(record){
     directory.innerHTML='<div class="muted">No personnel match the current filters.</div>';
   }else{
     peopleMeta.textContent=detailPeople.length.toLocaleString()+" matching";
-    directory.innerHTML=detailPeople.slice(0,60).map(person=>
-      '<div class="person"><strong>'+escapeHtml(person["Name"]||"Unnamed")+
-      '</strong><br>'+escapeHtml(person["Staff Position"]||"Position not specified")+
-      " · "+escapeHtml(person["SG"]||"SG —")+
-      '<br><span class="muted">'+escapeHtml(person["Department"]||"Department —")+
-      " · "+escapeHtml(person["Section Name"]||"Section —")+"</span></div>"
-    ).join("");
+    directory.innerHTML=detailPeople.slice(0,60).map(person=>{
+      const name=person["Name"]||"Unnamed";
+      const profileUrl=assessmentProfileUrl(person);
+      const action=profileUrl
+        ? '<a class="profile-link" href="'+escapeHtml(profileUrl)+'" target="_blank" rel="noopener" aria-label="Open assessment profile for '+escapeHtml(name)+'">View profile ↗</a>'
+        : '<span class="profile-unavailable">Profile not linked</span>';
+      return '<div class="person"><div class="person-info"><strong>'+escapeHtml(name)+
+        '</strong><br>'+escapeHtml(person["Staff Position"]||"Position not specified")+
+        " · "+escapeHtml(person["SG"]||"SG —")+
+        '<br><span class="muted">'+escapeHtml(person["Department"]||"Department —")+
+        " · "+escapeHtml(person["Section Name"]||"Section —")+"</span></div>"+action+"</div>";
+    }).join("");
     if(detailPeople.length>60){
       directory.innerHTML+='<div class="muted" style="padding:8px 0">Showing first 60 of '+
         detailPeople.length.toLocaleString()+" matching personnel.</div>";
@@ -280,6 +303,25 @@ function showDetails(record){
 
   details.classList.add("visible");
   renderLayer();
+}
+
+function assessmentProfileUrl(person){
+  const personnelId=Number(person.personnel_id);
+  if(!Number.isInteger(personnelId)||personnelId<=0)return null;
+  try{
+    const currentUrl=new URL(window.parent.location.href);
+    const appBase=currentUrl.pathname.endsWith("/")
+      ? currentUrl.pathname
+      : currentUrl.pathname+"/";
+    currentUrl.pathname=appBase+"individual-assessment";
+    currentUrl.search="";
+    currentUrl.hash="";
+    currentUrl.searchParams.set("personnel_id",String(personnelId));
+    return currentUrl.toString();
+  }catch(error){
+    console.warn("Could not create the assessment profile link:",error);
+    return null;
+  }
 }
 
 function flyToRecord(record){
@@ -300,13 +342,10 @@ function clearSelection(){
 [employmentFilter,sgFilter,sectionFilter].forEach(element=>
   element.addEventListener("change",clearSelection)
 );
-labelMode.addEventListener("change",renderLayer);
-
 document.getElementById("resetFilters").addEventListener("click",()=>{
   employmentFilter.value="";
   sgFilter.value="";
   sectionFilter.value="";
-  labelMode.value="selected";
   clearSelection();
 });
 document.getElementById("closeDetails").addEventListener("click",clearSelection);
