@@ -36,6 +36,13 @@ def _canonical_country_name(nationality):
     return _NATIONALITY_COUNTRY_NAMES.get(value, value)
 
 
+# Explicit ISO-3 overrides for country names whose labels may not be
+# consistently resolved by every installed pycountry dataset.
+_NATIONALITY_ISO3_OVERRIDES = {
+    "Russia": "RUS",
+}
+
+
 _MAP_COLORSCALE = [
     [0.00, "#E8F1F2"],
     [0.01, "#BFD730"],
@@ -55,6 +62,9 @@ def nationality_to_iso3(nationality):
         return None
 
     value = _canonical_country_name(value)
+
+    if value in _NATIONALITY_ISO3_OVERRIDES:
+        return _NATIONALITY_ISO3_OVERRIDES[value]
 
     try:
         return pycountry.countries.lookup(value).alpha_3
