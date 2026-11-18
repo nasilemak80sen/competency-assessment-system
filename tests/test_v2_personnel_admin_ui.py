@@ -46,8 +46,10 @@ def test_blank_personnel_dates_stay_blank_in_create_and_edit_forms():
 
 
 def test_archive_and_restore_use_existing_personnel_service_methods():
-    assert 'ok, message = delete_personnel(session, archive_id)' in SOURCE
+    assert 'ok, message = delete_personnel(' in SOURCE
+    assert 'changed_by=_current_admin_actor()' in SOURCE
     assert 'ok, message = update_personnel(' in SOURCE
+    assert 'restore_id, {"is_deleted": False, "is_active": True}' in SOURCE
     assert '"is_deleted": False, "is_active": True' in SOURCE
     assert 'Type the Staff ID to confirm' in SOURCE
     assert 'I confirm this personnel record should be restored.' in SOURCE

@@ -60,7 +60,7 @@ def test_admin_user_access_uses_database_personnel_ids():
 
     # USER linkage must use the SQLAlchemy Personnel table because the master
     # workbook does not contain the database primary-key ``id`` field.
-    assert "from models import Personnel" in page_source
+    assert "from models import AuditLog, Personnel" in page_source
     assert "session.query(Personnel)" in page_source
     assert "Personnel.is_deleted.is_(False)" in page_source
     assert "int(person.id)" in page_source
