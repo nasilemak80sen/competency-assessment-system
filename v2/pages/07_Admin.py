@@ -14,6 +14,7 @@ from config import (
     COMP_TYPES,
     COMPETENCY_FULLNAMES,
     DEPARTMENTS,
+    SCORE_COLS,
     POSITIONS,
     POSITION_TO_SG,
 )
@@ -1014,13 +1015,21 @@ with assessment_tab:
                         )
                         previous_actual = previous.get("actual")
                         previous_target = previous.get("req")
-                        if previous_actual is not None and pd.notna(previous_actual):
+                        if (
+                            previous_actual is not None
+                            and pd.notna(previous_actual)
+                            and 0.0 <= float(previous_actual) <= 5.0
+                        ):
                             actual_default = float(previous_actual)
                         elif pd.notna(workbook_actual) and 0.0 <= float(workbook_actual) <= 5.0:
                             actual_default = float(workbook_actual)
                         else:
                             actual_default = 0.0
-                        if previous_target is not None and pd.notna(previous_target):
+                        if (
+                            previous_target is not None
+                            and pd.notna(previous_target)
+                            and 0.0 <= float(previous_target) <= 5.0
+                        ):
                             target_default = float(previous_target)
                         elif pd.notna(workbook_target) and 0.0 <= float(workbook_target) <= 5.0:
                             target_default = float(workbook_target)

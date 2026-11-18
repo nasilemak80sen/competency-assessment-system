@@ -2,6 +2,7 @@
 
 import ast
 from datetime import date
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -138,8 +139,7 @@ def test_assessment_history_and_saved_matrix_are_readable(assessment_session):
 
 def test_phase_two_admin_ui_has_matrix_history_and_one_transactional_save():
     page_path = (
-        __file__
-        .resolve()
+        Path(__file__).resolve()
         .parents[1]
         / "v2"
         / "pages"
