@@ -331,7 +331,7 @@ try{
     fontsSrc:"__FONTS__",
     msaa:4,
     idleMode:false,
-    navigation:{mode:"north",inertia:.18,zoomSpeed:1.15}
+    navigation:{mode:"lockNorth",inertia:.18,zoomSpeed:1.15}
   });
 
   nationalityLayer=new Vector("Nationalities",{
