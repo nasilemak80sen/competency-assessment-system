@@ -18,6 +18,7 @@ def test_directory_and_add_workflow_are_available_without_existing_people():
     assert 'with edit_tab:' in SOURCE
     assert 'edit_id = st.session_state.get("admin_selected_person_id")' in SOURCE
     assert "admin_edit_person_picker" not in SOURCE
+    assert 'st.session_state.get("admin_selected_person_id")' in SOURCE
     assert 'There are no active database records to edit yet.' in SOURCE
     assert 'Use Add Personnel to create the first record.' in SOURCE
     assert 'if active_people.empty: st.stop()' not in SOURCE
@@ -30,6 +31,7 @@ def test_directory_supports_search_filters_and_single_row_selection():
     assert 'Salary grade' in SOURCE
     assert 'on_select="rerun"' in SOURCE
     assert 'selection_mode="single-row"' in SOURCE
+    assert 'all_people["is_active"] = all_people["is_active"].fillna(True).astype(bool)' in SOURCE
 
 
 def test_blank_personnel_dates_stay_blank_in_create_and_edit_forms():
@@ -38,6 +40,7 @@ def test_blank_personnel_dates_stay_blank_in_create_and_edit_forms():
     assert 'value=_optional_date(source.get("Joining Date"))' in SOURCE
     assert 'value=_optional_date(source.get("Contract Expire Date"))' in SOURCE
     assert 'value=_optional_date(source.get("Chat Date"))' in SOURCE
+    assert "def _first_optional_date(*values)" in SOURCE
     assert "def _first_optional_date(*values)" in SOURCE
     assert 'value=date.today()' in SOURCE  # Only the new assessment date is defaulted.
 
