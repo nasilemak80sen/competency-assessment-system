@@ -55,8 +55,8 @@ def test_personnel_preview_reports_field_differences_and_source_duplicates():
         assert plan.loc[0, "Action"] == "Update"
         assert plan.loc[0, "Match Staff ID"] == "100"
         assert plan.loc[0, "Include"] is True or bool(plan.loc[0, "Include"])
-        assert plan.loc[1, "Include"] is False
-        assert plan.loc[2, "Include"] is False
+        assert not bool(plan.loc[1, "Include"])
+        assert not bool(plan.loc[2, "Include"])
         assert plan.loc[3, "Action"] == "Add"
         assert "Department" in preview["field_differences"]["Field"].tolist()
     finally:
@@ -152,6 +152,25 @@ def test_shared_uptrex_placeholder_is_not_treated_as_a_duplicate_staff_id():
         assert list(result.index) == [0, 1]
         assert decisions[0]["action"] == "update"
         assert decisions[1]["action"] == "add"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_numeric_staff_id_float_suffix_is_normalized_before_add():
+    engine, session = _session()
+    try:
+        source = pd.DataFrame([{"Name": "Numeric ID Person", "Staff ID": 902.0}])
+        preview = build_personnel_import_preview(session, source)
+        result, errors, decisions = resolve_personnel_import(
+            source,
+            preview["plan"],
+            active_people=preview["active_people"],
+            all_staff_ids=preview["all_staff_ids"],
+        )
+        assert errors == []
+        assert result.iloc[0]["Staff ID"] == "902"
+        assert decisions[0]["action"] == "add"
     finally:
         session.close()
         engine.dispose()
@@ -317,8 +336,12 @@ def test_user_management_audit_records_real_admin_and_never_password_material(mo
     assert {row["action"] for row in audit} >= {
         "USER_CREATED", "USER_ACCESS_UPDATED", "USER_DISABLED", "PASSWORD_RESET"
     }
-    assert all(row["actor_user_id"] == admin_id for row in audit)
-    assert all(row["actor_username"] == "admin.one" for row in audit)
+    # The root administrator's own creation event is system-provisioned.
+    # All subsequent changes targeting the colleague must identify the actor.
+    attributed = [row for row in audit if row["target_username"] == "person.one"]
+    assert len(attributed) == 4
+    assert all(row["actor_user_id"] == admin_id for row in attributed)
+    assert all(row["actor_username"] == "admin.one" for row in attributed)
     assert all("NewPassword123!" not in str(row["details"]) for row in audit)
 
 

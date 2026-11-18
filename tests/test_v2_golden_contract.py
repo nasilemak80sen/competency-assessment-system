@@ -21,21 +21,26 @@ def test_admin_has_complete_golden_personnel_field_contract():
         "Age Promoted", "Length in Current Assignment", "Chat Status", "Chat Date",
         "Assessment Level", "Last Assessment Date", "Sub-disciplines", "Potential",
         "Resource / SME", "Interest", "Strength", "Recommendation", "Preference",
-        "Comment / Suggestion", "Assessor 1", "Assessor 2", "Supervisor", "Remarks",
+        "Comments / suggestions", "Assessor 1", "Assessor 2", "Supervisor", "Remarks",
     ]
     missing = [x for x in fields if x not in s]
     assert not missing, f"Admin field contract missing: {missing}"
-    assert 'st.form_submit_button("💾 Save Personnel Info"' in s
+    assert '"Create personnel record" if is_add else "Save profile changes"' in s
+    assert "add_personnel(session, payload)" in s
+    assert "Edit personnel profile" in s
 
 
-def test_admin_assessment_has_actual_and_target_for_every_competency_class():
+def test_admin_assessment_uses_complete_editable_competency_matrix():
     s = ADMIN.read_text(encoding="utf-8")
-    assert "for ctype,info in COMP_TYPES.items()" in s
-    assert 'f"{code} Actual"' in s
-    assert 'f"{code} Target"' in s
-    assert '"req":requirement' in s
-    assert '"gap":round(max(requirement-actual,0),2)' in s
-    assert 'COMP_TYPES' in s
+    assert "for competency_type, info in COMP_TYPES.items()" in s
+    assert "COMPETENCY_FULLNAMES.get(code, code)" in s
+    assert "st.data_editor(" in s
+    assert '"Actual": actual_default' in s
+    assert '"Target": target_default' in s
+    assert '"Actual": st.column_config.NumberColumn(' in s
+    assert '"Target": st.column_config.NumberColumn(' in s
+    assert "save_assessment_transaction(" in s
+    assert "Save assessment and all 24 scores" in s
 
 
 def test_individual_has_golden_profile_document_target_and_summary_contract():

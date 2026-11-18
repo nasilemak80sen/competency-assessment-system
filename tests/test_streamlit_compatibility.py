@@ -25,7 +25,12 @@ def test_v2_pages_do_not_require_modern_button_width_api():
 
 def test_v2_width_keywords_are_all_handled_by_central_compatibility_layer():
     """Any Streamlit widget/container using width= must be centrally supported."""
-    supported = {"button", "download_button", "link_button", "dataframe", "plotly_chart"}
+    # Native Streamlit APIs whose width argument does not use the central shim:
+    # data_editor (Streamlit 1.52) and column_config column width settings.
+    supported = {
+        "button", "download_button", "link_button", "dataframe", "plotly_chart",
+        "data_editor", "TextColumn", "NumberColumn", "CheckboxColumn", "SelectboxColumn",
+    }
     offenders = []
 
     for path in (ROOT / "v2").rglob("*.py"):

@@ -18,7 +18,8 @@ def test_openglobus_html_contains_phase_2_interaction_stack():
     assert f"@openglobus/og@{OPEN_GLOBUS_VERSION}" in html
     assert "GlobusRgbTerrain" in html
     assert "OpenStreetMap" in html
-    assert "new Entity({" in html
+    assert "new Entity(entityOptions)" in html
+    assert "const entityOptions={" in html
     assert "pickingEnabled:true" in html
     assert 'events.on("lclick"' in html
     assert "camera.setLonLat" in html

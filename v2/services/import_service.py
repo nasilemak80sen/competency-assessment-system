@@ -413,7 +413,7 @@ def resolve_personnel_import(
                 errors.append(f"Source row {source_index + 1}: Staff ID is required.")
                 continue
             source["Staff ID"] = re.sub(
-                r"\\.0$", "", str(source.get("Staff ID", "")).strip()
+                r"\.0$", "", str(source.get("Staff ID", "")).strip()
             )
             decisions[source_index] = {"action": "add", "matched_staff_id": None}
         else:

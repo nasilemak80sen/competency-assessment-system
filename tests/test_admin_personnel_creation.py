@@ -5,33 +5,36 @@ ADMIN = ROOT / "v2/pages/07_Admin.py"
 SERVICE = ROOT / "v2/services/personnel_service.py"
 
 
-def test_admin_exposes_single_personnel_creation_workflow():
+def test_admin_exposes_directory_first_personnel_creation_workflow():
     source = ADMIN.read_text(encoding="utf-8")
     required = [
-        'add as add_personnel',
-        '"➕ Add New Personnel"',
-        'st.form("add_personnel_form")',
-        'st.form_submit_button("➕ Add Personnel"',
-        'staff_id_new',
-        'name_new',
-        'position_new' if False else 'add_personnel_position',
-        'add_personnel(s,payload)',
+        "directory_tab, add_tab, edit_tab",
+        'with add_tab:',
+        'with st.form(form_key, clear_on_submit=False):',
+        '"Full name *"',
+        '"Staff ID *"',
+        '"Create personnel record" if is_add else "Save profile changes"',
+        'ok, message, new_id = add_personnel(session, payload)',
         'st.cache_data.clear()',
+        'st.session_state["admin_selected_person_id"] = new_id',
         'st.rerun()',
     ]
     missing = [item for item in required if item not in source]
-    assert not missing, f"Admin personnel creation contract missing: {missing}"
+    assert not missing, f"Directory-first personnel creation contract missing: {missing}"
 
 
-def test_admin_creation_has_duplicate_safe_required_identity_fields():
+def test_admin_creation_validates_required_identity_and_uses_existing_service():
     source = ADMIN.read_text(encoding="utf-8")
-    assert 'if not name_new.strip()' in source
-    assert 'elif not staff_id_new.strip()' in source
-    assert '"staff_id":staff_id_new.strip()' in source
-    assert '"name":name_new.strip()' in source
+    assert 'if not payload["name"]:' in source
+    assert 'elif not payload["staff_id"]:' in source
+    assert '"name": name.strip()' in source
+    assert '"staff_id": staff_id.strip()' in source
+    assert "Add Personnel" in source
+    assert "Full name is required." in source
+    assert "Staff ID is required." in source
 
 
 def test_personnel_service_keeps_existing_create_boundary():
     source = SERVICE.read_text(encoding="utf-8")
-    assert 'def add(session, data:' in source
-    assert 'return db_ops.add_personnel(session, data)' in source
+    assert "def add(session, data:" in source
+    assert "return db_ops.add_personnel(session, data)" in source

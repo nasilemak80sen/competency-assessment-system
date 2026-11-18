@@ -172,8 +172,10 @@ def test_chart_builder_renders_shared_navigation():
 def test_admin_forms_have_submit_controls():
     source = (V2_DIR / "pages" / "07_Admin.py").read_text(encoding="utf-8")
     assert source.count("with st.form(") == source.count("st.form_submit_button(")
-    assert "💾 Save Personnel Info" in source
-    assert "💾 Save Assessment" in source
+    assert "Create personnel record" in source
+    assert "Save profile changes" in source
+    assert "Save assessment and all 24 scores" in source
+    assert "save_assessment_transaction(" in source
 
 
 def test_admin_numeric_inputs_are_bounded_and_integer_formatted():
@@ -195,7 +197,7 @@ def test_admin_personnel_golden_field_contract():
         "Age Promoted", "Length in Current Assignment", "Chat Status", "Chat Date",
         "Assessment Level", "Last Assessment Date", "Sub-disciplines", "Potential",
         "Resource / SME", "Interest", "Strength", "Recommendation", "Preference",
-        "Comment / Suggestion", "Assessor 1", "Assessor 2", "Supervisor", "Remarks",
+        "Comments / suggestions", "Assessor 1", "Assessor 2", "Supervisor", "Remarks",
         '"nationality":', '"employment_category":', '"section_name":', '"unit_name":',
         '"sub_unit":', '"current_assignment":', '"assignment_date":', '"sg_start_date":',
         '"assessment_level":', '"last_assessment_date":', '"assessor1":', '"assessor2":',
@@ -207,10 +209,12 @@ def test_admin_personnel_golden_field_contract():
 
 def test_admin_assessment_target_gap_contract():
     source = (V2_DIR / "pages" / "07_Admin.py").read_text(encoding="utf-8")
-    assert 'f"{code} Actual"' in source
-    assert 'f"{code} Target"' in source
-    assert '"req":requirement' in source
-    assert '"gap":round(max(requirement-actual,0),2)' in source
+    assert "COMPETENCY_FULLNAMES.get(code, code)" in source
+    assert "st.data_editor(" in source
+    assert '"Actual": actual_default' in source
+    assert '"Target": target_default' in source
+    assert '"gap": round(max(float(target) - float(actual), 0.0), 2)' in source
+    assert "save_assessment_transaction(" in source
 
 
 def test_individual_assessment_entrypoint_delegates_to_parity_implementation():
