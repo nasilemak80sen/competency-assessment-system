@@ -73,8 +73,9 @@ def test_globe_initially_focuses_the_largest_nationality_at_country_level_zoom()
     assert "visibleCount(record)>visibleCount(largest)?record:largest" in html
     assert "selectedRecord=defaultFocusRecord;" in html
     assert (
-        "new LonLat(\n      defaultFocusRecord.longitude,\n"
-        "      defaultFocusRecord.latitude,\n      4500000\n    )"
+        "new LonLat(\n        defaultFocusRecord.longitude,\n"
+        "        defaultFocusRecord.latitude,\n        4500000\n"
+        "      ),\n      undefined,\n      northUp"
     ) in html
     assert "12000000" not in html
 
