@@ -156,11 +156,25 @@ if nationality_map_df.empty:
     )
 else:
     map_personnel_df = _attach_personnel_database_ids(df)
-    render_nationality_globe(
+    globe_result = render_nationality_globe(
         nationality_map_df,
         personnel_df=map_personnel_df,
         height=620,
     )
+
+    # A profile click returns the selected database Personnel ID through the
+    # bidirectional component. Switch using Streamlit's router so authentication
+    # and the active session_state survive the navigation.
+    selected_profile_id = getattr(globe_result, "profile_selected", None)
+    if selected_profile_id is not None:
+        try:
+            selected_profile_id = int(selected_profile_id)
+        except (TypeError, ValueError):
+            selected_profile_id = None
+        if selected_profile_id is not None and selected_profile_id > 0:
+            st.session_state["requested_personnel_id"] = selected_profile_id
+            st.switch_page("pages/05_Individual_Assessment.py")
+
     st.caption(
         "OpenGlobus WebGL nationality intelligence: proportional pins, click-to-detail, "
         "camera fly-to and client-side workforce filters. Coordinates use approximate "
