@@ -57,6 +57,22 @@ def _safe_name(value):
         for character in str(value)
     ).strip("_") or "personnel"
 
+def _normalise_staff_id(value):
+    """Normalise workbook Staff IDs for stable matching to SQLite records."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    key = str(value).strip()
+    if not key or key.casefold() in {"nan", "none", "nat"}:
+        return None
+    if key.endswith(".0") and key[:-2].isdigit():
+        key = key[:-2]
+    return key.casefold()
+
 
 
 def _all_competency_codes():
@@ -255,31 +271,109 @@ def render_page():
         st.error("The personnel dataset does not contain the required Name column.")
         st.stop()
 
-    names = sorted(
-        df["Name"].dropna().astype(str).str.strip().loc[lambda s: s.ne("")].unique()
-    )
-    if not names:
+    # OpenGlobus profile links pass the stable SQLite Personnel primary key.
+    # Resolve that ID to its Staff ID first, then preselect the matching workbook
+    # row. Names remain visible in the selector, but Staff ID removes ambiguity.
+    requested_personnel_id = None
+    requested_staff_id = None
+    requested_person_name = None
+    requested_id_value = st.query_params.get("personnel_id")
+    if requested_id_value:
+        try:
+            requested_personnel_id = int(requested_id_value)
+            lookup_session = open_session()
+            try:
+                requested_person = (
+                    lookup_session.query(Personnel.id, Personnel.staff_id, Personnel.name)
+                    .filter(
+                        Personnel.id == requested_personnel_id,
+                        Personnel.is_deleted.is_not(True),
+                    )
+                    .first()
+                )
+            finally:
+                lookup_session.close()
+            if requested_person is not None:
+                requested_staff_id = requested_person.staff_id
+                requested_person_name = requested_person.name
+            else:
+                st.warning(
+                    "The linked personnel profile is unavailable or archived. "
+                    "Please select a current personnel record."
+                )
+                requested_personnel_id = None
+        except (TypeError, ValueError):
+            st.warning("The personnel profile link contains an invalid database ID.")
+            requested_personnel_id = None
+
+    profile_df = df.reset_index(drop=True).copy()
+    profile_df = profile_df[
+        profile_df["Name"].notna()
+        & profile_df["Name"].astype(str).str.strip().ne("")
+    ].copy()
+    if profile_df.empty:
         st.error("No valid personnel names are available.")
         st.stop()
 
+    base_labels = []
+    for _, row in profile_df.iterrows():
+        name = str(row.get("Name", "")).strip()
+        staff_value = row.get("Staff ID")
+        staff_id = (
+            ""
+            if staff_value is None or pd.isna(staff_value)
+            else str(staff_value).strip()
+        )
+        if staff_id.casefold() in {"nan", "none", "nat"}:
+            staff_id = ""
+        base_labels.append(f"{name} · {staff_id}" if staff_id else name)
+
+    label_counts = {}
+    for label in base_labels:
+        label_counts[label] = label_counts.get(label, 0) + 1
+    labels = [
+        label if label_counts[label] == 1 else f"{label} · record {index + 1}"
+        for index, label in enumerate(base_labels)
+    ]
+
+    default_index = 0
+    requested_staff_key = _normalise_staff_id(requested_staff_id)
+    if requested_staff_key:
+        matching_indexes = [
+            index for index, (_, row) in enumerate(profile_df.iterrows())
+            if _normalise_staff_id(row.get("Staff ID")) == requested_staff_key
+        ]
+        if len(matching_indexes) == 1:
+            default_index = matching_indexes[0]
+        elif requested_person_name:
+            name_matches = [
+                index for index, name in enumerate(profile_df["Name"].astype(str))
+                if name.strip().casefold() == str(requested_person_name).strip().casefold()
+            ]
+            if len(name_matches) == 1:
+                default_index = name_matches[0]
+            else:
+                st.warning(
+                    "The linked database record could not be matched uniquely to "
+                    "the master workbook. Please verify its Staff ID."
+                )
+
     selection_col, refresh_col = st.columns([5, 1], vertical_alignment="bottom")
     with selection_col:
-        selected_name = st.selectbox("Select Personnel", names, key="personnel_select")
+        selected_label = st.selectbox(
+            "Select Personnel",
+            labels,
+            index=default_index,
+            key="personnel_profile_select",
+        )
     with refresh_col:
         if st.button("🔄 Refresh", type="secondary", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-    selected_rows = df[df["Name"].astype(str).str.strip() == str(selected_name).strip()]
-    if selected_rows.empty:
-        st.error("The selected personnel record could not be found.")
-        st.stop()
-    if len(selected_rows) > 1:
-        st.warning(
-            "More than one record has the selected name. The first record is being displayed. "
-            "Use Staff ID as the selector in a future update to eliminate name ambiguity."
-        )
-    person = selected_rows.iloc[0]
+    selected_index = labels.index(selected_label)
+    person = profile_df.iloc[selected_index]
+    selected_name = str(person.get("Name", "")).strip()
 
     session = open_session()
     db = None
@@ -289,7 +383,21 @@ def render_page():
     retrieval_error = None
     try:
         staff_id = person.get("Staff ID")
-        if pd.notna(staff_id):
+        selected_staff_key = _normalise_staff_id(staff_id)
+        if (
+            requested_personnel_id is not None
+            and requested_staff_key
+            and selected_staff_key == requested_staff_key
+        ):
+            db = (
+                session.query(Personnel)
+                .filter(
+                    Personnel.id == requested_personnel_id,
+                    Personnel.is_deleted.is_not(True),
+                )
+                .first()
+            )
+        if db is None and pd.notna(staff_id):
             db = (
                 session.query(Personnel)
                 .filter(Personnel.staff_id == str(staff_id))
