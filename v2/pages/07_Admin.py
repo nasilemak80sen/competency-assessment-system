@@ -563,7 +563,7 @@ all_people["is_deleted"] = all_people["is_deleted"].fillna(False).astype(bool)
 active_people = all_people[~all_people["is_deleted"]].copy()
 archived_people = all_people[all_people["is_deleted"]].copy()
 
-total_active = len(active_people)
+available_count = len(active_people)
 permanent_count = int(
     active_people["employment_category"].astype(str).str.strip().str.casefold().eq("permanent").sum()
 )
@@ -572,7 +572,7 @@ cdh_count = int(
 )
 
 metric_cols = st.columns(4)
-metric_cols[0].metric("Active personnel", f"{total_active:,}")
+metric_cols[0].metric("Available records", f"{available_count:,}")
 metric_cols[1].metric("Permanent", f"{permanent_count:,}")
 metric_cols[2].metric("CDH", f"{cdh_count:,}")
 metric_cols[3].metric("Archived", f"{len(archived_people):,}")
@@ -674,7 +674,7 @@ with directory_tab:
         index=filtered_people.index,
     )
 
-    st.caption(f"Showing {len(filtered_people):,} of {total_active:,} active records.")
+    st.caption(f"Showing {len(filtered_people):,} of {available_count:,} available records.")
     if filtered_people.empty:
         st.info("No personnel match the current search and filters. Clear a filter or add a new record.")
     else:
@@ -1062,5 +1062,5 @@ with archive_tab:
                 finally:
                     session.close()
 
-    if master_data_error and not master_df.empty:
-        st.caption("Workbook supplement warning: " + master_data_error)
+    if master_data_error:
+        st.info("Workbook score prefill is unavailable. Personnel CRUD remains available from the database. Details: " + master_data_error)
