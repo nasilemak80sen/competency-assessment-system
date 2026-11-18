@@ -6,6 +6,7 @@ import pandas as pd
 from v2.analytics.nationality import (
     create_nationality_bubble_map,
     create_nationality_distribution_map,
+    nationality_to_iso3,
     prepare_nationality_map_data,
 )
 
@@ -111,3 +112,20 @@ def test_create_nationality_bubble_map_remains_backward_compatible():
     assert fig.data[0].type == "scattergeo"
     assert fig.layout.geo.projection.type == "orthographic"
     assert fig.layout.autosize is True
+
+
+
+def test_russia_nationality_resolves_to_iso3_and_map_coordinates():
+    assert nationality_to_iso3("Russia") == "RUS"
+
+    map_df, unmatched = prepare_nationality_map_data(
+        pd.DataFrame({"Nationality": ["Russia"]})
+    )
+
+    assert unmatched == []
+    assert len(map_df) == 1
+    russia = map_df.iloc[0]
+    assert russia["Nationality"] == "Russia"
+    assert russia["ISO3"] == "RUS"
+    assert russia["Latitude"] == 61.5240
+    assert russia["Longitude"] == 105.3188
