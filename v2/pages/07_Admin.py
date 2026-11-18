@@ -237,35 +237,35 @@ def _save_personnel_form(form_key: str, prefix: str, row: dict | None, master_df
     source = row or {}
     is_add = row is None
 
-    gender_value = _text(source, "Gender", "Not specified")
+    gender_value = _text(source, "Gender", "Not specified") or "Not specified"
     gender_options = ["Not specified", "M", "F", "Other"]
     if gender_value not in gender_options:
         gender_options.append(gender_value)
 
-    employment_value = _text(source, "Employment Category", "Not specified")
+    employment_value = _text(source, "Employment Category", "Not specified") or "Not specified"
     employment_options = ["Not specified", "Permanent", "CDH"]
     if employment_value not in employment_options:
         employment_options.append(employment_value)
 
     department_options = list(DEPARTMENTS[:-1]) or ["Not specified"]
-    department_value = _text(source, "Department", department_options[0])
+    department_value = _text(source, "Department", department_options[0]) or department_options[0]
     if department_value and department_value not in department_options:
         department_options.append(department_value)
 
     position_options = list(POSITIONS[:-1]) or ["Not specified"]
-    position_value = _text(source, "Staff Position", position_options[0])
+    position_value = _text(source, "Staff Position", position_options[0]) or position_options[0]
     if position_value and position_value not in position_options:
         position_options.append(position_value)
 
     chat_options = list(CHAT_STATUS_OPTIONS)
-    chat_value = _text(source, "Chat Status", "No Need")
+    chat_value = _text(source, "Chat Status", "No Need") or "No Need"
     if chat_value not in chat_options:
         chat_options.append(chat_value)
 
     assessment_options = _assessment_level_options(
         master_df, _text(source, "Assessment Level")
     )
-    assessment_value = _text(source, "Assessment Level", "Not specified")
+    assessment_value = _text(source, "Assessment Level", "Not specified") or "Not specified"
     if assessment_value not in assessment_options:
         assessment_options.append(assessment_value)
 
@@ -560,6 +560,7 @@ for column, default in {
         all_people[column] = default
 
 all_people["is_deleted"] = all_people["is_deleted"].fillna(False).astype(bool)
+all_people["is_active"] = all_people["is_active"].fillna(True).astype(bool)
 active_people = all_people[~all_people["is_deleted"]].copy()
 archived_people = all_people[all_people["is_deleted"]].copy()
 
