@@ -430,665 +430,634 @@ numeric_filter_columns = [
 ]
 
 # -----------------------------------------------------------------------------
-control_col, chart_col = st.columns([2, 8], gap="large")
+# ---------------------------------------------------------------------------
+# WORKFORCE FILTER TOOLBAR
+# Workforce filters determine which records enter the analysis. They are kept
+# separate from chart configuration so users never confuse scope with axes.
+# ---------------------------------------------------------------------------
+primary_filter_columns = [
+    column for column in ("Department", "Staff Position", "SG")
+    if column in df.columns and df[column].notna().any()
+]
+secondary_filter_columns = [
+    column for column in filter_columns
+    if column not in primary_filter_columns
+]
+# Salary Grade is sometimes detected as numeric. Keep it accessible as a
+# categorical workforce filter rather than hiding it in the numeric controls.
+if "SG" in df.columns and df["SG"].notna().any() and "SG" not in primary_filter_columns:
+    primary_filter_columns.append("SG")
+    secondary_filter_columns = [
+        column for column in secondary_filter_columns if column != "SG"
+    ]
+numeric_range_options = [
+    column for column in numeric_filter_columns
+    if column != "SG"
+]
 
-with control_col:
+st.markdown('<div class="cb-section-label">01 · Define your workforce</div>', unsafe_allow_html=True)
+with st.container(border=True):
+    header_col, reset_col = st.columns([5, 1], vertical_alignment="center")
+    with header_col:
+        st.markdown("### Workforce filters")
+        st.caption(
+            "These filters define the personnel population used by every chart. "
+            "Chart axes and visual settings are configured separately below."
+        )
+    with reset_col:
+        if st.button(
+            "↺ Reset filters",
+            key="cb_reset_filters_v2",
+            use_container_width=True,
+            help="Clear only workforce filters. Chart settings are preserved.",
+        ):
+            for key in list(st.session_state):
+                if key.startswith((
+                    "cb_primary_filter_v2_",
+                    "cb_extra_filter_v2_",
+                    "cb_dynamic_filter_v2_",
+                )) or key in {
+                    "cb_personnel_search_v2",
+                    "cb_extra_filter_columns_v2",
+                    "cb_numeric_filter_column_v2",
+                    "cb_numeric_filter_range_v2",
+                    "cb_filter_columns_v2",
+                }:
+                    st.session_state.pop(key, None)
+            st.rerun()
+
+    primary_controls = st.columns([2.0, 1.25, 1.25, 0.9], gap="medium")
+    with primary_controls[0]:
+        personnel_search = st.text_input(
+            "Personnel search",
+            placeholder="Name or Staff ID",
+            key="cb_personnel_search_v2",
+            help="Search by part of a person's name or Staff ID.",
+        )
+
+    filters = {}
+    for index, column in enumerate(primary_filter_columns):
+        target = primary_controls[index + 1] if index < 3 else None
+        if target is None:
+            continue
+        with target:
+            options = sorted(
+                df[column].dropna().unique().tolist(),
+                key=lambda value: str(value),
+            )
+            values = st.multiselect(
+                get_chart_builder_field_label(column),
+                options,
+                key=f"cb_primary_filter_v2_{column}",
+                placeholder=f"All {get_chart_builder_field_label(column)}",
+            )
+            if values:
+                filters[column] = values
+
+    numeric_ranges = {}
+    with st.expander("More workforce filters", expanded=False):
+        st.caption(
+            "Optional filters for organisation, employment, demographics and assessment. "
+            "Only selected fields are shown below."
+        )
+        selected_extra_columns = st.multiselect(
+            "Additional workforce filter fields",
+            secondary_filter_columns,
+            format_func=get_chart_builder_field_label,
+            key="cb_extra_filter_columns_v2",
+            placeholder="Choose Section, Unit, Sub Unit, Employment Category, etc.",
+        )
+        if selected_extra_columns:
+            extra_columns = st.columns(4, gap="medium")
+            for index, column in enumerate(selected_extra_columns):
+                with extra_columns[index % len(extra_columns)]:
+                    options = sorted(
+                        df[column].dropna().unique().tolist(),
+                        key=lambda value: str(value),
+                    )
+                    values = st.multiselect(
+                        get_chart_builder_field_label(column),
+                        options,
+                        key=f"cb_extra_filter_v2_{column}",
+                        placeholder=f"All {get_chart_builder_field_label(column)}",
+                    )
+                    if values:
+                        filters[column] = values
+
+        st.markdown("**Numeric range filter**")
+        numeric_filter = st.selectbox(
+            "Numeric field",
+            ["(None)"] + numeric_range_options,
+            format_func=lambda value: (
+                "No numeric range filter"
+                if value == "(None)" else get_chart_builder_field_label(value)
+            ),
+            key="cb_numeric_filter_column_v2",
+        )
+        if numeric_filter != "(None)":
+            numeric_values = pd.to_numeric(df[numeric_filter], errors="coerce").dropna()
+            if not numeric_values.empty:
+                low, high = float(numeric_values.min()), float(numeric_values.max())
+                if low < high:
+                    numeric_ranges[numeric_filter] = st.slider(
+                        f"Keep {get_chart_builder_field_label(numeric_filter)} within",
+                        min_value=low,
+                        max_value=high,
+                        value=(low, high),
+                        key="cb_numeric_filter_range_v2",
+                    )
+                else:
+                    st.caption(
+                        f"All available {get_chart_builder_field_label(numeric_filter)} "
+                        f"values are {low:g}."
+                    )
+
+    working_df = filter_builder.apply_filters(filters, numeric_ranges)
+    if personnel_search.strip():
+        search_value = personnel_search.strip()
+        search_mask = pd.Series(False, index=working_df.index)
+        for search_column in ("Name", "Staff ID"):
+            if search_column in working_df.columns:
+                search_mask |= working_df[search_column].astype("string").str.contains(
+                    search_value,
+                    case=False,
+                    regex=False,
+                    na=False,
+                )
+        working_df = working_df.loc[search_mask].copy()
+
+    active_filter_labels = []
+    if personnel_search.strip():
+        active_filter_labels.append(f"Search: {personnel_search.strip()}")
+    for column, values in filters.items():
+        active_filter_labels.append(
+            f"{get_chart_builder_field_label(column)}: {', '.join(map(str, values))}"
+        )
+    for column, bounds in numeric_ranges.items():
+        active_filter_labels.append(
+            f"{get_chart_builder_field_label(column)}: {bounds[0]:g}–{bounds[1]:g}"
+        )
+
+    scope_col, scope_note_col = st.columns([1, 4], vertical_alignment="center")
+    with scope_col:
+        st.metric(
+            "Matching personnel",
+            f"{len(working_df):,}",
+            delta=f"of {len(df):,} total records",
+        )
+    with scope_note_col:
+        if active_filter_labels:
+            st.caption("Active filters · " + "  |  ".join(active_filter_labels))
+        else:
+            st.caption("No workforce filters applied. The full personnel dataset is included.")
+
+if working_df.empty:
+    st.warning("No personnel records match these filters. Clear or broaden the workforce filters.")
+    st.stop()
+
+# Rebuild the chart engine against the filtered frame. Every axis, preview,
+# diagnostic and chart result therefore reads exactly the same population.
+builder = ChartBuilder(working_df)
+available_fields = get_chart_builder_fields(working_df)
+infos = {
+    column: ChartCompatibility.analyze_data_element(working_df[column], column)
+    for column in available_fields
+}
+axis_fields = [
+    column for group_fields in CHART_FIELD_GROUPS.values()
+    for column in group_fields
+    if column in available_fields
+    and infos[column].data_type in {
+        DataType.CATEGORICAL, DataType.NUMERIC, DataType.DATETIME
+    }
+]
+axis_fields = list(dict.fromkeys(axis_fields))
+numeric_fields = [
+    column for column in available_fields
+    if infos[column].data_type == DataType.NUMERIC
+]
+categorical_fields = [
+    column for column in available_fields
+    if infos[column].data_type == DataType.CATEGORICAL
+]
+if not axis_fields:
+    st.warning("No usable approved chart-axis fields remain after filtering.")
+    st.stop()
+
+chart_templates = _build_chart_templates(numeric_fields, categorical_fields)
+
+# ---------------------------------------------------------------------------
+# CHART CONFIGURATION + CHART WORKSPACE
+# ---------------------------------------------------------------------------
+chart_controls_col, chart_workspace_col = st.columns([3, 9], gap="large")
+
+with chart_controls_col:
     with st.container(border=True):
-        st.markdown("### Chart controls")
-        st.caption("Configure the workforce scope, data fields and chart style here.")
-        # FILTER WORKSPACE
-        # -----------------------------------------------------------------------------
-        primary_filter_columns = [
-            column for column in ("Department", "Staff Position", "SG")
-            if column in filter_columns
-        ]
-        secondary_filter_columns = [
-            column for column in filter_columns
-            if column not in primary_filter_columns
-        ]
-        
-        with st.container(border=True):
-            st.markdown("### 01 · Define your workforce")
-            st.caption("Search by name or Staff ID, then narrow the population using the filters below.")
-            if st.button("↺ Reset filters", key="cb_reset_filters_v2", use_container_width=True):
-                for key in list(st.session_state):
-                    if key.startswith((
-                        "cb_primary_filter_v2_",
-                        "cb_extra_filter_v2_",
-                        "cb_dynamic_filter_v2_",
-                    )) or key in {
-                        "cb_personnel_search_v2",
-                        "cb_extra_filter_columns_v2",
-                        "cb_numeric_filter_column_v2",
-                        "cb_numeric_filter_range_v2",
-                        "cb_filter_columns_v2",
-                    }:
-                        st.session_state.pop(key, None)
+        control_header, reset_chart_col = st.columns([3, 2], vertical_alignment="center")
+        with control_header:
+            st.markdown("### Chart setup")
+        with reset_chart_col:
+            if st.button(
+                "Reset chart",
+                key="cb_reset_chart_setup_v2",
+                use_container_width=True,
+                help="Reset only chart selections and the generated result. Workforce filters remain unchanged.",
+            ):
+                for key in (
+                    "cb_template_v2", "cb_template_last_applied_v2",
+                    "cb_measure_mode_v2", "cb_x_group_v2", "cb_dimension_v2",
+                    "cb_y_group_v2", "cb_measure_v2", "cb_breakdown_v2",
+                    "cb_chart_type_v2", "cb_aggregation_v2", "cb_size_v2",
+                    "cb_top_n_v2", "cb_custom_title_v2", "cb_x_label_v2",
+                    "cb_y_label_v2", "cb_chart_height_v2", "cb_drill_dimension_v2",
+                    "cb_drill_value_v2",
+                ):
+                    st.session_state.pop(key, None)
+                for key in (
+                    "cb_last_chart", "cb_last_chart_meta", "cb_last_chart_data",
+                    "cb_last_chart_source_data",
+                ):
+                    st.session_state.pop(key, None)
                 st.rerun()
-        
-            personnel_search = st.text_input(
-                "Quick search",
-                placeholder="Personnel name or Staff ID",
-                key="cb_personnel_search_v2",
-                help="Search by part of a person's name or Staff ID.",
-            )
-            filters = {}
-            for column in primary_filter_columns:
-                options = sorted(
-                    df[column].dropna().unique().tolist(),
-                    key=lambda value: str(value),
-                )
-                values = st.multiselect(
-                    get_chart_builder_field_label(column),
-                    options,
-                    key=f"cb_primary_filter_v2_{column}",
-                    placeholder=f"All {get_chart_builder_field_label(column)}",
-                )
-                if values:
-                    filters[column] = values
-        
-            with st.expander("More filters · Organisation, people and assessment", expanded=False):
-                st.caption(
-                    "Add optional filters for section, unit, gender, nationality, employment category, "
-                    "assessment level or ruler type. Empty filters include all values."
-                )
-                selected_extra_columns = st.multiselect(
-                    "Additional filter fields",
-                    secondary_filter_columns,
-                    format_func=get_chart_builder_field_label,
-                    key="cb_extra_filter_columns_v2",
-                    placeholder="Choose additional fields",
-                )
-                if selected_extra_columns:
-                    for column in selected_extra_columns:
-                        options = sorted(
-                            df[column].dropna().unique().tolist(),
-                            key=lambda value: str(value),
-                        )
-                        values = st.multiselect(
-                            get_chart_builder_field_label(column),
-                            options,
-                            key=f"cb_extra_filter_v2_{column}",
-                            placeholder=f"All {get_chart_builder_field_label(column)}",
-                        )
-                        if values:
-                            filters[column] = values
-        
-            with st.expander("Advanced · Numeric range", expanded=False):
-                numeric_filter = st.selectbox(
-                    "Choose a numeric field",
-                    ["(None)"] + numeric_filter_columns,
-                    format_func=lambda value: (
-                        "No numeric range filter"
-                        if value == "(None)" else get_chart_builder_field_label(value)
-                    ),
-                    key="cb_numeric_filter_column_v2",
-                )
-                numeric_ranges = {}
-                if numeric_filter != "(None)":
-                    numeric_values = pd.to_numeric(df[numeric_filter], errors="coerce").dropna()
-                    if not numeric_values.empty:
-                        low, high = float(numeric_values.min()), float(numeric_values.max())
-                        if low < high:
-                            numeric_ranges[numeric_filter] = st.slider(
-                                f"Keep {get_chart_builder_field_label(numeric_filter)} within",
-                                min_value=low,
-                                max_value=high,
-                                value=(low, high),
-                                key="cb_numeric_filter_range_v2",
-                            )
-                        else:
-                            st.caption(f"All available {get_chart_builder_field_label(numeric_filter)} values are {low:g}.")
-        
-            working_df = filter_builder.apply_filters(filters, numeric_ranges)
-            if personnel_search.strip():
-                search_value = personnel_search.strip()
-                search_mask = pd.Series(False, index=working_df.index)
-                for search_column in ("Name", "Staff ID"):
-                    if search_column in working_df.columns:
-                        search_mask |= working_df[search_column].astype("string").str.contains(
-                            search_value, case=False, regex=False, na=False
-                        )
-                working_df = working_df.loc[search_mask].copy()
-        
-            active_filter_labels = []
-            if personnel_search.strip():
-                active_filter_labels.append(f"Search: {personnel_search.strip()}")
-            for column, values in filters.items():
-                active_filter_labels.append(
-                    f"{get_chart_builder_field_label(column)}: {', '.join(map(str, values))}"
-                )
-            if numeric_ranges:
-                for column, bounds in numeric_ranges.items():
-                    active_filter_labels.append(
-                        f"{get_chart_builder_field_label(column)}: {bounds[0]:g}–{bounds[1]:g}"
-                    )
-        
-            st.metric(
-                "Matching personnel",
-                f"{len(working_df):,}",
-                delta=f"of {len(df):,} total records",
-            )
-            if active_filter_labels:
-                st.caption("Active filters · " + "  |  ".join(active_filter_labels))
-            else:
-                st.caption("No filters applied. The full workforce is included.")
-        
-                main_canvas = st.container()
-        if working_df.empty:
-            st.warning("No personnel records match these filters. Clear or broaden the filters.")
+
+        st.caption("Configure how the filtered workforce data should be visualised.")
+
+        # Guided templates prefill the same individual chart controls below.
+        template_options = ["Custom setup"] + list(chart_templates)
+        if st.session_state.get("cb_template_v2") not in template_options:
+            st.session_state.pop("cb_template_v2", None)
+        selected_template = st.selectbox(
+            "Chart template",
+            template_options,
+            key="cb_template_v2",
+            help="Choose a starting example, then adjust any of its settings.",
+        )
+        previous_template = st.session_state.get("cb_template_last_applied_v2")
+        if selected_template != "Custom setup" and selected_template != previous_template:
+            template = chart_templates[selected_template]
+            st.session_state["cb_measure_mode_v2"] = template["measure_mode"]
+            st.session_state["cb_dimension_v2"] = template["dimension"]
+            st.session_state["cb_measure_v2"] = template["measure"]
+            st.session_state["cb_breakdown_v2"] = template.get("color") or "(None)"
+            st.session_state["cb_chart_type_v2"] = template["chart_type"]
+            st.session_state["cb_aggregation_v2"] = template.get("aggregation", "Average")
+            st.session_state["cb_size_v2"] = template.get("size") or "(None)"
+            st.session_state["cb_top_n_v2"] = 10
+            st.session_state["cb_template_last_applied_v2"] = selected_template
+            st.rerun()
+        if selected_template == "Custom setup":
+            st.session_state["cb_template_last_applied_v2"] = "Custom setup"
+        else:
+            st.caption(chart_templates[selected_template]["description"])
+
+        measure_mode_options = ["Numeric data element", "Number of personnel records"]
+        if not numeric_fields:
+            measure_mode_options = ["Number of personnel records"]
+        if st.session_state.get("cb_measure_mode_v2") not in measure_mode_options:
+            st.session_state["cb_measure_mode_v2"] = measure_mode_options[0]
+        measure_mode = st.radio(
+            "Y-axis measure",
+            measure_mode_options,
+            key="cb_measure_mode_v2",
+            help=(
+                "Choose a numeric field to analyse real values, or count personnel "
+                "records within each X-axis group."
+            ),
+        )
+
+        x_options = [
+            column for column in axis_fields
+            if measure_mode != "Number of personnel records"
+            or infos[column].data_type == DataType.CATEGORICAL
+        ]
+        if not x_options:
+            st.warning("No suitable X-axis fields are available for this selection.")
             st.stop()
-        
-        
-        # Rebuild against the filtered frame so every axis, preview and chart reads
-        # exactly the same rows.
-        builder = ChartBuilder(working_df)
-        available_fields = get_chart_builder_fields(working_df)
-        infos = {
-            column: ChartCompatibility.analyze_data_element(working_df[column], column)
-            for column in available_fields
-        }
-        axis_fields = [
-            column for column in available_fields
-            if infos[column].data_type in {
-                DataType.CATEGORICAL, DataType.NUMERIC, DataType.DATETIME
-            }
-        ]
-        numeric_fields = [
-            column for column in available_fields
-            if infos[column].data_type == DataType.NUMERIC
-        ]
-        categorical_fields = [
-            column for column in available_fields
-            if infos[column].data_type == DataType.CATEGORICAL
-        ]
-        if not axis_fields:
-            st.warning("No usable approved axis fields remain after filtering.")
-            st.stop()
-        
-        chart_templates = _build_chart_templates(numeric_fields, categorical_fields)
-        
-        with main_canvas:
-            st.markdown('<div class="cb-section-label">02 · Build your chart</div>', unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown("### Start with a chart template")
-                template_options = ["Custom setup"] + list(chart_templates)
-                if st.session_state.get("cb_template_v2") not in template_options:
-                    st.session_state.pop("cb_template_v2", None)
-                selected_template = st.selectbox(
-                    "Template examples",
-                    template_options,
-                    key="cb_template_v2",
-                    help="Choose a guided example to prefill the X-axis, Y-axis, chart type and optional breakdown. You can customise every setting afterwards.",
-                )
-                previous_template = st.session_state.get("cb_template_last_applied_v2")
-                if selected_template != "Custom setup" and selected_template != previous_template:
-                    template = chart_templates[selected_template]
-                    dimension_value = template["dimension"]
-                    measure_value = template["measure"]
-                    size_value = template.get("size")
-                    st.session_state["cb_measure_mode_v2"] = template["measure_mode"]
-                    st.session_state["cb_x_group_v2"] = _field_group_for(dimension_value)
-                    st.session_state["cb_dimension_v2"] = dimension_value
-                    st.session_state["cb_y_group_v2"] = _field_group_for(measure_value)
-                    st.session_state["cb_measure_v2"] = measure_value
-                    st.session_state["cb_breakdown_v2"] = template.get("color") or "(None)"
-                    st.session_state["cb_chart_type_v2"] = template["chart_type"]
-                    st.session_state["cb_aggregation_v2"] = template.get("aggregation", "Average")
-                    st.session_state["cb_size_v2"] = size_value or "(None)"
-                    st.session_state["cb_template_last_applied_v2"] = selected_template
-                    st.session_state["cb_top_n_v2"] = 10
-                    st.rerun()
-                if selected_template == "Custom setup":
-                    st.session_state["cb_template_last_applied_v2"] = "Custom setup"
-                    st.caption("Build from scratch, or choose an example above to see how a chart type is configured.")
-                else:
-                    st.info(chart_templates[selected_template]["description"])
-        
-            with st.container(border=True):
-                st.markdown("### Choose the data elements")
-                st.caption(
-                    "Fields are grouped by their purpose so you can find the right column quickly. "
-                    "X defines the groups or horizontal values; Y supplies the numeric values to compare."
-                )
-        
-                measure_mode = st.radio(
-                    "What should the Y-axis display?",
-                    ["Numeric data element", "Number of personnel records"],
-                    horizontal=True,
-                    key="cb_measure_mode_v2",
-                    help=(
-                        "Choose a numeric field to analyse real data values, or switch to personnel "
-                        "records when you specifically want a headcount."
-                    ),
-                )
-        
-                x_groups = {}
-                for group_name, group_fields in CHART_FIELD_GROUPS.items():
-                    valid_fields = [
-                        column for column in group_fields
-                        if column in axis_fields
-                        and (
-                            measure_mode != "Number of personnel records"
-                            or infos[column].data_type == DataType.CATEGORICAL
-                        )
-                    ]
-                    if valid_fields:
-                        x_groups[group_name] = valid_fields
-        
-                if not x_groups:
-                    st.error("No suitable X-axis fields are available for this data selection.")
-                    st.stop()
-        
-                preferred_x_group = (
-                    "Organisation & employment"
-                    if "Organisation & employment" in x_groups
-                    else next(iter(x_groups))
-                )
-                x_group_options = list(x_groups)
-                if st.session_state.get("cb_x_group_v2") not in x_group_options:
-                    st.session_state["cb_x_group_v2"] = preferred_x_group
-        
-                if measure_mode == "Number of personnel records":
-                    st.info(
-                        "Headcount mode is active. Select a categorical field such as Department, "
-                        "Staff Position, Salary Grade or Assessment Level."
-                    )
-        
-                x_col, y_col = st.container(), st.container()
-                with x_col:
-                    st.markdown("**X-axis · What do you want to compare across?**")
-                    x_group = st.selectbox(
-                        "Field group",
-                        x_group_options,
-                        key="cb_x_group_v2",
-                        help="Choose the type of data first, then select a field from that group.",
-                    )
-                    x_options = x_groups[x_group]
-                    preferred_x = "Department" if "Department" in x_options else x_options[0]
-                    if st.session_state.get("cb_dimension_v2") not in x_options:
-                        st.session_state.pop("cb_dimension_v2", None)
-                    dimension = st.selectbox(
-                        "X-axis · Group, category or explanatory variable",
-                        x_options,
-                        index=x_options.index(preferred_x),
-                        format_func=get_chart_builder_field_label,
-                        key="cb_dimension_v2",
-                        help="Examples: Department, Salary Grade, Age or a competency score.",
-                    )
-                    st.caption(
-                        f"Selected: **{get_chart_builder_field_label(dimension)}** "
-                        f"· {infos[dimension].data_type.value.title()}"
-                    )
-        
-                measure = None
-                if measure_mode == "Numeric data element":
-                    y_groups = {}
-                    for group_name, group_fields in CHART_FIELD_GROUPS.items():
-                        numeric_group_fields = [
-                            column for column in group_fields
-                            if column in numeric_fields and column != dimension
-                        ]
-                        if numeric_group_fields:
-                            y_groups[group_name] = numeric_group_fields
-        
-                    if not y_groups:
-                        st.error("No numeric measures are available. Choose a different X-axis field.")
-                        st.stop()
-        
-                    preferred_y_group = (
-                        "Actual competency scores"
-                        if "Actual competency scores" in y_groups
-                        else next(iter(y_groups))
-                    )
-                    y_group_options = list(y_groups)
-                    if st.session_state.get("cb_y_group_v2") not in y_group_options:
-                        st.session_state["cb_y_group_v2"] = preferred_y_group
-        
-                    with y_col:
-                        st.markdown("**Y-axis · Which numeric value should be analysed?**")
-                        y_group = st.selectbox(
-                            "Measure group",
-                            y_group_options,
-                            key="cb_y_group_v2",
-                            help="Choose between workforce metrics, actual competency scores, requirements or gaps.",
-                        )
-                        measure_options = y_groups[y_group]
-                        preferred_y = (
-                            "B1" if "B1" in measure_options
-                            else "Age" if "Age" in measure_options
-                            else measure_options[0]
-                        )
-                        if st.session_state.get("cb_measure_v2") not in measure_options:
-                            st.session_state.pop("cb_measure_v2", None)
-                        measure = st.selectbox(
-                            "Y-axis · Numeric measure",
-                            measure_options,
-                            index=measure_options.index(preferred_y),
-                            format_func=get_chart_builder_field_label,
-                            key="cb_measure_v2",
-                            help="Only numeric fields are shown. These are the actual values used to calculate the chart.",
-                        )
-                        st.caption(
-                            f"Selected: **{get_chart_builder_field_label(measure)}** "
-                            f"· {infos[measure].data_type.value.title()}"
-                        )
-                else:
-                    with y_col:
-                        st.markdown("**Y-axis · Personnel records**")
-                        st.markdown(
-                            "<div style='padding:0.85rem 1rem;border-radius:12px;"
-                            "background:rgba(0,161,156,0.08);border:1px solid rgba(0,161,156,0.18);'>"
-                            "<strong style='color:#008b86;'>Count of personnel</strong><br>"
-                            "<span style='color:#64748b;font-size:0.88rem;'>Each bar represents the number of records in an X-axis group.</span>"
-                            "</div>",
-                            unsafe_allow_html=True,
-                        )
-        
-                breakdown_options = [
-                    column for column in categorical_fields
-                    if column not in {dimension, measure, "Name", "Staff ID", "Email Address"}
-                    and infos[column].unique_count <= 30
-                ]
-                breakdown_options = ["(None)"] + breakdown_options
-                if st.session_state.get("cb_breakdown_v2") not in breakdown_options:
-                    st.session_state.pop("cb_breakdown_v2", None)
-                breakdown_selection = st.selectbox(
-                    "Optional breakdown · Compare groups within each category",
-                    ["(None)"] + breakdown_options,
-                    format_func=lambda value: (
-                        "No additional breakdown"
-                        if value == "(None)" else get_chart_builder_field_label(value)
-                    ),
-                    key="cb_breakdown_v2",
-                )
-                color_col = None if breakdown_selection == "(None)" else breakdown_selection
-        
-            with st.container(border=True):
-                st.markdown("### Data check")
-                x_info = infos[dimension]
-                y_info = None if measure is None else infos[measure]
-                x_valid = int(working_df[dimension].notna().sum())
-                x_unique = int(working_df[dimension].nunique(dropna=True))
-                stat_cols = [st.empty() for _ in range(4)]
-                stat_cols[0].metric("Personnel in scope", f"{len(working_df):,}")
-                stat_cols[1].metric("X values available", f"{x_valid:,}")
-                stat_cols[2].metric("Distinct X values", f"{x_unique:,}")
-                if measure is not None:
-                    y_numeric = pd.to_numeric(working_df[measure], errors="coerce")
-                    y_valid = int(y_numeric.notna().sum())
-                    stat_cols[3].metric("Valid Y values", f"{y_valid:,}")
-                    numeric_range = (
-                        f"{y_numeric.min():,.2f} to {y_numeric.max():,.2f}"
-                        if y_valid else "No numeric values"
-                    )
-                    st.caption(
-                        f"**X:** {get_chart_builder_field_label(dimension)} "
-                        f"({x_info.null_count:,} missing). "
-                        f"**Y:** {get_chart_builder_field_label(measure)} "
-                        f"({y_info.null_count:,} missing). Observed range: {numeric_range}."
-                    )
-                else:
-                    stat_cols[3].metric("X categories", f"{x_unique:,}")
-                    st.caption(
-                        f"Headcount by **{get_chart_builder_field_label(dimension)}**. "
-                        f"{x_info.null_count:,} records do not have an X-axis value and are excluded from the grouped chart."
-                    )
-        
-            if measure is None:
-                available_charts = ["Bar Chart", "Stacked Bar Chart", "Pie Chart"]
-                recommendation_names = ["Bar Chart", "Stacked Bar Chart", "Pie Chart"]
-                aggregation = "Count"
-                aggregated_chart_types = set(available_charts)
-            elif x_info.data_type == DataType.CATEGORICAL:
-                available_charts = ["Bar Chart", "Stacked Bar Chart", "Box Plot", "Pie Chart"]
-                recommendations = ChartCompatibility.recommend(
-                    x_info, y_info, aggregation="Average", color_col=color_col
-                )
-                recommendation_names = [item["chart"] for item in recommendations]
-                aggregated_chart_types = {"Bar Chart", "Stacked Bar Chart", "Pie Chart"}
-            elif x_info.data_type == DataType.DATETIME:
-                available_charts = ["Line Chart"]
-                recommendation_names = ["Line Chart"]
-                aggregated_chart_types = set()
-            else:
-                available_charts = ["Scatter Plot", "Line Chart", "Bubble Chart"]
-                recommendations = ChartCompatibility.recommend(
-                    x_info, y_info, aggregation="Average", color_col=color_col
-                )
-                recommendation_names = [item["chart"] for item in recommendations]
-                aggregated_chart_types = set()
-        
-            # Record-count charts are intentionally count-only and need no numeric Y.
-            # For all other modes, apply the shared axis/chart compatibility contract.
-            if measure is None:
-                compatible_names = {"Bar Chart", "Stacked Bar Chart", "Pie Chart"}
-            else:
-                compatibility = ChartCompatibility.get_compatible_charts(x_info, y_info)
-                compatible_names = {
-                    chart for chart, details in compatibility.items()
-                    if details["is_compatible"]
-                }
-            available_charts = [chart for chart in available_charts if chart in compatible_names]
-            if not available_charts:
-                st.error(
-                    "These axes are not compatible with a supported chart. "
-                    "Choose a categorical or date field for X, and a numeric measure for Y."
-                )
+        if st.session_state.get("cb_dimension_v2") not in x_options:
+            preferred_x = "Department" if "Department" in x_options else x_options[0]
+            st.session_state.pop("cb_dimension_v2", None)
+        else:
+            preferred_x = st.session_state["cb_dimension_v2"]
+        dimension = st.selectbox(
+            "X-axis field",
+            x_options,
+            index=x_options.index(preferred_x),
+            format_func=lambda value: (
+                f"{get_chart_builder_field_label(value)} · {_field_group_for(value) or 'Other'}"
+            ),
+            key="cb_dimension_v2",
+            help="Choose the category, date or numeric field to plot along the horizontal axis.",
+        )
+        x_info = infos[dimension]
+
+        measure = None
+        if measure_mode == "Numeric data element":
+            measure_options = [column for column in numeric_fields if column != dimension]
+            if not measure_options:
+                st.warning("No numeric Y-axis measure remains. Choose another X-axis field or use headcount mode.")
                 st.stop()
-        
-            st.markdown('<div class="cb-section-label">03 · Choose how to visualise</div>', unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown("### Select a chart style")
-                st.caption("The list only includes chart types that work with the data elements you selected.")
-                default_chart = next(
-                    (chart for chart in recommendation_names if chart in available_charts),
-                    available_charts[0],
+            if st.session_state.get("cb_measure_v2") not in measure_options:
+                preferred_y = (
+                    "B1" if "B1" in measure_options
+                    else "Age" if "Age" in measure_options
+                    else measure_options[0]
                 )
-                if st.session_state.get("cb_chart_type_v2") not in available_charts:
-                    st.session_state.pop("cb_chart_type_v2", None)
-                selected_chart = st.selectbox(
-                    "Chart type",
-                    available_charts,
-                    index=available_charts.index(default_chart),
-                    format_func=lambda chart: (
-                        f"{ChartCompatibility.CHART_TYPES[chart]['icon']} {chart}"
-                    ),
-                    key="cb_chart_type_v2",
+                st.session_state.pop("cb_measure_v2", None)
+            else:
+                preferred_y = st.session_state["cb_measure_v2"]
+            measure = st.selectbox(
+                "Y-axis measure",
+                measure_options,
+                index=measure_options.index(preferred_y),
+                format_func=lambda value: (
+                    f"{get_chart_builder_field_label(value)} · {_field_group_for(value) or 'Other'}"
+                ),
+                key="cb_measure_v2",
+                help="Choose the numeric value to analyse. Group labels help you find competency scores, requirements and gaps.",
+            )
+            y_info = infos[measure]
+        else:
+            st.info("Headcount mode plots the number of personnel records in each X-axis group.")
+            y_info = None
+
+        breakdown_options = [
+            column for column in categorical_fields
+            if column not in {dimension, measure, "Name", "Staff ID", "Email Address"}
+            and infos[column].unique_count <= 30
+        ]
+        breakdown_options = ["(None)"] + breakdown_options
+        if st.session_state.get("cb_breakdown_v2") not in breakdown_options:
+            st.session_state.pop("cb_breakdown_v2", None)
+        breakdown_selection = st.selectbox(
+            "Break down by",
+            breakdown_options,
+            format_func=lambda value: (
+                "No additional breakdown"
+                if value == "(None)" else get_chart_builder_field_label(value)
+            ),
+            key="cb_breakdown_v2",
+        )
+        color_col = None if breakdown_selection == "(None)" else breakdown_selection
+
+        # Determine valid chart types using the original compatibility contract.
+        if measure is None:
+            available_charts = ["Bar Chart", "Stacked Bar Chart", "Pie Chart"]
+            recommendation_names = list(available_charts)
+            aggregated_chart_types = set(available_charts)
+            aggregation = "Count"
+        elif x_info.data_type == DataType.CATEGORICAL:
+            available_charts = ["Bar Chart", "Stacked Bar Chart", "Box Plot", "Pie Chart"]
+            recommendations = ChartCompatibility.recommend(
+                x_info, y_info, aggregation="Average", color_col=color_col
+            )
+            recommendation_names = [item["chart"] for item in recommendations]
+            aggregated_chart_types = {"Bar Chart", "Stacked Bar Chart", "Pie Chart"}
+        elif x_info.data_type == DataType.DATETIME:
+            available_charts = ["Line Chart"]
+            recommendation_names = ["Line Chart"]
+            aggregated_chart_types = set()
+        else:
+            available_charts = ["Scatter Plot", "Line Chart", "Bubble Chart"]
+            recommendations = ChartCompatibility.recommend(
+                x_info, y_info, aggregation="Average", color_col=color_col
+            )
+            recommendation_names = [item["chart"] for item in recommendations]
+            aggregated_chart_types = set()
+
+        if measure is None:
+            compatible_names = {"Bar Chart", "Stacked Bar Chart", "Pie Chart"}
+        else:
+            compatibility = ChartCompatibility.get_compatible_charts(x_info, y_info)
+            compatible_names = {
+                chart for chart, details in compatibility.items()
+                if details["is_compatible"]
+            }
+        available_charts = [
+            chart for chart in available_charts if chart in compatible_names
+        ]
+        if not available_charts:
+            st.warning(
+                "These axes are not compatible with a supported chart. "
+                "Choose a categorical or date X-axis and a numeric Y-axis."
+            )
+            st.stop()
+
+        default_chart = next(
+            (chart for chart in recommendation_names if chart in available_charts),
+            available_charts[0],
+        )
+        if st.session_state.get("cb_chart_type_v2") not in available_charts:
+            st.session_state.pop("cb_chart_type_v2", None)
+        selected_chart = st.selectbox(
+            "Chart type",
+            available_charts,
+            index=available_charts.index(default_chart),
+            format_func=lambda chart: (
+                f"{ChartCompatibility.CHART_TYPES[chart]['icon']} {chart}"
+            ),
+            key="cb_chart_type_v2",
+        )
+
+        with st.expander("Chart appearance & aggregation", expanded=False):
+            if selected_chart in aggregated_chart_types and measure is not None:
+                aggregation_options = ["Average", "Median", "Sum", "Minimum", "Maximum"]
+                if st.session_state.get("cb_aggregation_v2") not in aggregation_options:
+                    st.session_state.pop("cb_aggregation_v2", None)
+                aggregation = st.selectbox(
+                    "Summarise Y values by",
+                    aggregation_options,
+                    index=0,
+                    key="cb_aggregation_v2",
+                    help="Average is the default for fair comparisons across groups.",
                 )
-                st.caption(ChartCompatibility.CHART_TYPES[selected_chart]["description"])
-                if selected_chart == "Scatter Plot":
-                    st.info("Scatter plot tip: choose two numeric fields to explore whether they move together.")
-                elif selected_chart == "Bubble Chart":
-                    st.info("Bubble chart tip: choose a third numeric field for bubble size to add another dimension.")
-                elif selected_chart == "Box Plot":
-                    st.info("Box plot tip: use a categorical X-axis and a numeric Y-axis to compare score distributions.")
-            
-                if selected_chart in aggregated_chart_types and measure is not None:
-                    aggregation_options = ["Average", "Median", "Sum", "Minimum", "Maximum"]
-                    if st.session_state.get("cb_aggregation_v2") not in aggregation_options:
-                        st.session_state.pop("cb_aggregation_v2", None)
-                    aggregation = st.selectbox(
-                        "How should the Y values be summarised?",
-                        aggregation_options,
-                        index=0,
-                        key="cb_aggregation_v2",
-                        help=(
-                            "Average is the default for fair comparisons across groups. "
-                            "Sum adds values; Median shows the middle value."
-                        ),
-                    )
-                    if aggregation == "Average":
-                        aggregation_note = "Average of the selected numeric measure within each X-axis group."
-                    elif aggregation == "Median":
-                        aggregation_note = "Median of the selected numeric measure within each X-axis group."
-                    elif aggregation == "Sum":
-                        aggregation_note = "Sum of the selected numeric measure within each X-axis group."
-                    elif aggregation == "Minimum":
-                        aggregation_note = "Lowest valid numeric value within each X-axis group."
-                    else:
-                        aggregation_note = "Highest valid numeric value within each X-axis group."
-                    st.caption(aggregation_note)
-                elif selected_chart not in aggregated_chart_types:
-                    aggregation = "Average"
-                    st.caption("Individual observations are plotted. No group aggregation is applied.")
-            
-                if selected_chart in {"Scatter Plot", "Bubble Chart"}:
-                    size_options = [
-                        column for column in numeric_fields if column not in {dimension, measure}
-                    ]
-                    if selected_chart == "Bubble Chart" and not size_options:
-                        st.warning("Bubble Chart needs a third numeric field for bubble size.")
-                        st.stop()
+            elif measure is not None:
+                aggregation = "Average"
+                st.caption("Individual observations are plotted. No group aggregation is applied.")
+            else:
+                aggregation = "Count"
+                st.caption("Each category is represented by a personnel-record count.")
+
+            size_col = None
+            if selected_chart in {"Scatter Plot", "Bubble Chart"}:
+                size_options = [
+                    column for column in numeric_fields
+                    if column not in {dimension, measure}
+                ]
+                if selected_chart == "Bubble Chart" and not size_options:
+                    st.warning("Bubble Chart needs a third numeric field for bubble size.")
+                else:
                     size_selection = st.selectbox(
                         "Bubble size" if selected_chart == "Bubble Chart" else "Point size (optional)",
                         ["(None)"] + size_options,
                         format_func=lambda value: (
-                            "No point-size encoding" if value == "(None)" else get_chart_builder_field_label(value)
+                            "No point-size encoding"
+                            if value == "(None)" else get_chart_builder_field_label(value)
                         ),
                         key="cb_size_v2",
                     )
                     size_col = None if size_selection == "(None)" else size_selection
                     if selected_chart == "Bubble Chart" and size_col is None:
-                        st.info("Select a numeric bubble-size field to continue.")
-                        st.stop()
-                else:
-                    size_col = None
-            
-                if selected_chart in {"Bar Chart", "Stacked Bar Chart", "Pie Chart"}:
-                    top_n_options = ["All", 5, 10, 20, 50]
-                    top_n_selection = st.selectbox(
-                        "Category limit",
-                        top_n_options,
-                        index=2,
-                        key="cb_top_n_v2",
-                        help="Limits the chart to the largest categories by the plotted value.",
-                    )
-                    top_n = None if top_n_selection == "All" else int(top_n_selection)
-                else:
-                    top_n = None
-            
-            st.markdown('<div class="cb-section-label">04 · Create your chart</div>', unsafe_allow_html=True)
-            with st.container(border=True):
-                st.markdown("### Generate chart")
-                generate_requested = st.button(
-                    "📊 Generate chart",
-                    type="primary",
-                    use_container_width=True,
-                    key="cb_generate_v2",
+                        st.info("Select a numeric bubble-size field to enable chart generation.")
+            if selected_chart in {"Bar Chart", "Stacked Bar Chart", "Pie Chart"}:
+                top_n_options = ["All", 5, 10, 20, 50]
+                top_n_selection = st.selectbox(
+                    "Category limit",
+                    top_n_options,
+                    index=2,
+                    key="cb_top_n_v2",
+                    help="Show all categories or limit the chart to the largest groups.",
                 )
-                live_update = st.checkbox(
-                    "Live update",
-                    value=False,
-                    key="cb_live_update_v2",
-                    help=(
-                        "When enabled, the chart refreshes automatically after you change a filter, "
-                        "axis, chart type, aggregation or other chart setting. Leave it off to use "
-                        "the Generate chart button manually."
-                    ),
-                )
-                st.caption(
-                    "Live update is optional. Keep it off while configuring, or enable it to see "
-                    "changes reflected without pressing Generate chart each time."
-                )
-        
-            current_config = {
-                "chart_type": selected_chart,
-                "dimension": dimension,
-                "measure": measure,
-                "aggregation": aggregation,
-                "breakdown": breakdown_selection,
-                "measure_mode": measure_mode,
-                "size_col": size_col,
-                "is_aggregated": selected_chart in aggregated_chart_types,
-                "rows": len(working_df),
-                "top_n": top_n,
-                "filter_signature": tuple(active_filter_labels),
-            }
-            should_generate = should_refresh_chart(
-                live_update=live_update,
-                generate_clicked=generate_requested,
-                last_meta=st.session_state.get("cb_last_chart_meta"),
-                current_config=current_config,
-            )
-        
-            if should_generate:
-                try:
-                    with st.spinner("Updating chart..." if live_update else "Generating chart..."):
-                        if measure is None:
-                            chart_title = f"Personnel records by {get_chart_builder_field_label(dimension)}"
-                        elif selected_chart in aggregated_chart_types:
-                            chart_title = (
-                                f"{aggregation} {get_chart_builder_field_label(measure)} "
-                                f"by {get_chart_builder_field_label(dimension)}"
-                            )
-                        else:
-                            chart_title = (
-                                f"{get_chart_builder_field_label(measure)} "
-                                f"by {get_chart_builder_field_label(dimension)}"
-                            )
-        
-                        # A pie chart has one slice per X category. A breakdown would
-                        # create subgroup slices and distort non-additive statistics.
-                        chart_color_col = None if selected_chart == "Pie Chart" else color_col
-                        figure = builder.create_chart(
-                            selected_chart,
-                            x_col=dimension,
-                            y_col=measure,
-                            color_col=chart_color_col,
-                            size_col=size_col,
-                            title=chart_title,
-                            aggregation=aggregation,
-                            top_n=top_n,
+                top_n = None if top_n_selection == "All" else int(top_n_selection)
+            else:
+                top_n = None
+
+        st.markdown("---")
+        live_update = st.checkbox(
+            "Live update",
+            value=False,
+            key="cb_live_update_v2",
+            help=(
+                "Automatically refresh the chart when workforce filters or chart settings change. "
+                "Disable this to update only when Generate chart is clicked."
+            ),
+        )
+        st.caption(
+            "Live update is off by default. Enable it when you want changes reflected immediately."
+        )
+        generate_requested = st.button(
+            "📊 Generate chart",
+            type="primary",
+            use_container_width=True,
+            key="cb_generate_v2",
+        )
+
+        # Track the complete chart contract plus the filtered workforce scope.
+        current_config = {
+            "chart_type": selected_chart,
+            "dimension": dimension,
+            "measure": measure,
+            "aggregation": aggregation,
+            "breakdown": breakdown_selection,
+            "measure_mode": measure_mode,
+            "size_col": size_col,
+            "is_aggregated": selected_chart in aggregated_chart_types,
+            "rows": len(working_df),
+            "top_n": top_n,
+            "filter_signature": tuple(active_filter_labels),
+        }
+        should_generate = should_refresh_chart(
+            live_update=live_update,
+            generate_clicked=generate_requested,
+            last_meta=st.session_state.get("cb_last_chart_meta"),
+            current_config=current_config,
+        )
+
+        if should_generate:
+            try:
+                with st.spinner("Updating chart..." if live_update else "Generating chart..."):
+                    if measure is None:
+                        chart_title = f"Personnel records by {get_chart_builder_field_label(dimension)}"
+                    elif selected_chart in aggregated_chart_types:
+                        chart_title = (
+                            f"{aggregation} {get_chart_builder_field_label(measure)} "
+                            f"by {get_chart_builder_field_label(dimension)}"
                         )
-        
-                        if selected_chart in aggregated_chart_types:
-                            chart_data = builder.aggregate(
+                    else:
+                        chart_title = (
+                            f"{get_chart_builder_field_label(measure)} "
+                            f"by {get_chart_builder_field_label(dimension)}"
+                        )
+
+                    # Pie charts represent one value per X category. A breakdown
+                    # would create subgroup slices and distort non-additive statistics.
+                    chart_color_col = None if selected_chart == "Pie Chart" else color_col
+                    figure = builder.create_chart(
+                        selected_chart,
+                        x_col=dimension,
+                        y_col=measure,
+                        color_col=chart_color_col,
+                        size_col=size_col,
+                        title=chart_title,
+                        aggregation=aggregation,
+                        top_n=top_n,
+                    )
+
+                    if selected_chart in aggregated_chart_types:
+                        chart_data = builder.aggregate(
+                            dimension,
+                            measure,
+                            aggregation,
+                            chart_color_col,
+                            top_n,
+                        )
+                        if not {"Records", "Valid Values"}.issubset(chart_data.columns):
+                            chart_data = _attach_aggregation_diagnostics(
+                                chart_data,
+                                working_df,
                                 dimension,
                                 measure,
                                 aggregation,
                                 chart_color_col,
-                                top_n,
                             )
-                            if not {"Records", "Valid Values"}.issubset(chart_data.columns):
-                                chart_data = _attach_aggregation_diagnostics(
-                                    chart_data,
-                                    working_df,
-                                    dimension,
-                                    measure,
-                                    aggregation,
-                                    chart_color_col,
-                                )
-                            is_aggregated = True
-                        else:
-                            required = [dimension, measure]
-                            if size_col:
-                                required.append(size_col)
-                            plotted_columns = list(required)
-                            if chart_color_col and chart_color_col not in plotted_columns:
-                                plotted_columns.append(chart_color_col)
-                            chart_data = working_df.dropna(subset=required)[plotted_columns].copy()
-                            is_aggregated = False
-        
-                        st.session_state["cb_last_chart"] = figure
-                        st.session_state["cb_last_chart_data"] = chart_data
-                        st.session_state["cb_last_chart_source_data"] = working_df.copy()
-                        st.session_state["cb_last_chart_meta"] = {
-                            **current_config,
-                            "is_aggregated": is_aggregated,
-                        }
-                except (ValueError, KeyError) as exc:
-                    st.error(f"Chart could not be generated: {exc}")
-                except Exception as exc:
-                    st.error(f"Unexpected chart error: {exc}")
-                    with st.expander("Technical details"):
-                        st.exception(exc)
-        
-        
+                        is_aggregated = True
+                    else:
+                        required = [dimension]
+                        if measure is not None:
+                            required.append(measure)
+                        if size_col:
+                            required.append(size_col)
+                        plotted_columns = list(required)
+                        if chart_color_col and chart_color_col not in plotted_columns:
+                            plotted_columns.append(chart_color_col)
+                        chart_data = working_df.dropna(subset=required)[plotted_columns].copy()
+                        is_aggregated = False
+
+                    st.session_state["cb_last_chart"] = figure
+                    st.session_state["cb_last_chart_data"] = chart_data
+                    st.session_state["cb_last_chart_source_data"] = working_df.copy()
+                    st.session_state["cb_last_chart_meta"] = {
+                        **current_config,
+                        "is_aggregated": is_aggregated,
+                    }
+            except (ValueError, KeyError) as exc:
+                st.error(f"Chart could not be generated: {exc}")
+            except Exception as exc:
+                st.error(f"Unexpected chart error: {exc}")
+                with st.expander("Technical details"):
+                    st.exception(exc)
 
 with chart_col:
     st.markdown("### Chart workspace")
     st.caption("Your generated chart, supporting values and export actions stay in this wide workspace.")
+    with st.expander("Data check & diagnostics", expanded=False):
+        st.caption("A live summary of the filtered records currently in scope.")
+        diagnostic_cols = st.columns(4)
+        diagnostic_cols[0].metric("Personnel in scope", f"{len(working_df):,}")
+        diagnostic_cols[1].metric(
+            "X values available",
+            f"{int(working_df[dimension].notna().sum()):,}",
+        )
+        diagnostic_cols[2].metric(
+            "Distinct X values",
+            f"{int(working_df[dimension].nunique(dropna=True)):,}",
+        )
+        if measure is not None:
+            diagnostic_y = pd.to_numeric(working_df[measure], errors="coerce")
+            diagnostic_cols[3].metric("Valid Y values", f"{int(diagnostic_y.notna().sum()):,}")
+            if diagnostic_y.notna().any():
+                st.caption(
+                    f"Y range: {diagnostic_y.min():,.2f} to {diagnostic_y.max():,.2f} · "
+                    f"Missing: {int(diagnostic_y.isna().sum()):,}"
+                )
+        else:
+            diagnostic_cols[3].metric(
+                "X categories",
+                f"{int(working_df[dimension].nunique(dropna=True)):,}",
+            )
+        st.caption(
+            f"X field: {get_chart_builder_field_label(dimension)} · "
+            f"Data type: {infos[dimension].data_type.value.title()}"
+        )
     st.markdown('<div class="cb-section-label">05 · Review your results</div>', unsafe_allow_html=True)
     with st.container(border=True):
         if "cb_last_chart" in st.session_state:
