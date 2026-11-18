@@ -87,6 +87,7 @@ def test_chart_configuration_does_not_contain_workforce_filter_widgets():
     page = Path("v2/pages/06_Chart_Builder.py").read_text(encoding="utf-8")
     controls = page.split('chart_controls_col, chart_workspace_col = st.columns([3, 9]', 1)[1]
     controls = controls.split("with chart_workspace_col:", 1)[0]
-    assert "st.text_input(" not in controls or "Chart title" in controls
+    assert "st.text_input(" not in controls
     assert "st.multiselect(" not in controls
-    assert '"Department"' not in controls or "get_chart_builder_field_label" in controls
+    assert "with chart_workspace_col:" in page
+    assert "with chart_col:" not in page
