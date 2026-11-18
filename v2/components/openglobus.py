@@ -105,7 +105,7 @@ html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:t
 <div id="legend"><span class="legend-dot" style="width:7px;height:7px"></span> Lower <span class="legend-dot" style="width:12px;height:12px"></span> Medium <span class="legend-dot" style="width:17px;height:17px"></span> Higher <span style="margin-left:5px">· Bubble size = personnel</span></div>
 <div id="attribution">OpenGlobus · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></div></div>
 <script type="module">
-import {Globe,GlobusRgbTerrain,OpenStreetMap,control,Vector,Entity,LonLat} from "__JS__";
+import {Globe,GlobusRgbTerrain,OpenStreetMap,control,Vector,Entity,LonLat,Vec3} from "__JS__";
 
 const records=__PAYLOAD__;
 const status=document.getElementById("status");
@@ -385,13 +385,25 @@ try{
   }
 
   // Start on the nationality with the largest workforce representation.
+  // Supply the global north axis explicitly: setLonLat's default up vector is
+  // the camera's radial normal, which is parallel to its view direction when
+  // looking at the globe centre and can collapse the camera's right/up basis.
+  // Fall back to a perpendicular world axis only for a near-pole focus.
   // 4.5 Mm is a country-level view; 12 Mm showed nearly the whole globe.
   if(globe.planet?.camera){
-    globe.planet.camera.setLonLat(new LonLat(
-      defaultFocusRecord.longitude,
-      defaultFocusRecord.latitude,
-      4500000
-    ));
+    const latitudeRadians=defaultFocusRecord.latitude*Math.PI/180;
+    const northUp=Math.abs(Math.cos(latitudeRadians))<1e-3
+      ? new Vec3(0,1,0)
+      : Vec3.NORTH;
+    globe.planet.camera.setLonLat(
+      new LonLat(
+        defaultFocusRecord.longitude,
+        defaultFocusRecord.latitude,
+        4500000
+      ),
+      undefined,
+      northUp
+    );
   }
 
   globe.renderer.events.on("mousemove",event=>{
