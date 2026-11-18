@@ -98,6 +98,7 @@ from config import (  # noqa: E402
 from data_loader import load_master_data, load_ruler_and_tech_mapping  # noqa: E402
 from models import init_db, get_session as db_get_session, Personnel, Assessment  # noqa: E402
 from services.heatmap_service import (  # noqa: E402
+    PERSONNEL_COLUMN_MAP,
     ensure_employment_type_filter,
     merge_database_personnel_for_heatmap,
 )
@@ -179,6 +180,88 @@ def _normalise_overlay_key(value):
     return key.casefold()
 
 
+def _has_database_profile_value(value) -> bool:
+    """Return whether a database profile value should replace the workbook value."""
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(value.strip()) if isinstance(value, str) else True
+
+
+# The workbook remains the baseline for competency scores and career-ruler
+# requirements. Personnel profile fields, however, are editable in the
+# database UI and must be read back from SQLite for every page that consumes
+# get_master_data(). These aliases cover historical workbook header variants.
+PERSONNEL_PROFILE_COLUMN_MAP = {
+    **PERSONNEL_COLUMN_MAP,
+    "Current Location:": "current_assignment",
+    "Age Promoted to Staff or Principal": "age_promoted",
+    "Last Assesment Date": "last_assessment_date",
+    "Comment/Suggestion": "comment",
+    "Assesor1": "assessor1",
+    "Assessor1": "assessor1",
+    "Resource/SME": "resource_sme",
+}
+
+
+def _overlay_database_personnel_fields(
+    df: pd.DataFrame,
+    personnel_rows,
+) -> pd.DataFrame:
+    """Overlay non-empty SQLite personnel fields onto workbook rows.
+
+    Staff ID is the stable join key, so a person's name can safely change
+    without breaking the link between their workbook competency record and
+    their database profile. A unique exact-name fallback supports legacy
+    workbook rows that do not have a usable Staff ID.
+
+    Database profile fields win when populated. Blank database values do not
+    erase useful legacy workbook values; Assessment Level retains its existing
+    explicit-NULL handling in _overlay_database_assessment_levels().
+    """
+    if df is None or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    by_staff_id = {}
+    name_candidates = {}
+    for person in personnel_rows:
+        staff_key = _normalise_overlay_key(getattr(person, "staff_id", None))
+        name_key = _normalise_overlay_key(getattr(person, "name", None))
+        if staff_key:
+            by_staff_id[staff_key] = person
+        if name_key:
+            name_candidates.setdefault(name_key, []).append(person)
+
+    by_name = {
+        name: candidates[0]
+        for name, candidates in name_candidates.items()
+        if len(candidates) == 1
+    }
+
+    out = df.copy()
+    for index, row in out.iterrows():
+        staff_key = _normalise_overlay_key(row.get("Staff ID"))
+        name_key = _normalise_overlay_key(row.get("Name"))
+        person = by_staff_id.get(staff_key) if staff_key else None
+        if person is None and name_key:
+            person = by_name.get(name_key)
+        if person is None:
+            continue
+
+        for column, attribute in PERSONNEL_PROFILE_COLUMN_MAP.items():
+            if column not in out.columns:
+                continue
+            value = getattr(person, attribute, None)
+            if _has_database_profile_value(value):
+                out.at[index, column] = value
+
+    return out
+
+
 def _overlay_database_assessment_levels(df: pd.DataFrame, personnel_rows) -> pd.DataFrame:
     """Make SQLite's editable assessment level authoritative over the Excel snapshot.
 
@@ -220,28 +303,34 @@ def _overlay_database_assessment_levels(df: pd.DataFrame, personnel_rows) -> pd.
 
 
 def get_master_data():
-    """Load workbook data, then overlay assessment levels edited in SQLite.
+    """Load the workbook baseline and overlay editable personnel data from SQLite.
 
-    Excel remains the bulk-import source, while SQLite is the CRUD source of
-    truth for assessment level. This keeps database edits visible across every
-    page that consumes the shared master dataframe.
+    The workbook remains authoritative for competency scores and ruler
+    requirements. SQLite is authoritative for editable personnel profile
+    fields, including Name, because Admin CRUD writes those values to the
+    database. Assessment Level keeps its explicit-NULL semantics.
     """
     path, modified_ns, file_size = _excel_cache_identity()
     df = _get_master_data_cached(path, modified_ns, file_size)
     session = None
     try:
         session = db_get_session(get_database_engine())
-        rows = (
-            session.query(Personnel.staff_id, Personnel.name, Personnel.assessment_level)
+        personnel_rows = (
+            session.query(Personnel)
             .filter(Personnel.is_deleted.is_(False))
             .all()
         )
-        return _overlay_database_assessment_levels(df, rows)
+        df = _overlay_database_personnel_fields(df, personnel_rows)
+        assessment_rows = [
+            (person.staff_id, person.name, person.assessment_level)
+            for person in personnel_rows
+        ]
+        return _overlay_database_assessment_levels(df, assessment_rows)
     except Exception as exc:
         # Do not silently imply that CRUD changes are reflected if the database
         # overlay cannot be read. Keep the dashboard available and surface the
         # data-source problem to the operator.
-        st.warning(f"Could not refresh Assessment Level values from SQLite: {exc}")
+        st.warning(f"Could not refresh personnel profile values from SQLite: {exc}")
         return df
     finally:
         if session is not None:
