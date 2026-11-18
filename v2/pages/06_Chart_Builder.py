@@ -656,6 +656,7 @@ with chart_controls_col:
         control_header, reset_chart_col = st.columns([3, 2], vertical_alignment="center")
         with control_header:
             st.markdown("### Chart setup")
+        st.markdown('<div class="cb-section-label">02 · Configure your chart</div>', unsafe_allow_html=True)
         with reset_chart_col:
             if st.button(
                 "Reset chart",
@@ -842,6 +843,7 @@ with chart_controls_col:
             )
             st.stop()
 
+        st.markdown('<div class="cb-section-label">03 · Choose how to visualise</div>', unsafe_allow_html=True)
         default_chart = next(
             (chart for chart in recommendation_names if chart in available_charts),
             available_charts[0],
@@ -911,7 +913,7 @@ with chart_controls_col:
             else:
                 top_n = None
 
-        st.markdown("---")
+        st.markdown('<div class="cb-section-label">04 · Create your chart</div>', unsafe_allow_html=True)
         live_update = st.checkbox(
             "Live update",
             value=False,
