@@ -807,10 +807,14 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
 
         existing = session.query(Personnel).filter_by(staff_id=sid).first()
 
-        # If the Staff ID is already used by a DIFFERENT person (e.g. shared
-        # placeholder "UPTREX" ID across 20 trainees), mint a unique ID instead
-        # of dropping this record.
-        if existing and existing.name != row.get("Name"):
+        # UPTREX is the known shared placeholder used by multiple trainees.
+        # For real Staff IDs, the ID is authoritative: a changed name is a
+        # profile update, not evidence that a second person should be created.
+        if (
+            existing
+            and existing.name != row.get("Name")
+            and sid.strip().casefold() == "uptrex"
+        ):
             sid = f"{sid}-{idx}"
             existing = session.query(Personnel).filter_by(staff_id=sid).first()
 
