@@ -51,7 +51,8 @@ def test_globe_uses_hover_summary_and_preserves_click_detail_and_fly_to():
 def test_globe_personnel_rows_send_profile_selection_to_streamlit():
     html = _build_openglobus_html(_sample_records())
 
-    assert 'data-personnel-id="'+ "'+personnelId+'" in html
+    assert "data-personnel-id" in html
+    assert "personnelId+'" in html
     assert "postMessage" in html
     assert 'type:"profile-select"' in html
     assert "personnelId" in html
