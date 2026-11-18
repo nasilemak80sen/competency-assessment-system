@@ -75,3 +75,10 @@ def test_globe_initially_focuses_the_largest_nationality_at_country_level_zoom()
         "      defaultFocusRecord.latitude,\n      4500000\n    )"
     ) in html
     assert "12000000" not in html
+
+
+def test_globe_uses_supported_north_locked_navigation_mode():
+    html = _build_openglobus_html(_sample_records())
+
+    assert 'navigation:{mode:"lockNorth",inertia:.18,zoomSpeed:1.15}' in html
+    assert 'navigation:{mode:"north"' not in html
