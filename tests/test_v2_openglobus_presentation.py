@@ -1,5 +1,8 @@
 """Regression coverage for the OpenGlobus nationality-globe presentation."""
-from v2.components.openglobus import _build_openglobus_html
+from v2.components.openglobus import (
+    _PROFILE_BRIDGE_JS,
+    _build_openglobus_html,
+)
 
 
 def _sample_records():
@@ -45,15 +48,35 @@ def test_globe_uses_hover_summary_and_preserves_click_detail_and_fly_to():
     assert "Personnel directory" in html
 
 
-def test_globe_personnel_rows_link_to_the_correct_assessment_profile():
+def test_globe_personnel_rows_send_profile_selection_to_streamlit():
     html = _build_openglobus_html(_sample_records())
 
-    assert "assessmentProfileUrl" in html
-    assert 'target="_blank"' in html
-    assert "personnel_id" in html
-    assert "individual-assessment" in html
+    assert 'data-personnel-id="'+ "'+personnelId+'" in html
+    assert "postMessage" in html
+    assert 'type:"profile-select"' in html
+    assert "personnelId" in html
     assert "View profile" in html
     assert "Profile not linked" in html
+    assert "assessmentProfileUrl" not in html
+    assert 'aria-label="Open assessment profile' in html
+    assert 'target="_blank" rel="noopener" aria-label="Open assessment profile' not in html
+
+
+def test_streamlit_bridge_accepts_only_the_globe_iframe_and_triggers_profile_selection():
+    assert 'event.source !== frame.contentWindow' in _PROFILE_BRIDGE_JS
+    assert 'message.source !== "re-workforce-openglobus"' in _PROFILE_BRIDGE_JS
+    assert 'message.type !== "profile-select"' in _PROFILE_BRIDGE_JS
+    assert 'setTriggerValue("profile_selected", personnelId)' in _PROFILE_BRIDGE_JS
+
+
+def test_dashboard_uses_session_aware_streamlit_page_navigation():
+    from pathlib import Path
+
+    dashboard = Path("v2/pages/01_Dashboard.py").read_text(encoding="utf-8")
+
+    assert 'st.session_state["requested_personnel_id"] = selected_profile_id' in dashboard
+    assert 'st.switch_page("pages/05_Individual_Assessment.py")' in dashboard
+    assert 'target="_blank"' not in dashboard
 
 
 def test_globe_initially_focuses_the_largest_nationality_at_country_level_zoom():
