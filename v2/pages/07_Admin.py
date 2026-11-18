@@ -12,6 +12,7 @@ from config import (
     ASSESSMENT_LEVELS,
     CHAT_STATUS_OPTIONS,
     COMP_TYPES,
+    COMPETENCY_FULLNAMES,
     DEPARTMENTS,
     POSITIONS,
     POSITION_TO_SG,
@@ -23,7 +24,11 @@ from services.personnel_service import (
     delete as delete_personnel,
     update as update_personnel,
 )
-from services.assessment_service import add_assessment, add_competency_scores
+from services.assessment_service import (
+    get_assessment_history,
+    get_assessment_scores,
+    save_assessment_transaction,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -550,7 +555,7 @@ def _save_personnel_form(form_key: str, prefix: str, row: dict | None, master_df
 render_navigation()
 render_header(
     "👥 Personnel & Database Management",
-    "Find personnel records, maintain employee profiles, and manage archive status.",
+    "Maintain personnel profiles separately from competency assessments, with a dedicated assessment history.",
 )
 
 # Workbook data is used only as a supplementary source for score/assessment
@@ -627,7 +632,7 @@ directory_tab, add_tab, edit_tab, assessment_tab, archive_tab = st.tabs(
         "📋 Personnel Directory",
         "➕ Add Personnel",
         "✏️ Edit Profile",
-        "🧾 Assessment Entry",
+        "🧾 Assessment Management",
         "🗄️ Archive & Restore",
     ]
 )
@@ -860,20 +865,33 @@ with edit_tab:
 
 
 # ---------------------------------------------------------------------------
-# Assessment Entry — kept on the existing service path (Phase 2 will redesign)
+# Assessment Management — entry, competency matrix, and assessment history
 # ---------------------------------------------------------------------------
 
 with assessment_tab:
-    st.subheader("Assessment entry")
-    st.caption("Create a new assessment for a selected employee. Assessment workflow redesign is reserved for Phase 2.")
+    st.subheader("Assessment Management")
+    st.caption(
+        "Assessment records are maintained separately from employee profiles. "
+        "Each submission stores one dated assessment and its complete 24-competency matrix."
+    )
+
+    saved_notice = st.session_state.pop("_assessment_saved_notice", None)
+    if saved_notice:
+        st.success(saved_notice)
+
     if active_people.empty:
         st.info("Add or import personnel before creating an assessment.")
     else:
         assessment_labels = {
-            int(record["id"]): f"{record['name']} · {record['staff_id']}"
+            int(record["id"]): (
+                f"{record['name']} · {record['staff_id']} · "
+                f"{record.get('department') or 'Department not specified'}"
+            )
             for _, record in active_people.sort_values(["name", "staff_id"]).iterrows()
         }
-        assessment_label_to_id = {label: person_id for person_id, label in assessment_labels.items()}
+        assessment_label_to_id = {
+            label: person_id for person_id, label in assessment_labels.items()
+        }
         current_assessment_id = st.session_state.get("admin_selected_person_id")
         assessment_options = list(assessment_label_to_id)
         assessment_default = (
@@ -886,6 +904,7 @@ with assessment_tab:
             assessment_options,
             index=assessment_default,
             key="admin_assessment_person_picker",
+            help="Choose the employee whose assessment you are recording or reviewing.",
         )
         assessment_person_id = assessment_label_to_id[assessment_person_label]
         assessment_person = active_people[
@@ -893,103 +912,342 @@ with assessment_tab:
         ].iloc[0].to_dict()
         assessment_row = _profile_row(assessment_person, master_df)
 
-        st.markdown(
-            f"**{assessment_person.get('name', 'Unnamed')}** · "
-            f"{assessment_person.get('staff_position') or 'Position not specified'} · "
-            f"{assessment_person.get('department') or 'Department not specified'} · "
-            f"{assessment_person.get('sg') or 'SG not specified'}"
-        )
-        with st.form(f"assessment_entry_form_{assessment_person_id}"):
-            c1, c2 = st.columns(2)
-            with c1:
-                assessment_date = st.date_input(
-                    "Assessment date", value=date.today(),
-                    format="DD/MM/YYYY", key=f"admin_assessment_date_{assessment_person_id}",
-                )
-                level_options = _assessment_level_options(
-                    master_df, _text(assessment_row, "Assessment Level")
-                )
-                current_level = _text(assessment_row, "Assessment Level", level_options[0])
-                level = st.selectbox(
-                    "Assessment level", level_options,
-                    index=level_options.index(current_level) if current_level in level_options else 0,
-                    key=f"admin_assessment_level_{assessment_person_id}",
-                )
-            with c2:
-                assessor1_entry = st.text_input(
-                    "Assessor 1", key=f"admin_assessor1_{assessment_person_id}"
-                )
-                supervisor_entry = st.text_input(
-                    "Supervisor", key=f"admin_supervisor_{assessment_person_id}"
-                )
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.markdown(f"**{assessment_person.get('name', 'Unnamed')}**")
+            c2.metric("Staff position", assessment_person.get("staff_position") or "—")
+            c3.metric("Department", assessment_person.get("department") or "—")
+            c4.metric("Salary grade", assessment_person.get("sg") or "—")
 
-            score_inputs = {}
-            st.markdown("#### Competency scores")
-            st.caption("Enter Actual and Target scores from 0 to 5. Existing workbook values are shown where available.")
-            for competency_type, info in COMP_TYPES.items():
-                with st.expander(f"{info['label']} ({competency_type})", expanded=(competency_type == "B")):
-                    for code in info["cols"]:
-                        actual_previous = pd.to_numeric(
-                            assessment_row.get(code), errors="coerce"
-                        )
-                        target_previous = pd.to_numeric(
-                            assessment_row.get(f"R-{code}"), errors="coerce"
-                        )
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            actual = st.number_input(
-                                f"{code} Actual", min_value=0.0, max_value=5.0,
-                                value=float(actual_previous) if pd.notna(actual_previous) else 0.0,
-                                step=0.5, key=f"admin_act_{code}_{assessment_person_id}",
-                            )
-                        with c2:
-                            target = st.number_input(
-                                f"{code} Target", min_value=0.0, max_value=5.0,
-                                value=float(target_previous) if pd.notna(target_previous) else 3.0,
-                                step=0.5, key=f"admin_req_{code}_{assessment_person_id}",
-                            )
-                        score_inputs[code] = {
-                            "actual": actual,
-                            "req": target,
-                            "gap": round(max(target - actual, 0), 2),
-                        }
+        history = []
+        latest_scores = {}
+        history_load_error = None
+        history_session = open_session()
+        try:
+            history = get_assessment_history(history_session, assessment_person_id)
+            if history:
+                latest_scores = get_assessment_scores(
+                    history_session, history[0]["id"]
+                )
+        except Exception as exc:
+            history_load_error = str(exc)
+        finally:
+            history_session.close()
 
-            save_assessment = st.form_submit_button(
-                "Save assessment", type="primary", use_container_width=True
+        if history_load_error:
+            st.warning(
+                "Assessment history could not be loaded. New assessment entry remains "
+                f"available, but database prefill may be incomplete. Details: {history_load_error}"
             )
 
-        if save_assessment:
-            session = open_session()
-            try:
-                ok, message, assessment_id = add_assessment(
-                    session,
-                    assessment_person_id,
-                    {
-                        "assessment_date": assessment_date,
-                        "assessment_level": None if level == "Not specified" else level,
-                        "assessor1": assessor1_entry.strip() or None,
-                        "supervisor": supervisor_entry.strip() or None,
+        entry_tab, history_tab = st.tabs(
+            ["➕ New Assessment", f"🕘 Assessment History ({len(history)})"]
+        )
+
+        with entry_tab:
+            st.markdown("#### Assessment details")
+            st.caption(
+                "Enter the assessment metadata, then complete the competency matrix below. "
+                "The save operation validates and commits the full record as one transaction."
+            )
+
+            latest_history = history[0] if history else {}
+            assessment_nonce = int(
+                st.session_state.get(f"assessment_form_nonce_{assessment_person_id}", 0)
+            )
+            assessment_form_key = (
+                f"assessment_entry_form_{assessment_person_id}_{assessment_nonce}"
+            )
+            with st.form(assessment_form_key, clear_on_submit=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    assessment_date = st.date_input(
+                        "Assessment date *",
+                        value=date.today(),
+                        format="DD/MM/YYYY",
+                        key=f"admin_assessment_date_{assessment_person_id}_{assessment_nonce}",
+                    )
+                    level_options = _assessment_level_options(
+                        master_df, _text(assessment_row, "Assessment Level")
+                    )
+                    current_level = _text(assessment_row, "Assessment Level") or "Not specified"
+                    if current_level not in level_options:
+                        level_options.append(current_level)
+                    level = st.selectbox(
+                        "Assessment level",
+                        level_options,
+                        index=level_options.index(current_level),
+                        key=f"admin_assessment_level_{assessment_person_id}_{assessment_nonce}",
+                    )
+                with c2:
+                    assessor1_entry = st.text_input(
+                        "Assessor 1",
+                        value=str(latest_history.get("assessor1") or _text(assessment_row, "Assessor1")),
+                        key=f"admin_assessor1_{assessment_person_id}_{assessment_nonce}",
+                    )
+                    assessor2_entry = st.text_input(
+                        "Assessor 2",
+                        value=str(latest_history.get("assessor2") or _text(assessment_row, "Assessor2")),
+                        key=f"admin_assessor2_{assessment_person_id}_{assessment_nonce}",
+                    )
+                    supervisor_entry = st.text_input(
+                        "Supervisor",
+                        value=str(latest_history.get("supervisor") or _text(assessment_row, "Supervisor")),
+                        key=f"admin_supervisor_{assessment_person_id}_{assessment_nonce}",
+                    )
+                remarks_entry = st.text_area(
+                    "Assessment remarks",
+                    value=str(latest_history.get("remarks") or _text(assessment_row, "Remarks")),
+                    height=90,
+                    key=f"admin_assessment_remarks_{assessment_person_id}_{assessment_nonce}",
+                )
+
+                matrix_rows = []
+                for competency_type, info in COMP_TYPES.items():
+                    for code in info["cols"]:
+                        previous = latest_scores.get(code, {})
+                        workbook_actual = pd.to_numeric(
+                            assessment_row.get(code), errors="coerce"
+                        )
+                        workbook_target = pd.to_numeric(
+                            assessment_row.get(f"R-{code}"), errors="coerce"
+                        )
+                        previous_actual = previous.get("actual")
+                        previous_target = previous.get("req")
+                        if previous_actual is not None and pd.notna(previous_actual):
+                            actual_default = float(previous_actual)
+                        elif pd.notna(workbook_actual) and 0.0 <= float(workbook_actual) <= 5.0:
+                            actual_default = float(workbook_actual)
+                        else:
+                            actual_default = 0.0
+                        if previous_target is not None and pd.notna(previous_target):
+                            target_default = float(previous_target)
+                        elif pd.notna(workbook_target) and 0.0 <= float(workbook_target) <= 5.0:
+                            target_default = float(workbook_target)
+                        else:
+                            target_default = 3.0
+
+                        matrix_rows.append(
+                            {
+                                "Code": code,
+                                "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                                "Group": info["label"],
+                                "Actual": actual_default,
+                                "Target": target_default,
+                            }
+                        )
+
+                score_matrix = pd.DataFrame(
+                    matrix_rows,
+                    columns=["Code", "Competency", "Group", "Actual", "Target"],
+                )
+                st.markdown("#### Competency matrix")
+                st.caption(
+                    "Edit Actual and Target scores from 0 to 5. Values are prefilled from "
+                    "the latest saved assessment, then the master workbook where available."
+                )
+                edited_matrix = st.data_editor(
+                    score_matrix,
+                    key=f"admin_assessment_matrix_{assessment_person_id}_{assessment_nonce}",
+                    width="stretch",
+                    height=690,
+                    hide_index=True,
+                    num_rows="fixed",
+                    disabled=["Code", "Competency", "Group"],
+                    column_config={
+                        "Code": st.column_config.TextColumn("Code", width="small"),
+                        "Competency": st.column_config.TextColumn("Competency", width="large"),
+                        "Group": st.column_config.TextColumn("Group", width="medium"),
+                        "Actual": st.column_config.NumberColumn(
+                            "Actual", min_value=0.0, max_value=5.0, step=0.5,
+                            format="%.1f", required=True,
+                        ),
+                        "Target": st.column_config.NumberColumn(
+                            "Target", min_value=0.0, max_value=5.0, step=0.5,
+                            format="%.1f", required=True,
+                        ),
                     },
                 )
-                if ok:
-                    scores_ok, score_message = add_competency_scores(
-                        session, assessment_id, assessment_person_id, score_inputs
-                    )
-                    if scores_ok:
-                        st.success(
-                            f"Assessment saved for {assessment_person.get('name')} "
-                            f"on {assessment_date:%d %b %Y}."
+                save_assessment = st.form_submit_button(
+                    "Save assessment and all 24 scores",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if save_assessment:
+                score_inputs = {}
+                matrix_valid = True
+                try:
+                    if len(edited_matrix) != len(SCORE_COLS):
+                        raise ValueError(
+                            f"The matrix must contain exactly {len(SCORE_COLS)} competencies."
                         )
-                        st.cache_data.clear()
-                    else:
-                        st.error(score_message)
+                    for _, score_row in edited_matrix.iterrows():
+                        code = str(score_row["Code"])
+                        actual = pd.to_numeric(score_row["Actual"], errors="coerce")
+                        target = pd.to_numeric(score_row["Target"], errors="coerce")
+                        if (
+                            code not in SCORE_COLS
+                            or pd.isna(actual)
+                            or pd.isna(target)
+                            or not 0.0 <= float(actual) <= 5.0
+                            or not 0.0 <= float(target) <= 5.0
+                        ):
+                            raise ValueError(
+                                f"{code} must have valid Actual and Target scores from 0 to 5."
+                            )
+                        if code in score_inputs:
+                            raise ValueError(f"Duplicate competency row detected: {code}.")
+                        score_inputs[code] = {
+                            "actual": float(actual),
+                            "req": float(target),
+                            "gap": round(max(float(target) - float(actual), 0.0), 2),
+                        }
+                    if set(score_inputs) != set(SCORE_COLS):
+                        raise ValueError("One or more competency rows are missing.")
+                except (KeyError, TypeError, ValueError) as exc:
+                    matrix_valid = False
+                    st.error(f"Assessment validation failed: {exc}")
+
+                if matrix_valid:
+                    save_session = open_session()
+                    try:
+                        ok, message, new_assessment_id = save_assessment_transaction(
+                            save_session,
+                            assessment_person_id,
+                            {
+                                "assessment_date": assessment_date,
+                                "assessment_level": None if level == "Not specified" else level,
+                                "assessor1": assessor1_entry.strip() or None,
+                                "assessor2": assessor2_entry.strip() or None,
+                                "supervisor": supervisor_entry.strip() or None,
+                                "remarks": remarks_entry.strip() or None,
+                            },
+                            score_inputs,
+                        )
+                        if ok:
+                            st.cache_data.clear()
+                            st.session_state["_assessment_saved_notice"] = (
+                                f"Assessment #{new_assessment_id} saved for "
+                                f"{assessment_person.get('name')} on "
+                                f"{assessment_date:%d %b %Y}. All 24 competency scores were committed."
+                            )
+                            st.session_state[
+                                f"assessment_form_nonce_{assessment_person_id}"
+                            ] = assessment_nonce + 1
+                            st.rerun()
+                        else:
+                            st.error(message)
+                            st.info(
+                                "No partial assessment was saved. Correct the issue and submit again."
+                            )
+                    except Exception as exc:
+                        save_session.rollback()
+                        st.error(
+                            "Assessment was not saved. The transaction was rolled back. "
+                            f"Details: {exc}"
+                        )
+                    finally:
+                        save_session.close()
+
+        with history_tab:
+            st.markdown("#### Assessment history")
+            if not history:
+                st.info("No assessment history is recorded for this employee yet.")
+            else:
+                history_rows = []
+                history_labels = {}
+                for record in history:
+                    recorded_date = (
+                        record["assessment_date"].strftime("%d %b %Y")
+                        if record["assessment_date"] is not None
+                        else "Undated"
+                    )
+                    level_label = record["assessment_level"] or "Level not specified"
+                    label = f"#{record['id']} · {recorded_date} · {level_label}"
+                    history_labels[label] = record["id"]
+                    assessor_names = " / ".join(
+                        value for value in (
+                            record.get("assessor1"),
+                            record.get("assessor2"),
+                        ) if value
+                    ) or "—"
+                    history_rows.append(
+                        {
+                            "Assessment": f"#{record['id']}",
+                            "Date": recorded_date,
+                            "Level": level_label,
+                            "Assessors": assessor_names,
+                            "Supervisor": record.get("supervisor") or "—",
+                            "Score coverage": f"{record['score_count']}/{len(SCORE_COLS)}",
+                            "Mean actual": record["average_actual"],
+                            "Mean target": record["average_target"],
+                            "Mean gap": record["average_gap"],
+                        }
+                    )
+
+                st.dataframe(
+                    pd.DataFrame(history_rows),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Mean actual": st.column_config.NumberColumn(format="%.2f"),
+                        "Mean target": st.column_config.NumberColumn(format="%.2f"),
+                        "Mean gap": st.column_config.NumberColumn(format="%.2f"),
+                    },
+                )
+                chosen_history_label = st.selectbox(
+                    "Inspect a saved assessment",
+                    list(history_labels),
+                    key=f"admin_assessment_history_picker_{assessment_person_id}",
+                )
+                chosen_history_id = history_labels[chosen_history_label]
+                detail_session = open_session()
+                try:
+                    chosen_scores = get_assessment_scores(
+                        detail_session, chosen_history_id
+                    )
+                except Exception as exc:
+                    chosen_scores = {}
+                    st.error(f"Unable to load this assessment's scores: {exc}")
+                finally:
+                    detail_session.close()
+
+                if chosen_scores:
+                    detail_rows = []
+                    for competency_type, info in COMP_TYPES.items():
+                        for code in info["cols"]:
+                            saved_score = chosen_scores.get(code, {})
+                            detail_rows.append(
+                                {
+                                    "Code": code,
+                                    "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                                    "Group": info["label"],
+                                    "Actual": saved_score.get("actual"),
+                                    "Target": saved_score.get("req"),
+                                    "Gap": saved_score.get("gap"),
+                                    "Achievement %": saved_score.get("achievement_pct"),
+                                }
+                            )
+                    st.markdown("#### Saved competency matrix")
+                    st.dataframe(
+                        pd.DataFrame(detail_rows),
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "Actual": st.column_config.NumberColumn(format="%.1f"),
+                            "Target": st.column_config.NumberColumn(format="%.1f"),
+                            "Gap": st.column_config.NumberColumn(format="%.2f"),
+                            "Achievement %": st.column_config.NumberColumn(
+                                format="%.1f%%"
+                            ),
+                        },
+                    )
                 else:
-                    st.error(message)
-            except Exception as exc:
-                session.rollback()
-                st.error(f"Unable to save assessment: {exc}")
-            finally:
-                session.close()
+                    st.info(
+                        "This assessment has no saved competency-score rows. "
+                        "It may be a legacy header-only record."
+                    )
 
 
 # ---------------------------------------------------------------------------
