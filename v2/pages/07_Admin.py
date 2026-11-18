@@ -236,6 +236,10 @@ def _save_personnel_form(form_key: str, prefix: str, row: dict | None, master_df
     """Render a structured create/edit form and return (submitted, payload)."""
     source = row or {}
     is_add = row is None
+    if is_add and st.session_state.pop("_reset_add_personnel_form_next_run", False):
+        for state_key in list(st.session_state.keys()):
+            if state_key.startswith(f"{prefix}_"):
+                st.session_state.pop(state_key, None)
 
     gender_value = _text(source, "Gender", "Not specified") or "Not specified"
     gender_options = ["Not specified", "M", "F", "Other"]
@@ -582,6 +586,11 @@ st.caption(
     "The directory is database-backed. Workbook data is used only to supplement "
     "historical competency and assessment values where available."
 )
+if master_data_error:
+    st.info(
+        "Workbook-based score prefill is unavailable. Personnel CRUD remains "
+        "available from the database. Details: " + master_data_error
+    )
 
 directory_tab, add_tab, edit_tab, assessment_tab, archive_tab = st.tabs(
     [
@@ -751,6 +760,7 @@ with add_tab:
                     st.success(f"Personnel record created: {payload['name']} (Staff ID {payload['staff_id']}).")
                     st.cache_data.clear()
                     st.session_state["admin_selected_person_id"] = new_id
+                    st.session_state["_reset_add_personnel_form_next_run"] = True
                     st.rerun()
                 else:
                     st.error(message)
@@ -1063,5 +1073,3 @@ with archive_tab:
                 finally:
                     session.close()
 
-    if master_data_error:
-        st.info("Workbook score prefill is unavailable. Personnel CRUD remains available from the database. Details: " + master_data_error)
