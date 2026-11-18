@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 import pandas as pd
-import streamlit.components.v1 as components
+import streamlit as st
 from config import NATIONALITY_ALIASES
 
 OPEN_GLOBUS_VERSION = "0.28.7"
@@ -285,9 +285,9 @@ function showDetails(record){
     peopleMeta.textContent=detailPeople.length.toLocaleString()+" matching";
     directory.innerHTML=detailPeople.slice(0,60).map(person=>{
       const name=person["Name"]||"Unnamed";
-      const profileUrl=assessmentProfileUrl(person);
-      const action=profileUrl
-        ? '<a class="profile-link" href="'+escapeHtml(profileUrl)+'" target="_blank" rel="noopener" aria-label="Open assessment profile for '+escapeHtml(name)+'">View profile ↗</a>'
+      const personnelId=Number(person.personnel_id);
+      const action=Number.isSafeInteger(personnelId)&&personnelId>0
+        ? '<button class="profile-link" type="button" data-personnel-id="'+personnelId+'" aria-label="Open assessment profile for '+escapeHtml(name)+'">View profile ↗</button>'
         : '<span class="profile-unavailable">Profile not linked</span>';
       return '<div class="person"><div class="person-info"><strong>'+escapeHtml(name)+
         '</strong><br>'+escapeHtml(person["Staff Position"]||"Position not specified")+
@@ -305,24 +305,7 @@ function showDetails(record){
   renderLayer();
 }
 
-function assessmentProfileUrl(person){
-  const personnelId=Number(person.personnel_id);
-  if(!Number.isInteger(personnelId)||personnelId<=0)return null;
-  try{
-    const currentUrl=new URL(window.parent.location.href);
-    const appBase=currentUrl.pathname.endsWith("/")
-      ? currentUrl.pathname
-      : currentUrl.pathname+"/";
-    currentUrl.pathname=appBase+"individual-assessment";
-    currentUrl.search="";
-    currentUrl.hash="";
-    currentUrl.searchParams.set("personnel_id",String(personnelId));
-    return currentUrl.toString();
-  }catch(error){
-    console.warn("Could not create the assessment profile link:",error);
-    return null;
-  }
-}
+
 
 function flyToRecord(record){
   if(!globe||!globe.planet?.camera)return;
@@ -351,6 +334,22 @@ document.getElementById("resetFilters").addEventListener("click",()=>{
 document.getElementById("closeDetails").addEventListener("click",clearSelection);
 document.getElementById("flyTo").addEventListener("click",()=>{
   if(selectedRecord)flyToRecord(selectedRecord);
+});
+
+// Bridge a personnel selection from the isolated globe document to the
+// Streamlit component host. Python handles the actual page switch so the
+// authenticated Streamlit session is retained.
+document.getElementById("people").addEventListener("click",event=>{
+  const button=event.target.closest("button[data-personnel-id]");
+  if(!button)return;
+  const personnelId=Number(button.getAttribute("data-personnel-id"));
+  if(Number.isSafeInteger(personnelId)&&personnelId>0){
+    window.parent.postMessage({
+      source:"re-workforce-openglobus",
+      type:"profile-select",
+      personnelId
+    },"*");
+  }
 });
 
 const osm=new OpenStreetMap("OpenStreetMap",{
@@ -446,9 +445,99 @@ try{
             .replace("__RESOURCES__",OPEN_GLOBUS_RESOURCES).replace("__FONTS__",OPEN_GLOBUS_FONTS)
             .replace("__HEIGHT__",str(safe_height)).replace("__PAYLOAD__",payload))
 
-def render_nationality_globe(map_df: pd.DataFrame, *, personnel_df: pd.DataFrame | None = None, height: int = 620) -> None:
-    records=_records_from_map_df(map_df,personnel_df)
-    if not records: raise ValueError("Nationality globe data cannot be empty.")
-    components.html(_build_openglobus_html(records,height=height),height=max(520,int(height)),scrolling=False)
+_PROFILE_BRIDGE_JS = """
+export default function(component) {
+  const { parentElement, data, setTriggerValue } = component;
+  const frame = parentElement.querySelector("#openglobus-frame");
+  if (!frame) return;
 
-__all__=["OPEN_GLOBUS_VERSION","render_nationality_globe","_build_openglobus_html","_records_from_map_df"]
+  const height = Math.max(520, Number(data?.height) || 620);
+  frame.style.height = height + "px";
+
+  const html = typeof data?.html === "string" ? data.html : "";
+  if (frame.__openglobusHtml !== html) {
+    frame.__openglobusHtml = html;
+    frame.srcdoc = html;
+  }
+
+  const previousHandler = parentElement.__openglobusMessageHandler;
+  if (previousHandler) {
+    window.removeEventListener("message", previousHandler);
+  }
+
+  const handleMessage = event => {
+    if (event.source !== frame.contentWindow) return;
+    const message = event.data;
+    if (
+      !message ||
+      message.source !== "re-workforce-openglobus" ||
+      message.type !== "profile-select"
+    ) return;
+
+    const personnelId = Number(message.personnelId);
+    if (Number.isSafeInteger(personnelId) && personnelId > 0) {
+      setTriggerValue("profile_selected", personnelId);
+    }
+  };
+
+  window.addEventListener("message", handleMessage);
+  parentElement.__openglobusMessageHandler = handleMessage;
+
+  return () => {
+    window.removeEventListener("message", handleMessage);
+    if (parentElement.__openglobusMessageHandler === handleMessage) {
+      delete parentElement.__openglobusMessageHandler;
+    }
+  };
+}
+"""
+
+_PROFILE_BRIDGE_COMPONENT = st.components.v2.component(
+    name="re_workforce_openglobus_profile_bridge",
+    html=(
+        '<iframe id="openglobus-frame" title="RE Workforce Geography" '
+        'sandbox="allow-scripts allow-same-origin" '
+        'referrerpolicy="strict-origin-when-cross-origin"></iframe>'
+    ),
+    css=(
+        "#openglobus-frame { display:block; width:100%; border:0; "
+        "background:transparent; }"
+    ),
+    js=_PROFILE_BRIDGE_JS,
+)
+
+
+def render_nationality_globe(
+    map_df: pd.DataFrame,
+    *,
+    personnel_df: pd.DataFrame | None = None,
+    height: int = 620,
+):
+    """Render the globe and return personnel selections through a V2 bridge.
+
+    The nested OpenGlobus document remains isolated, while the V2 component
+    reports profile-button clicks to Python. The dashboard can then use
+    st.switch_page(), retaining the current authenticated Streamlit session.
+    """
+    records = _records_from_map_df(map_df, personnel_df)
+    if not records:
+        raise ValueError("Nationality globe data cannot be empty.")
+
+    safe_height = max(520, int(height))
+    return _PROFILE_BRIDGE_COMPONENT(
+        data={
+            "html": _build_openglobus_html(records, height=safe_height),
+            "height": safe_height,
+        },
+        key="re_workforce_openglobus",
+        on_profile_selected_change=lambda: None,
+    )
+
+
+__all__ = [
+    "OPEN_GLOBUS_VERSION",
+    "render_nationality_globe",
+    "_build_openglobus_html",
+    "_records_from_map_df",
+    "_PROFILE_BRIDGE_JS",
+]
