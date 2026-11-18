@@ -113,6 +113,15 @@ def _optional_date(value):
     return None if pd.isna(parsed) else parsed.date()
 
 
+def _first_optional_date(*values):
+    """Return the first valid date, ignoring NaT and other blank values."""
+    for value in values:
+        parsed = _optional_date(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _assessment_level_options(source_df, current_value=None):
     options = ["Not specified", *ASSESSMENT_LEVELS]
     seen = {str(value).casefold() for value in options}
@@ -369,12 +378,12 @@ def _save_personnel_form(form_key: str, prefix: str, row: dict | None, master_df
                 )
                 assignment_date = st.date_input(
                     "Assignment start date",
-                    value=_optional_date(source.get("Assignment Date") or source.get("Date in Position")),
+                    value=_first_optional_date(source.get("Assignment Date"), source.get("Date in Position")),
                     format="DD/MM/YYYY", key=f"{prefix}_assignmentdate",
                 )
                 sg_start_date = st.date_input(
                     "Salary grade start date",
-                    value=_optional_date(source.get("SG Start Date") or source.get("Date of Appointment to Current Grade")),
+                    value=_first_optional_date(source.get("SG Start Date"), source.get("Date of Appointment to Current Grade")),
                     format="DD/MM/YYYY", key=f"{prefix}_sgstart",
                 )
                 chat_status = st.selectbox(
@@ -392,7 +401,7 @@ def _save_personnel_form(form_key: str, prefix: str, row: dict | None, master_df
                 )
                 last_assessment_date = st.date_input(
                     "Last assessment date",
-                    value=_optional_date(source.get("Last Assessment Date") or source.get("Last Assesment Date")),
+                    value=_first_optional_date(source.get("Last Assessment Date"), source.get("Last Assesment Date")),
                     format="DD/MM/YYYY", key=f"{prefix}_lastdate",
                 )
 
@@ -687,9 +696,6 @@ with directory_tab:
             selected_person = filtered_people.iloc[selected_index]
             selected_id = int(selected_person["id"])
             st.session_state["admin_selected_person_id"] = selected_id
-            selected_name_label = f"{selected_person['name']} · {selected_person['staff_id']}"
-            st.session_state.pop("admin_edit_person_picker", None)
-            st.session_state["admin_edit_person_picker_default"] = selected_name_label
 
         selected_id = st.session_state.get("admin_selected_person_id")
         selected_record = (
@@ -763,65 +769,53 @@ with edit_tab:
     if active_people.empty:
         st.info("There are no active database records to edit yet. Use Add Personnel to create the first record.")
     else:
-        labels = {
-            int(record["id"]): f"{record['name']} · {record['staff_id']}"
-            for _, record in active_people.sort_values(["name", "staff_id"]).iterrows()
-        }
-        label_to_id = {label: personnel_id for personnel_id, label in labels.items()}
-        current_id = st.session_state.get("admin_selected_person_id")
-        current_label = labels.get(current_id)
-        preferred_label = st.session_state.pop(
-            "admin_edit_person_picker_default", current_label
+        edit_id = st.session_state.get("admin_selected_person_id")
+        selected_record = (
+            active_people[active_people["id"] == edit_id]
+            if edit_id is not None
+            else pd.DataFrame()
         )
-        label_options = list(label_to_id)
-        default_index = label_options.index(preferred_label) if preferred_label in label_options else 0
-        selected_label = st.selectbox(
-            "Choose employee",
-            label_options,
-            index=default_index,
-            key="admin_edit_person_picker",
-            help="Staff ID is included to distinguish employees with similar names.",
-        )
-        edit_id = label_to_id[selected_label]
-        st.session_state["admin_selected_person_id"] = edit_id
+        if selected_record.empty:
+            st.info("Choose an employee in the Personnel Directory first, then open this section to edit their profile.")
+        else:
+            db_row = selected_record.iloc[0].to_dict()
+            profile = _profile_row(db_row, master_df)
+            with st.container(border=True):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Staff ID", str(db_row.get("staff_id") or "—"))
+                c2.metric("Department", str(db_row.get("department") or "—"))
+                c3.metric("Salary grade", str(db_row.get("sg") or "—"))
+                updated_at = db_row.get("updated_at")
+                if not _is_missing(updated_at):
+                    st.caption(f"Last updated: {pd.to_datetime(updated_at).strftime('%d %b %Y, %H:%M')}")
 
-        db_row = active_people[active_people["id"] == edit_id].iloc[0].to_dict()
-        profile = _profile_row(db_row, master_df)
-        with st.container(border=True):
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Staff ID", str(db_row.get("staff_id") or "—"))
-            c2.metric("Department", str(db_row.get("department") or "—"))
-            c3.metric("Salary grade", str(db_row.get("sg") or "—"))
-            updated_at = db_row.get("updated_at")
-            if not _is_missing(updated_at):
-                st.caption(f"Last updated: {pd.to_datetime(updated_at).strftime('%d %b %Y, %H:%M')}")
-
-        submitted, payload = _save_personnel_form(
-            f"edit_personnel_form_{edit_id}",
-            f"edit_personnel_{edit_id}",
-            profile,
-            master_df,
-        )
-        if submitted:
-            if not payload["name"]:
-                st.error("Full name is required.")
-            elif not payload["staff_id"]:
-                st.error("Staff ID is required.")
-            else:
-                session = open_session()
-                try:
-                    ok, message = update_personnel(session, edit_id, payload)
-                    if ok:
-                        st.success(f"Profile updated for {payload['name']}.")
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.error(message)
-                except Exception as exc:
-                    session.rollback()
-                    st.error(f"Unable to update personnel profile: {exc}")
-                finally:
-                    session.close()
+            st.caption("You are editing the employee selected in the Personnel Directory.")
+            submitted, payload = _save_personnel_form(
+                f"edit_personnel_form_{edit_id}",
+                f"edit_personnel_{edit_id}",
+                profile,
+                master_df,
+            )
+            if submitted:
+                if not payload["name"]:
+                    st.error("Full name is required.")
+                elif not payload["staff_id"]:
+                    st.error("Staff ID is required.")
+                else:
+                    session = open_session()
+                    try:
+                        ok, message = update_personnel(session, edit_id, payload)
+                        if ok:
+                            st.success(f"Profile updated for {payload['name']}.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(message)
+                    except Exception as exc:
+                        session.rollback()
+                        st.error(f"Unable to update personnel profile: {exc}")
+                    finally:
+                        session.close()
 
 
 # ---------------------------------------------------------------------------
