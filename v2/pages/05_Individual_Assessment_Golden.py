@@ -277,7 +277,14 @@ def render_page():
     requested_personnel_id = None
     requested_staff_id = None
     requested_person_name = None
-    requested_id_value = st.query_params.get("personnel_id")
+
+    # The OpenGlobus component selects a profile through Streamlit's active
+    # session. Consume that ID first; retain the query-parameter fallback for
+    # older bookmarks and manually shared assessment links.
+    requested_id_value = st.session_state.pop("requested_personnel_id", None)
+    if requested_id_value is None:
+        requested_id_value = st.query_params.get("personnel_id")
+
     if requested_id_value:
         try:
             requested_personnel_id = int(requested_id_value)
@@ -357,6 +364,11 @@ def render_page():
                     "The linked database record could not be matched uniquely to "
                     "the master workbook. Please verify its Staff ID."
                 )
+
+    # A map selection may target a different person from the previous page
+    # visit. Clear the prior widget choice so the database ID drives this run.
+    if requested_personnel_id is not None:
+        st.session_state.pop("personnel_profile_select", None)
 
     selection_col, refresh_col = st.columns([5, 1], vertical_alignment="bottom")
     with selection_col:
