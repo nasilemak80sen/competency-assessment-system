@@ -345,6 +345,53 @@ def test_user_management_audit_records_real_admin_and_never_password_material(mo
     assert all("NewPassword123!" not in str(row["details"]) for row in audit)
 
 
+def test_user_accounts_cannot_be_created_or_reenabled_with_archived_personnel(monkeypatch, tmp_path):
+    db_path = tmp_path / "phase34_archived_link.db"
+    monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
+    auth_service.ensure_auth_table()
+
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """CREATE TABLE personnel (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                staff_id TEXT NOT NULL,
+                department TEXT,
+                is_deleted INTEGER DEFAULT 0
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO personnel (id, name, staff_id, department, is_deleted) VALUES (?, ?, ?, ?, ?)",
+            [
+                (91, "Active Person", "P-91", "DPE", 0),
+                (92, "Archived Person", "P-92", "DPE", 1),
+            ],
+        )
+
+    archived_create = auth_service.create_user(
+        "archived.user", "InitialPassword123!", auth_service.ROLE_USER,
+        personnel_id=92,
+    )
+    assert archived_create[0] is False
+    assert "non-archived personnel" in archived_create[1]
+
+    created = auth_service.create_user(
+        "active.user", "InitialPassword123!", auth_service.ROLE_USER,
+        personnel_id=91,
+    )
+    assert created[0] is True
+    user_id = created[2]
+    assert auth_service.set_active(user_id, False)[0] is True
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE personnel SET is_deleted = 1 WHERE id = 91")
+
+    enabled, message = auth_service.set_active(user_id, True)
+    assert enabled is False
+    assert "missing or archived personnel" in message
+
+
 def test_duplicate_personnel_link_and_last_admin_lockout_are_prevented(monkeypatch, tmp_path):
     db_path = tmp_path / "phase34_security.db"
     monkeypatch.setattr(auth_service, "DATABASE_PATH", db_path)
@@ -399,6 +446,8 @@ def test_admin_pages_expose_reconciliation_search_and_audit_controls():
     for label in [
         "Run Dry Run", "Commit Reviewed Import", "Field-level comparison",
         "Duplicate source Staff IDs", "CV rows are never attached automatically",
+        '"personnel_plan": personnel_preview["plan"].to_dict(orient="records")',
+        '"personnel_field_differences": differences.to_dict(orient="records")',
     ]:
         assert label.casefold() in import_page.casefold()
     for token in [

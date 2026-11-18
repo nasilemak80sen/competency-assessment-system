@@ -231,6 +231,23 @@ def create_user(
             ).fetchone():
                 return False, f"Username '{username}' already exists.", None
             if role == ROLE_USER:
+                # Validate against the live SQL personnel table when it is
+                # available. Older isolated auth-service consumers may not
+                # initialize that table, so the page-level selector remains
+                # the compatibility path for those test/development contexts.
+                try:
+                    personnel = conn.execute(
+                        """SELECT id FROM personnel
+                           WHERE id = ? AND COALESCE(is_deleted, 0) = 0""",
+                        (int(personnel_id),),
+                    ).fetchone()
+                except sqlite3.OperationalError as exc:
+                    if "no such table: personnel" not in str(exc).lower():
+                        raise
+                else:
+                    if personnel is None:
+                        return False, "Select an existing, non-archived personnel record.", None
+
                 linked = conn.execute(
                     "SELECT username FROM app_users WHERE role = ? AND personnel_id = ?",
                     (ROLE_USER, int(personnel_id)),
@@ -557,8 +574,24 @@ def set_active(user_id: int, is_active: bool, actor: dict | None = None):
                 ).fetchone()[0]
                 if int(active_admins) <= 1:
                     return False, "The last active administrator cannot be disabled."
-            if new_active and row["role"] == ROLE_USER and row["personnel_id"] is None:
-                return False, "This USER account has no personnel link. Link it before enabling."
+            if new_active and row["role"] == ROLE_USER:
+                if row["personnel_id"] is None:
+                    return False, "This USER account has no personnel link. Link it before enabling."
+                try:
+                    linked_personnel = conn.execute(
+                        """SELECT id FROM personnel
+                           WHERE id = ? AND COALESCE(is_deleted, 0) = 0""",
+                        (int(row["personnel_id"]),),
+                    ).fetchone()
+                except sqlite3.OperationalError as exc:
+                    if "no such table: personnel" not in str(exc).lower():
+                        raise
+                else:
+                    if linked_personnel is None:
+                        return False, (
+                            "This USER account is linked to missing or archived personnel. "
+                            "Update the personnel link before enabling."
+                        )
             conn.execute(
                 "UPDATE app_users SET is_active = ? WHERE id = ?",
                 (1 if new_active else 0, int(user_id)),

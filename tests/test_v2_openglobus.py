@@ -27,7 +27,7 @@ def test_openglobus_html_contains_phase_2_interaction_stack():
     assert "Salary Grades" in html
     assert "Section" in html
     assert "resetFilters" in html
-    assert "RE Nationality Intelligence Globe" in html
+    assert "RE Workforce Geography" in html
 def test_openglobus_html_keeps_osm_attribution_and_no_plotly_dependency():
     html=_build_openglobus_html(_records_from_map_df(_sample_map_df(),_sample_people_df()))
     assert "OpenStreetMap contributors" in html

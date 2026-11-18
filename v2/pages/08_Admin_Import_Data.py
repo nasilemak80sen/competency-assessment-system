@@ -244,10 +244,18 @@ try:
     )
 
     decision_payload = {
-        "personnel": edited_plan[
+        # Include the reviewed plan and data snapshot, not only the button
+        # selections. A personnel/profile change made after dry-run therefore
+        # invalidates the previous approval before commit.
+        "personnel_plan": personnel_preview["plan"].to_dict(orient="records"),
+        "personnel_field_differences": differences.to_dict(orient="records"),
+        "all_database_staff_ids": personnel_preview["all_staff_ids"],
+        "cv_match_preview": cv_preview["preview"].to_dict(orient="records"),
+        "cv_active_staff": cv_preview["active_people"],
+        "personnel_decisions": edited_plan[
             ["Source index", "Include", "Action", "Match Staff ID"]
         ].to_dict(orient="records") if not edited_plan.empty else [],
-        "cv": sorted(
+        "manual_cv_resolutions": sorted(
             (int(index), str(staff_id))
             for index, staff_id in manual_cv_resolutions.items()
         ),
