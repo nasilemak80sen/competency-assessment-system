@@ -59,3 +59,12 @@ def test_existing_service_boundaries_are_used_for_personnel_crud():
     assert 'all as get_all_personnel' in SOURCE
     assert 'delete as delete_personnel' in SOURCE
     assert 'update as update_personnel' in SOURCE
+
+
+def test_tenure_inputs_preserve_legacy_values_above_sixty_without_crashing():
+    assert "def _numeric_widget_max(value, expected_max=60.0)" in SOURCE
+    assert "return min(600.0, max(float(expected_max), current * 1.25))" in SOURCE
+    assert 'max_value=_numeric_widget_max(source.get("Years in PET"))' in SOURCE
+    assert 'max_value=_numeric_widget_max(source.get("Years of RE Experience"))' in SOURCE
+    assert 'max_value=_numeric_widget_max(source.get("Years in Salary Grade"))' in SOURCE
+    assert "Existing values are preserved for review; " in SOURCE
