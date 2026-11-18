@@ -52,3 +52,26 @@ def test_globe_labels_are_added_conditionally_not_to_every_marker():
     assert "if(showLabel){" in html
     assert 'entityOptions.label={' in html
     assert 'label:{text:record.nationality+" · "+count' not in html
+
+
+def test_globe_initially_focuses_the_largest_nationality_at_country_level_zoom():
+    records = _sample_records() + [
+        {
+            "nationality": "Indonesian",
+            "count": 12,
+            "latitude": -2.5,
+            "longitude": 118.0,
+            "representation": "75.0%",
+            "people": [],
+        }
+    ]
+    html = _build_openglobus_html(records)
+
+    assert "const defaultFocusRecord=records.reduce((largest,record)=>" in html
+    assert "visibleCount(record)>visibleCount(largest)?record:largest" in html
+    assert "selectedRecord=defaultFocusRecord;" in html
+    assert (
+        "new LonLat(\n      defaultFocusRecord.longitude,\n"
+        "      defaultFocusRecord.latitude,\n      4500000\n    )"
+    ) in html
+    assert "12000000" not in html
