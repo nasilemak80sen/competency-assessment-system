@@ -71,7 +71,7 @@ html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:t
 #hovercard.visible{display:block}#hovercard strong{display:block;font-size:12px}#hovercard .meta{display:block;margin-top:3px;font-size:10px;color:#52676b}#hovercard .hint{display:block;margin-top:5px;font-size:9px;color:#00a19c;font-weight:700}
 #toolbar{position:absolute;left:16px;bottom:16px;z-index:40;width:min(430px,calc(100% - 32px));padding:10px;border-radius:12px;background:rgba(255,255,255,.93);backdrop-filter:blur(10px);box-shadow:0 8px 28px rgba(18,47,53,.16)}
 #toolbar .row{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px}
-#toolbar .row:last-of-type{margin-bottom:5px}
+#toolbar .row:last-of-type{margin-bottom:5px}#toolbar .row .wide{grid-column:1/-1}
 #toolbar select,#toolbar button{width:100%;box-sizing:border-box;border:1px solid #d4e0e2;border-radius:8px;padding:7px 8px;background:#fff;color:#183238;font-size:11px}
 #toolbar button{cursor:pointer;font-weight:700}#toolbar button:hover{border-color:#00a19c}
 #stats{font-size:10px;color:#52676b;padding:2px 2px 0}
