@@ -8,8 +8,14 @@ import streamlit as st
 from chart_builder import ChartBuilder, ChartCompatibility, DataType
 from components.navigation import render_navigation
 from config import GAP_COLS, REQ_COLS, SCORE_COLS
-from core.bootstrap import get_master_data
+from core.bootstrap import get_master_data, get_ruler_data
 from v2.services.chart_workspace_service import should_refresh_chart
+from v2.services.score_gap_analysis_service import (
+    SCORE_GAP_CHART_FIELD_GROUPS,
+    build_score_gap_chart_dataframe,
+    get_score_gap_chart_fields,
+    get_score_gap_target_grades,
+)
 
 
 # Keep this page tolerant of a local chart_builder.py that has not yet been
@@ -134,6 +140,11 @@ def _restore_chart_configuration(configuration: dict, dataframe: pd.DataFrame) -
         st.session_state.pop("cb_numeric_filter_range_v2", None)
 
     widget_values = {
+        "cb_score_gap_enabled_v2": bool(chart.get("score_gap_enabled", False)),
+        "cb_score_gap_target_mode_v2": chart.get("requirement_mode", "Current requirement"),
+        "cb_score_gap_target_sg_v2": chart.get("requirement_target_sg"),
+        "cb_enable_z_axis_v2": bool(chart.get("enable_z_axis", False)),
+        "cb_z_axis_v2": chart.get("z_axis", "(None)"),
         "cb_measure_mode_v2": chart.get("measure_mode", "Numeric data element"),
         "cb_x_group_v2": chart.get("x_group"),
         "cb_dimension_v2": chart.get("dimension"),
@@ -160,9 +171,10 @@ def _restore_chart_configuration(configuration: dict, dataframe: pd.DataFrame) -
     st.session_state["cb_loaded_saved_configuration"] = True
 
 
-def _field_group_for(column: str) -> str | None:
+def _field_group_for(column: str, field_groups: dict | None = None) -> str | None:
+    groups = CHART_FIELD_GROUPS if field_groups is None else field_groups
     return next(
-        (group_name for group_name, columns in CHART_FIELD_GROUPS.items() if column in columns),
+        (group_name for group_name, columns in groups.items() if column in columns),
         None,
     )
 
@@ -615,16 +627,91 @@ if working_df.empty:
     st.warning("No personnel records match these filters. Clear or broaden the workforce filters.")
     st.stop()
 
-# Rebuild the chart engine against the filtered frame. Every axis, preview,
-# diagnostic and chart result therefore reads exactly the same population.
-builder = ChartBuilder(working_df)
-available_fields = get_chart_builder_fields(working_df)
+# Optional rule-aware competency analysis. Workforce filters above always run
+# first; this mode expands selected personnel into person-competency observations.
+st.markdown("### Optional competency analysis")
+with st.container(border=True):
+    score_gap_enabled = st.checkbox(
+        "Enable competency Score & Gap analysis",
+        value=False,
+        key="cb_score_gap_enabled_v2",
+        help=(
+            "Create one observation per personnel and competency. Each required score "
+            "is resolved using that person's Career Ruler and salary grade."
+        ),
+    )
+    requirement_mode = None
+    requirement_target_sg = None
+    if score_gap_enabled:
+        try:
+            ruler_map, _technology_labels = get_ruler_data()
+        except Exception as exc:
+            st.error(f"Could not load Career Ruler requirements: {exc}")
+            st.stop()
+        if not ruler_map:
+            st.error("No Career Ruler requirements were found in the master workbook.")
+            st.stop()
+
+        target_col, grade_col = st.columns([1.5, 1])
+        with target_col:
+            requirement_mode = st.selectbox(
+                "Requirement basis",
+                ["Current requirement", "Next salary grade", "Selected target grade"],
+                index=0,
+                key="cb_score_gap_target_mode_v2",
+                help=(
+                    "Current requirement uses each person's current SG. Next salary grade "
+                    "uses the next available grade within that person's assigned Career Ruler."
+                ),
+            )
+        target_grades = get_score_gap_target_grades(ruler_map)
+        with grade_col:
+            if requirement_mode == "Selected target grade":
+                if not target_grades:
+                    st.warning("No target salary grades are available in the loaded Career Ruler data.")
+                    st.stop()
+                requirement_target_sg = st.selectbox(
+                    "Target SG", target_grades, key="cb_score_gap_target_sg_v2"
+                )
+            else:
+                st.text_input(
+                    "Target SG", value="Resolved per person",
+                    disabled=True, key="cb_score_gap_target_sg_disabled_v2"
+                )
+
+        chart_input_df = build_score_gap_chart_dataframe(
+            working_df, ruler_map, requirement_mode, requirement_target_sg
+        )
+        if chart_input_df.empty:
+            st.warning(
+                "No competency requirements matched the filtered workforce and selected requirement basis. "
+                "Check Career Ruler assignments, SG values and requirement coverage."
+            )
+            st.stop()
+        matched_people = int(chart_input_df["DataFrame Index"].nunique())
+        unmatched_people = max(0, len(working_df) - matched_people)
+        st.caption(
+            f"{len(chart_input_df):,} person-competency observations from "
+            f"{matched_people:,} matched personnel. {unmatched_people:,} personnel "
+            "had no matching requirement."
+        )
+    else:
+        chart_input_df = working_df.copy()
+
+# Standard mode keeps the approved wide-field allowlist. Score & Gap mode uses
+# curated long-form fields emitted by the authoritative Career Ruler resolver.
+active_field_groups = SCORE_GAP_CHART_FIELD_GROUPS if score_gap_enabled else CHART_FIELD_GROUPS
+available_fields = (
+    get_score_gap_chart_fields(chart_input_df)
+    if score_gap_enabled else get_chart_builder_fields(chart_input_df)
+)
+builder = ChartBuilder(chart_input_df)
 infos = {
-    column: ChartCompatibility.analyze_data_element(working_df[column], column)
+    column: ChartCompatibility.analyze_data_element(chart_input_df[column], column)
     for column in available_fields
 }
 axis_fields = [
-    column for group_fields in CHART_FIELD_GROUPS.values()
+    column for group_fields in active_field_groups.values()
     for column in group_fields
     if column in available_fields
     and infos[column].data_type in {
@@ -645,6 +732,35 @@ if not axis_fields:
     st.stop()
 
 chart_templates = _build_chart_templates(numeric_fields, categorical_fields)
+if score_gap_enabled:
+    if {"Competency Name", "Gap", "Career Ruler"}.issubset(available_fields):
+        chart_templates["Gap · By competency"] = {
+            "description": (
+                "Compare the average signed score gap by competency. Positive values indicate "
+                "a shortfall; negative values indicate a score above the requirement."
+            ),
+            "chart_type": "Bar Chart",
+            "dimension": "Competency Name",
+            "measure": "Gap",
+            "color": "Career Ruler",
+            "size": None,
+            "aggregation": "Average",
+            "measure_mode": "Numeric data element",
+        }
+    if {"Actual Score", "Target Score", "Career Ruler"}.issubset(available_fields):
+        chart_templates["Actual vs required · Relationship"] = {
+            "description": (
+                "Compare actual scores with the resolved requirement for each person. "
+                "Equal X and Y values indicate the score meets the requirement."
+            ),
+            "chart_type": "Scatter Plot",
+            "dimension": "Actual Score",
+            "measure": "Target Score",
+            "color": "Career Ruler",
+            "size": None,
+            "aggregation": "Average",
+            "measure_mode": "Numeric data element",
+        }
 
 # ---------------------------------------------------------------------------
 # CHART CONFIGURATION + CHART WORKSPACE
@@ -671,7 +787,9 @@ with chart_controls_col:
                     "cb_chart_type_v2", "cb_aggregation_v2", "cb_size_v2",
                     "cb_top_n_v2", "cb_custom_title_v2", "cb_x_label_v2",
                     "cb_y_label_v2", "cb_chart_height_v2", "cb_drill_dimension_v2",
-                    "cb_drill_value_v2",
+                    "cb_drill_value_v2", "cb_score_gap_enabled_v2",
+                    "cb_score_gap_target_mode_v2", "cb_score_gap_target_sg_v2",
+                    "cb_enable_z_axis_v2", "cb_z_axis_v2",
                 ):
                     st.session_state.pop(key, None)
                 for key in (
@@ -735,7 +853,10 @@ with chart_controls_col:
             st.warning("No suitable X-axis fields are available for this selection.")
             st.stop()
         if st.session_state.get("cb_dimension_v2") not in x_options:
-            preferred_x = "Department" if "Department" in x_options else x_options[0]
+            preferred_x = (
+                "Competency Name" if score_gap_enabled and "Competency Name" in x_options
+                else "Department" if "Department" in x_options else x_options[0]
+            )
             st.session_state.pop("cb_dimension_v2", None)
         else:
             preferred_x = st.session_state["cb_dimension_v2"]
@@ -744,7 +865,7 @@ with chart_controls_col:
             x_options,
             index=x_options.index(preferred_x),
             format_func=lambda value: (
-                f"{get_chart_builder_field_label(value)} · {_field_group_for(value) or 'Other'}"
+                f"{get_chart_builder_field_label(value)} · {_field_group_for(value, active_field_groups) or 'Other'}"
             ),
             key="cb_dimension_v2",
             help="Choose the category, date or numeric field to plot along the horizontal axis.",
@@ -759,7 +880,8 @@ with chart_controls_col:
                 st.stop()
             if st.session_state.get("cb_measure_v2") not in measure_options:
                 preferred_y = (
-                    "B1" if "B1" in measure_options
+                    "Gap" if score_gap_enabled and "Gap" in measure_options
+                    else "B1" if "B1" in measure_options
                     else "Age" if "Age" in measure_options
                     else measure_options[0]
                 )
@@ -771,7 +893,7 @@ with chart_controls_col:
                 measure_options,
                 index=measure_options.index(preferred_y),
                 format_func=lambda value: (
-                    f"{get_chart_builder_field_label(value)} · {_field_group_for(value) or 'Other'}"
+                    f"{get_chart_builder_field_label(value)} · {_field_group_for(value, active_field_groups) or 'Other'}"
                 ),
                 key="cb_measure_v2",
                 help="Choose the numeric value to analyse. Group labels help you find competency scores, requirements and gaps.",
@@ -780,6 +902,44 @@ with chart_controls_col:
         else:
             st.info("Headcount mode plots the number of personnel records in each X-axis group.")
             y_info = None
+
+        # Show a true Z-axis only for numeric X and Y dimensions.
+        enable_z_axis = False
+        z_col = None
+        if (
+            measure is not None
+            and x_info.data_type == DataType.NUMERIC
+            and y_info is not None
+            and y_info.data_type == DataType.NUMERIC
+        ):
+            enable_z_axis = st.checkbox(
+                "Enable Z-axis (3D)",
+                value=False,
+                key="cb_enable_z_axis_v2",
+                help="Add a third independent numeric field and enable an interactive 3D scatter chart.",
+            )
+            if enable_z_axis:
+                z_options = [
+                    column for column in numeric_fields
+                    if column not in {dimension, measure}
+                ]
+                if z_options:
+                    preferred_z = (
+                        st.session_state.get("cb_z_axis_v2")
+                        if st.session_state.get("cb_z_axis_v2") in z_options
+                        else z_options[0]
+                    )
+                    z_col = st.selectbox(
+                        "Z-axis field",
+                        z_options,
+                        index=z_options.index(preferred_z),
+                        key="cb_z_axis_v2",
+                        help="Choose a third numeric measure to plot as depth in the 3D scatter chart.",
+                    )
+                else:
+                    st.info("Select different X and Y measures to make a third numeric field available.")
+        else:
+            st.caption("The Z-axis option appears when both X and Y are numeric.")
 
         breakdown_options = [
             column for column in categorical_fields
@@ -825,6 +985,9 @@ with chart_controls_col:
             recommendation_names = [item["chart"] for item in recommendations]
             aggregated_chart_types = set()
 
+        if enable_z_axis and z_col:
+            available_charts.append("3D Scatter Plot")
+
         if measure is None:
             compatible_names = {"Bar Chart", "Stacked Bar Chart", "Pie Chart"}
         else:
@@ -833,6 +996,8 @@ with chart_controls_col:
                 chart for chart, details in compatibility.items()
                 if details["is_compatible"]
             }
+        if not (enable_z_axis and z_col):
+            compatible_names.discard("3D Scatter Plot")
         available_charts = [
             chart for chart in available_charts if chart in compatible_names
         ]
@@ -942,8 +1107,14 @@ with chart_controls_col:
             "breakdown": breakdown_selection,
             "measure_mode": measure_mode,
             "size_col": size_col,
+            "enable_z_axis": enable_z_axis,
+            "z_col": z_col if selected_chart == "3D Scatter Plot" else None,
+            "score_gap_enabled": score_gap_enabled,
+            "requirement_mode": requirement_mode,
+            "requirement_target_sg": requirement_target_sg,
             "is_aggregated": selected_chart in aggregated_chart_types,
-            "rows": len(working_df),
+            "rows": len(chart_input_df),
+            "personnel_rows": len(working_df),
             "top_n": top_n,
             "filter_signature": tuple(active_filter_labels),
         }
@@ -959,6 +1130,12 @@ with chart_controls_col:
                 with st.spinner("Updating chart..." if live_update else "Generating chart..."):
                     if measure is None:
                         chart_title = f"Personnel records by {get_chart_builder_field_label(dimension)}"
+                    elif selected_chart == "3D Scatter Plot":
+                        chart_title = (
+                            f"{get_chart_builder_field_label(dimension)} · "
+                            f"{get_chart_builder_field_label(measure)} · "
+                            f"{get_chart_builder_field_label(z_col)}"
+                        )
                     elif selected_chart in aggregated_chart_types:
                         chart_title = (
                             f"{aggregation} {get_chart_builder_field_label(measure)} "
@@ -982,6 +1159,7 @@ with chart_controls_col:
                         title=chart_title,
                         aggregation=aggregation,
                         top_n=top_n,
+                        z_col=z_col if selected_chart == "3D Scatter Plot" else None,
                     )
 
                     if selected_chart in aggregated_chart_types:
@@ -1008,15 +1186,17 @@ with chart_controls_col:
                             required.append(measure)
                         if size_col:
                             required.append(size_col)
+                        if selected_chart == "3D Scatter Plot" and z_col:
+                            required.append(z_col)
                         plotted_columns = list(required)
                         if chart_color_col and chart_color_col not in plotted_columns:
                             plotted_columns.append(chart_color_col)
-                        chart_data = working_df.dropna(subset=required)[plotted_columns].copy()
+                        chart_data = chart_input_df.dropna(subset=required)[plotted_columns].copy()
                         is_aggregated = False
 
                     st.session_state["cb_last_chart"] = figure
                     st.session_state["cb_last_chart_data"] = chart_data
-                    st.session_state["cb_last_chart_source_data"] = working_df.copy()
+                    st.session_state["cb_last_chart_source_data"] = chart_input_df.copy()
                     st.session_state["cb_last_chart_meta"] = {
                         **current_config,
                         "is_aggregated": is_aggregated,
@@ -1032,19 +1212,22 @@ with chart_workspace_col:
     st.markdown("### Chart workspace")
     st.caption("Your generated chart, supporting values and export actions stay in this wide workspace.")
     with st.expander("Data check & diagnostics", expanded=False):
-        st.caption("A live summary of the filtered records currently in scope.")
+        st.caption("A live summary of the filtered personnel or person-competency observations currently in scope.")
         diagnostic_cols = st.columns(4)
-        diagnostic_cols[0].metric("Personnel in scope", f"{len(working_df):,}")
+        diagnostic_cols[0].metric(
+            "Competency observations" if score_gap_enabled else "Personnel in scope",
+            f"{len(chart_input_df):,}" if score_gap_enabled else f"{len(working_df):,}",
+        )
         diagnostic_cols[1].metric(
             "X values available",
-            f"{int(working_df[dimension].notna().sum()):,}",
+            f"{int(chart_input_df[dimension].notna().sum()):,}",
         )
         diagnostic_cols[2].metric(
             "Distinct X values",
-            f"{int(working_df[dimension].nunique(dropna=True)):,}",
+            f"{int(chart_input_df[dimension].nunique(dropna=True)):,}",
         )
         if measure is not None:
-            diagnostic_y = pd.to_numeric(working_df[measure], errors="coerce")
+            diagnostic_y = pd.to_numeric(chart_input_df[measure], errors="coerce")
             diagnostic_cols[3].metric("Valid Y values", f"{int(diagnostic_y.notna().sum()):,}")
             if diagnostic_y.notna().any():
                 st.caption(
@@ -1076,9 +1259,15 @@ with chart_workspace_col:
                 "breakdown": breakdown_selection,
                 "measure_mode": measure_mode,
                 "size_col": size_col,
+                "enable_z_axis": enable_z_axis,
+                "z_col": z_col if selected_chart == "3D Scatter Plot" else None,
+                "score_gap_enabled": score_gap_enabled,
+                "requirement_mode": requirement_mode,
+                "requirement_target_sg": requirement_target_sg,
                 "top_n": top_n,
                 "filter_signature": tuple(active_filter_labels),
-                "rows": len(working_df),
+                "rows": len(chart_input_df),
+                "personnel_rows": len(working_df),
             }
             if any(meta.get(key) != value for key, value in current_config.items()):
                 st.warning(
@@ -1098,10 +1287,13 @@ with chart_workspace_col:
                 else get_chart_builder_field_label(meta.get("measure"))
             )
             st.markdown(f"### {result_title}")
-            st.caption(
-                f"Source: {meta.get('rows', 0):,} personnel records · "
-                f"Y-axis: {result_measure}"
+            source_summary = (
+                f"{meta.get('personnel_rows', 0):,} personnel · "
+                f"{meta.get('rows', 0):,} competency observations"
+                if meta.get("score_gap_enabled")
+                else f"{meta.get('rows', 0):,} personnel records"
             )
+            st.caption(f"Source: {source_summary} · Y-axis: {result_measure}")
             st.plotly_chart(
                 figure,
                 width="stretch",
@@ -1251,7 +1443,9 @@ with chart_workspace_col:
                     st.caption(f"{len(drill_df):,} personnel records in this drill-down.")
                     display_columns = [
                         column for column in (
-                            "Name", "Staff ID", "Department", "Staff Position", "SG", "Nationality"
+                            "Name", "Staff ID", "Department", "Staff Position", "SG", "Nationality",
+                            "Current SG", "Career Ruler", "Target SG", "Competency Code",
+                            "Competency Name", "Actual Score", "Target Score", "Gap", "Gap Severity",
                         )
                         if column in drill_df.columns
                     ]

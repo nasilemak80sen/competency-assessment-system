@@ -91,3 +91,25 @@ def test_chart_configuration_does_not_contain_workforce_filter_widgets():
     assert "st.multiselect(" not in controls
     assert "with chart_workspace_col:" in page
     assert "with chart_col:" not in page
+
+
+
+def test_chart_builder_exposes_score_gap_mode_and_z_axis_controls():
+    page = Path("v2/pages/06_Chart_Builder.py").read_text(encoding="utf-8")
+
+    assert 'key="cb_score_gap_enabled_v2"' in page
+    assert 'key="cb_score_gap_target_mode_v2"' in page
+    assert "build_score_gap_chart_dataframe(" in page
+    assert 'key="cb_enable_z_axis_v2"' in page
+    assert 'key="cb_z_axis_v2"' in page
+    assert '"3D Scatter Plot"' in page
+    assert 'z_col=z_col if selected_chart == "3D Scatter Plot" else None' in page
+
+
+def test_score_gap_uses_long_form_chart_data_and_retains_personnel_scope():
+    page = Path("v2/pages/06_Chart_Builder.py").read_text(encoding="utf-8")
+
+    assert "chart_input_df = build_score_gap_chart_dataframe(" in page
+    assert "builder = ChartBuilder(chart_input_df)" in page
+    assert 'st.session_state["cb_last_chart_source_data"] = chart_input_df.copy()' in page
+    assert '"personnel_rows": len(working_df)' in page

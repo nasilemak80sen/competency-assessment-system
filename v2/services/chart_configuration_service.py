@@ -28,7 +28,7 @@ def infer_chart_category(configuration: dict) -> str:
     chart = configuration.get("chart", {}) if isinstance(configuration, dict) else {}
     fields = {
         str(chart.get(key) or "")
-        for key in ("dimension", "measure", "size", "x_group", "y_group")
+        for key in ("dimension", "measure", "size", "z_axis", "x_group", "y_group")
     }
     competency_codes = {
         *(f"B{i}" for i in range(1, 13)),
@@ -40,6 +40,10 @@ def infer_chart_category(configuration: dict) -> str:
         field in competency_codes
         or field.startswith("R-")
         or field.startswith("G--")
+        or field in {
+            "Actual Score", "Target Score", "Gap", "Gap Burden",
+            "Capped Actual", "Competency Name", "Competency Code",
+        }
         for field in fields
     ):
         return "Competency Analysis"

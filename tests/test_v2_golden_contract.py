@@ -189,6 +189,11 @@ def test_chart_builder_has_guided_axes_numeric_measures_and_result_validation():
         "cb_live_update_v2",
         "cb_reset_filters_v2",
         "cb_reset_chart_setup_v2",
+        "Enable competency Score & Gap analysis",
+        "Requirement basis",
+        "Enable Z-axis (3D)",
+        "Z-axis field",
+        "3D Scatter Plot",
     ]
     missing = [x for x in required if x not in s]
     assert not missing, f"Chart Builder workflow contract missing: {missing}"

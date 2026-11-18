@@ -119,6 +119,8 @@ class ChartCompatibility:
                       "description": "Part-to-whole composition; best with a small number of categories."},
         "Bubble Chart": {"x": {DataType.NUMERIC}, "y": {DataType.NUMERIC}, "icon": "🫧",
                          "description": "Numeric relationship with a third measure controlling size."},
+        "3D Scatter Plot": {"x": {DataType.NUMERIC}, "y": {DataType.NUMERIC}, "icon": "🧊",
+                            "description": "Three independent numeric dimensions shown in an interactive 3D scatter plot."},
     }
 
     @staticmethod
@@ -370,7 +372,8 @@ class ChartBuilder:
     def create_chart(self, chart_type: str, x_col: str, y_col: Optional[str] = None,
                      color_col: Optional[str] = None, size_col: Optional[str] = None,
                      title: Optional[str] = None, aggregation: str = "Average",
-                     top_n: Optional[int] = None, **kwargs) -> go.Figure:
+                     top_n: Optional[int] = None, z_col: Optional[str] = None,
+                     **kwargs) -> go.Figure:
         if chart_type not in ChartCompatibility.CHART_TYPES:
             raise ValueError(f"Unknown chart type: {chart_type}")
 
@@ -418,6 +421,34 @@ class ChartBuilder:
             plot_df = self.df.dropna(subset=[x_col, y_col]).copy()
             fig = px.box(plot_df, x=x_col, y=y_col, color=color_col, title=title,
                          hover_data=self._hover_columns(plot_df))
+        elif chart_type == "3D Scatter Plot":
+            if not z_col:
+                raise ValueError("3D Scatter Plot requires a numeric Z-axis field.")
+            missing_axes = [column for column in (x_col, y_col, z_col) if column not in self.df.columns]
+            if missing_axes:
+                raise KeyError(f"3D axis fields are missing: {missing_axes}")
+            plot_df = self.df.dropna(subset=[x_col, y_col, z_col]).copy()
+            for axis_column in (x_col, y_col, z_col):
+                plot_df[axis_column] = pd.to_numeric(plot_df[axis_column], errors="coerce")
+            plot_df = plot_df.dropna(subset=[x_col, y_col, z_col])
+            if plot_df.empty:
+                raise ValueError("No complete numeric X, Y and Z observations are available.")
+            fig = px.scatter_3d(
+                plot_df,
+                x=x_col,
+                y=y_col,
+                z=z_col,
+                color=color_col,
+                title=title,
+                hover_data=self._hover_columns(plot_df),
+            )
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title=get_chart_builder_field_label(x_col),
+                    yaxis_title=get_chart_builder_field_label(y_col),
+                    zaxis_title=get_chart_builder_field_label(z_col),
+                )
+            )
         elif chart_type == "Scatter Plot":
             required = [x_col, y_col] + ([size_col] if size_col else [])
             plot_df = self.df.dropna(subset=required).copy()

@@ -215,3 +215,28 @@ def test_numeric_relationship_recommends_bubble_as_a_three_measure_option(workfo
 
     assert recommendations[0]["chart"] == "Scatter Plot"
     assert any(item["chart"] == "Bubble Chart" for item in recommendations)
+
+
+def test_3d_scatter_uses_numeric_axes_and_drops_incomplete_rows():
+    dataframe = pd.DataFrame({
+        "Actual": [1.0, 2.0, 3.0, None],
+        "Target": [2.0, 2.0, 2.0, 3.0],
+        "Gap": [1.0, 0.0, -1.0, 3.0],
+        "Career Ruler": ["BASE", "BASE", "RDP", "RDP"],
+    })
+
+    figure = ChartBuilder(dataframe).create_chart(
+        "3D Scatter Plot", "Actual", "Target",
+        color_col="Career Ruler", z_col="Gap",
+    )
+
+    assert figure.data
+    assert sum(len(trace.x) for trace in figure.data) == 3
+    assert figure.layout.scene.xaxis.title.text == "Actual"
+    assert figure.layout.scene.yaxis.title.text == "Target"
+    assert figure.layout.scene.zaxis.title.text == "Gap"
+
+
+def test_3d_scatter_requires_an_explicit_z_axis(workforce_df):
+    with pytest.raises(ValueError, match="Z-axis"):
+        ChartBuilder(workforce_df).create_chart("3D Scatter Plot", "SG", "Score")
