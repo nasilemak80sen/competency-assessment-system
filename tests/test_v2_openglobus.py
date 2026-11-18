@@ -1,7 +1,12 @@
 """Regression tests for the Phase 2 OpenGlobus nationality component."""
 from __future__ import annotations
 import pandas as pd
-from v2.components.openglobus import OPEN_GLOBUS_VERSION,_build_openglobus_html,_records_from_map_df
+from v2.components.openglobus import (
+    OPEN_GLOBUS_VERSION,
+    _PROFILE_BRIDGE_JS,
+    _build_openglobus_html,
+    _records_from_map_df,
+)
 
 def _sample_map_df():
     return pd.DataFrame({"Nationality":["Malaysian","British","Indonesian"],"Personnel Count":[176,5,6],"Latitude":[4.2105,55.3781,-0.7893],"Longitude":[101.9758,-3.4360,113.9213],"Representation Display":["94.1%","2.7%","3.2%"]})
@@ -45,15 +50,20 @@ def test_openglobus_hover_is_anchored_near_marker_and_country_labels_are_hidden(
     assert "Labels:" not in html
 
 
-def test_openglobus_personnel_directory_generates_assessment_profile_links():
+def test_openglobus_personnel_directory_emits_session_aware_profile_selection():
     html=_build_openglobus_html(_records_from_map_df(_sample_map_df(),_sample_people_df()))
 
-    assert "assessmentProfileUrl" in html
-    assert 'target="_blank"' in html
-    assert 'individual-assessment' in html
-    assert "personnel_id" in html
+    assert "data-personnel-id" in html
+    assert "postMessage" in html
+    assert 'type:"profile-select"' in html
+    assert "personnelId" in html
     assert "View profile" in html
     assert "Profile not linked" in html
+    assert "assessmentProfileUrl" not in html
+    assert 'target="_blank" rel="noopener" aria-label="Open assessment profile' not in html
+
+    assert 'event.source !== frame.contentWindow' in _PROFILE_BRIDGE_JS
+    assert 'setTriggerValue("profile_selected", personnelId)' in _PROFILE_BRIDGE_JS
 
 
 def test_globe_initial_camera_uses_a_north_up_vector():
