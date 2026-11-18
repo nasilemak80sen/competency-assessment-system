@@ -208,6 +208,92 @@ def test_archived_staff_id_cannot_be_reimported_as_a_new_personnel_record():
         engine.dispose()
 
 
+def test_name_matched_update_can_apply_a_new_staff_id_without_creating_a_duplicate():
+    engine, session = _session()
+    try:
+        person = Personnel(
+            staff_id="OLD-101",
+            name="Name Matched Person",
+            department="DPE",
+            is_deleted=False,
+            is_active=True,
+        )
+        session.add(person)
+        session.commit()
+        original_personnel_id = person.id
+        source = pd.DataFrame(
+            [
+                {
+                    "Name": "Name Matched Person",
+                    "Staff ID": "NEW-101",
+                    "Department": "PSR",
+                }
+            ]
+        )
+
+        preview = build_personnel_import_preview(session, source)
+        plan = preview["plan"].copy()
+        assert plan.iloc[0]["Outcome"] == "Potential update by name"
+        assert plan.iloc[0]["Action"] == "Update"
+        assert plan.iloc[0]["Include"] is True or bool(plan.iloc[0]["Include"])
+
+        resolved, errors, decisions = resolve_personnel_import(
+            source,
+            plan,
+            active_people=preview["active_people"],
+            all_staff_ids=preview["all_staff_ids"],
+        )
+        assert errors == []
+        assert decisions[0]["matched_personnel_id"] == original_personnel_id
+        assert resolved.iloc[0]["Staff ID"] == "NEW-101"
+        assert int(resolved.iloc[0]["__matched_personnel_id"]) == original_personnel_id
+
+        import db_ops
+        result = db_ops.bulk_import_from_df(session, resolved)
+        updated = session.query(Personnel).filter_by(id=original_personnel_id).one()
+        assert result["updated"] == 1
+        assert result["added"] == 0
+        assert updated.staff_id == "NEW-101"
+        assert updated.department == "PSR"
+        assert session.query(Personnel).filter_by(staff_id="OLD-101").count() == 0
+        assert session.query(Personnel).filter_by(staff_id="NEW-101").count() == 1
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_name_matched_update_rejects_a_staff_id_owned_by_another_person():
+    engine, session = _session()
+    try:
+        session.add_all(
+            [
+                Personnel(staff_id="OLD-101", name="Name Matched Person", is_deleted=False, is_active=True),
+                Personnel(staff_id="TAKEN-1", name="Other Person", is_deleted=False, is_active=True),
+            ]
+        )
+        session.commit()
+        source = pd.DataFrame(
+            [{"Name": "Name Matched Person", "Staff ID": "TAKEN-1"}]
+        )
+        preview = build_personnel_import_preview(session, source)
+        plan = preview["plan"].copy()
+        plan.loc[0, "Action"] = "Update"
+        plan.loc[0, "Match Staff ID"] = "OLD-101"
+        plan.loc[0, "Include"] = True
+
+        resolved, errors, _ = resolve_personnel_import(
+            source,
+            plan,
+            active_people=preview["active_people"],
+            all_staff_ids=preview["all_staff_ids"],
+        )
+        assert resolved.empty
+        assert any("already assigned to another" in error for error in errors)
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_database_import_updates_name_by_real_staff_id_and_keeps_uptrex_placeholder_rule():
     engine, session = _session()
     try:

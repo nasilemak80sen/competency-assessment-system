@@ -315,6 +315,7 @@ def build_personnel_import_preview(session, raw_df: pd.DataFrame) -> dict:
         ],
         "active_people": [
             {
+                "id": int(person.id),
                 "staff_id": person.staff_id,
                 "name": person.name,
                 "label": f"{person.name} · {person.staff_id}",
@@ -398,10 +399,28 @@ def resolve_personnel_import(
                 )
                 continue
             match = candidates[0]
-            source["Staff ID"] = match["staff_id"]
+            matched_staff_id = normalize_staff_id(match["staff_id"])
+            if source_id and source_id != matched_staff_id and source_id in reserved_ids:
+                errors.append(
+                    f"Source row {source_index + 1}: the workbook Staff ID '{source_id}' "
+                    "is already assigned to another active or archived database record."
+                )
+                continue
+            # Carry the database primary key through the approved plan. This
+            # lets the existing writer update a matched person even when the
+            # workbook contains a legitimate new Staff ID.
+            source["__matched_personnel_id"] = int(match["id"])
+            if source_id:
+                source["Staff ID"] = re.sub(
+                    r"\.0$", "", str(source.get("Staff ID", "")).strip()
+                )
+            else:
+                source["Staff ID"] = match["staff_id"]
             decisions[source_index] = {
                 "action": "update",
                 "matched_staff_id": match["staff_id"],
+                "matched_personnel_id": int(match["id"]),
+                "source_staff_id": source_id or match["staff_id"],
             }
         elif action == "Add":
             if source_id in reserved_ids and source_id != "uptrex":
@@ -426,7 +445,7 @@ def resolve_personnel_import(
         result_indices.append(raw_df.index[source_index])
 
     result_df = (
-        pd.DataFrame(result_rows, columns=raw_df.columns, index=result_indices)
+        pd.DataFrame(result_rows, index=result_indices)
         if result_rows else raw_df.iloc[0:0].copy()
     )
     return result_df, errors, decisions

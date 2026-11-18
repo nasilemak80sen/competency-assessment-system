@@ -823,13 +823,34 @@ def bulk_import_from_df(session: Session, df: pd.DataFrame, ruler_map: Optional[
             name_slug = "".join(c if c.isalnum() else "_" for c in str(row.get("Name", "UNKNOWN")))
             sid = f"NOID-{name_slug[:40]}-{idx}"
 
-        existing = session.query(Personnel).filter_by(staff_id=sid).first()
+        matched_personnel_id = _safe(row.get("__matched_personnel_id"))
+        existing = None
+        if matched_personnel_id is not None:
+            try:
+                existing = session.query(Personnel).filter_by(
+                    id=int(matched_personnel_id)
+                ).first()
+            except (TypeError, ValueError, OverflowError):
+                existing = None
+            if existing is None:
+                errors += 1
+                continue
+            # The source Staff ID may legitimately have changed. Never let an
+            # approved match steal an ID already owned by another DB record.
+            if sid and sid != str(existing.staff_id):
+                collision = session.query(Personnel).filter_by(staff_id=sid).first()
+                if collision is not None and int(collision.id) != int(existing.id):
+                    errors += 1
+                    continue
+        else:
+            existing = session.query(Personnel).filter_by(staff_id=sid).first()
 
         # UPTREX is the known shared placeholder used by multiple trainees.
-        # For real Staff IDs, the ID is authoritative: a changed name is a
-        # profile update, not evidence that a second person should be created.
+        # This special synthetic-ID rule applies only to unmatched imports,
+        # never to a deliberate update tied to a database primary key.
         if (
             existing
+            and matched_personnel_id is None
             and existing.name != row.get("Name")
             and sid.strip().casefold() == "uptrex"
         ):
