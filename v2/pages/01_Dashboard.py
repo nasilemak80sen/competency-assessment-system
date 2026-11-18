@@ -7,7 +7,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from config import SG_HIERARCHY, SG_TO_POSITION_BRACKET, POSITION_HIERARCHY_ORDER
-from core.bootstrap import get_master_data
+from core.bootstrap import get_master_data, open_session
+from models import Personnel
 from analytics.nationality import prepare_nationality_map_data
 from components.openglobus import render_nationality_globe
 from analytics.workforce import scatter_age_vs_grade
@@ -15,6 +16,63 @@ from components.navigation import render_navigation
 
 
 render_navigation()
+
+def _normalise_staff_id(value):
+    """Create a stable join key for workbook and SQLite Staff ID values."""
+    if value is None or pd.isna(value):
+        return None
+    key = str(value).strip()
+    if not key or key.casefold() in {"nan", "none", "nat"}:
+        return None
+    if key.endswith(".0") and key[:-2].isdigit():
+        key = key[:-2]
+    return key.casefold()
+
+
+def _attach_personnel_database_ids(personnel_df):
+    """Attach stable SQLite Personnel IDs for the OpenGlobus profile links."""
+    out = personnel_df.copy()
+    out["personnel_id"] = None
+    session = open_session()
+    try:
+        database_people = (
+            session.query(Personnel.id, Personnel.staff_id, Personnel.name)
+            .filter(Personnel.is_deleted.is_not(True))
+            .all()
+        )
+    except Exception as exc:
+        st.warning(
+            "OpenGlobus profile links are unavailable because database personnel "
+            f"IDs could not be loaded: {exc}"
+        )
+        return out
+    finally:
+        session.close()
+
+    by_staff_id = {}
+    name_candidates = {}
+    for personnel_id, staff_id, name in database_people:
+        staff_key = _normalise_staff_id(staff_id)
+        name_key = _normalise_staff_id(name)
+        if staff_key:
+            by_staff_id[staff_key] = int(personnel_id)
+        if name_key:
+            name_candidates.setdefault(name_key, []).append(int(personnel_id))
+
+    unique_name_ids = {
+        name: ids[0] for name, ids in name_candidates.items() if len(ids) == 1
+    }
+    for index, row in out.iterrows():
+        staff_key = _normalise_staff_id(row.get("Staff ID"))
+        name_key = _normalise_staff_id(row.get("Name"))
+        personnel_id = by_staff_id.get(staff_key) if staff_key else None
+        if personnel_id is None and name_key:
+            personnel_id = unique_name_ids.get(name_key)
+        out.at[index, "personnel_id"] = personnel_id
+
+    return out
+
+
 
 # =============================================================================
 # PAGE: DASHBOARD HOME — GOLDEN APP PARITY
@@ -97,9 +155,10 @@ if nationality_map_df.empty:
         "No valid nationality data is available for the geographical visualization."
     )
 else:
+    map_personnel_df = _attach_personnel_database_ids(df)
     render_nationality_globe(
         nationality_map_df,
-        personnel_df=df,
+        personnel_df=map_personnel_df,
         height=620,
     )
     st.caption(
