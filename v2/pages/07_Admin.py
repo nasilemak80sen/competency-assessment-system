@@ -105,6 +105,12 @@ def _number(value, default=0.0, minimum=0.0, maximum=600.0) -> float:
     return float(default)
 
 
+def _numeric_widget_max(value, expected_max=60.0):
+    """Keep valid legacy values visible without silently truncating them."""
+    current = _number(value, minimum=0.0, maximum=600.0)
+    return min(600.0, max(float(expected_max), current * 1.25))
+
+
 def _optional_date(value):
     """Return a real date or None; never invent today's date for blank fields."""
     if _is_missing(value) or str(value).strip() in {"", "NaT", "nan", "None"}:
@@ -354,21 +360,45 @@ def _save_personnel_form(form_key: str, prefix: str, row: dict | None, master_df
         with st.expander("3 · Career and assessment profile", expanded=False):
             c1, c2 = st.columns(2)
             with c1:
+                years_in_pet_value = _number(source.get("Years in PET"))
+                years_re_experience_value = _number(source.get("Years of RE Experience"))
+                sg_years_value = _number(source.get("Years in Salary Grade"))
                 years_in_pet = st.number_input(
-                    "Years in PET", 0.0, 60.0,
-                    _number(source.get("Years in PET")), 0.5,
+                    "Years in PET", min_value=0.0,
+                    max_value=_numeric_widget_max(source.get("Years in PET")),
+                    value=years_in_pet_value, step=0.5,
                     key=f"{prefix}_pet",
                 )
                 years_re_experience = st.number_input(
-                    "Years of RE experience", 0.0, 60.0,
-                    _number(source.get("Years of RE Experience")), 0.5,
+                    "Years of RE experience", min_value=0.0,
+                    max_value=_numeric_widget_max(source.get("Years of RE Experience")),
+                    value=years_re_experience_value, step=0.5,
                     key=f"{prefix}_re",
                 )
                 sg_years = st.number_input(
-                    "Years in salary grade", 0.0, 60.0,
-                    _number(source.get("Years in Salary Grade")), 0.5,
+                    "Years in salary grade", min_value=0.0,
+                    max_value=_numeric_widget_max(source.get("Years in Salary Grade")),
+                    value=sg_years_value, step=0.5,
                     key=f"{prefix}_sgyears",
                 )
+                unusual_tenure = {
+                    "Years in PET": years_in_pet_value,
+                    "Years of RE experience": years_re_experience_value,
+                    "Years in salary grade": sg_years_value,
+                }
+                unusual_tenure = {
+                    label: value for label, value in unusual_tenure.items()
+                    if value > 60.0
+                }
+                if unusual_tenure:
+                    details = ", ".join(
+                        f"{label}: {value:g}" for label, value in unusual_tenure.items()
+                    )
+                    st.warning(
+                        "This record contains tenure values above 60 years "
+                        f"({details}). Existing values are preserved for review; "
+                        "they have not been automatically changed."
+                    )
                 age_promoted = st.number_input(
                     "Age promoted to Staff / Principal", 18.0, 100.0,
                     _number(source.get("Age Promoted to Staff or Principal"), 30, 18, 100),
