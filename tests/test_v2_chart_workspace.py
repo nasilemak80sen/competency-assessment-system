@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from v2.services.chart_workspace_service import (
     chart_configuration_matches,
     should_refresh_chart,
@@ -70,3 +72,21 @@ def test_filter_changes_trigger_live_refresh():
         last_meta=_config(),
         current_config=_config(filter_signature=("Department: PSR",)),
     ) is True
+
+
+def test_workforce_filters_are_rendered_above_chart_workspace():
+    page = Path("v2/pages/06_Chart_Builder.py").read_text(encoding="utf-8")
+    filters_at = page.index("# WORKFORCE FILTER TOOLBAR")
+    workspace_at = page.index('chart_controls_col, chart_workspace_col = st.columns([3, 9]')
+    assert filters_at < workspace_at
+    assert 'key="cb_reset_filters_v2"' in page
+    assert 'key="cb_reset_chart_setup_v2"' in page
+
+
+def test_chart_configuration_does_not_contain_workforce_filter_widgets():
+    page = Path("v2/pages/06_Chart_Builder.py").read_text(encoding="utf-8")
+    controls = page.split('chart_controls_col, chart_workspace_col = st.columns([3, 9]', 1)[1]
+    controls = controls.split("with chart_workspace_col:", 1)[0]
+    assert "st.text_input(" not in controls or "Chart title" in controls
+    assert "st.multiselect(" not in controls
+    assert '"Department"' not in controls or "get_chart_builder_field_label" in controls
