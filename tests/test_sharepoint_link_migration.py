@@ -168,7 +168,7 @@ def test_duplicate_personnel_names_are_flagged_as_ambiguous():
     session.flush()
     frame = load_sharepoint_mapping(
         "mapping.txt",
-        ("\\t".join(mapping_row(
+        ("\t".join(mapping_row(
             "Same Person",
             "",
             "CV.pdf",
