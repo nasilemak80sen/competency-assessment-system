@@ -61,6 +61,20 @@ def _clean(value: object) -> str:
     return str(value).strip()
 
 
+def _normalize_staff_id(value: object) -> str:
+    cleaned = _clean(value)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\\.0$", "", cleaned)
+    try:
+        numeric = float(cleaned)
+        if numeric.is_integer():
+            return str(int(numeric))
+    except ValueError:
+        pass
+    return cleaned.casefold()
+
+
 def _excel_date(value: object):
     """Read Excel serial dates and ordinary date strings safely."""
     if value is None or value == "":
@@ -162,16 +176,16 @@ def import_sharepoint_mapping(session: Session, mapping_df: pd.DataFrame) -> dic
     )
     people_by_staff_id: dict[str, list[Personnel]] = {}
     for person in active_people:
-        staff_id = _clean(person.staff_id)
+        staff_id = _normalize_staff_id(person.staff_id)
         if staff_id:
-            people_by_staff_id.setdefault(staff_id.casefold(), []).append(person)
+            people_by_staff_id.setdefault(staff_id, []).append(person)
 
     seen_rows: dict[tuple[str, str], str] = {}
 
     for row_number, row in mapping_df.iterrows():
         source_name = _clean(row.get("Name"))
         source_filename = _clean(row.get("CV File Name"))
-        source_staff_id = _clean(row.get("Staff ID"))
+        source_staff_id = _normalize_staff_id(row.get("Staff ID"))
         url = _clean(row.get("SharePoint URL"))
         file_type = _clean(row.get("File Type")).upper().lstrip(".")
 
@@ -209,7 +223,7 @@ def import_sharepoint_mapping(session: Session, mapping_df: pd.DataFrame) -> dic
         person = None
         match_method = "Exact normalized personnel name"
         if source_staff_id:
-            staff_matches = people_by_staff_id.get(source_staff_id.casefold(), [])
+            staff_matches = people_by_staff_id.get(source_staff_id, [])
             if len(staff_matches) > 1:
                 issue("ambiguous", "Staff ID matches multiple active personnel records")
                 continue
