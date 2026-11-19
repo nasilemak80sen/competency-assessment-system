@@ -23,6 +23,10 @@ from services.import_service import (
     bulk_import_cv_list,
 )
 from services.auth_service import record_admin_action
+from sharepoint_link_migration import (
+    load_sharepoint_mapping,
+    import_sharepoint_mapping,
+)
 
 render_navigation()
 render_header(
@@ -74,6 +78,111 @@ def _show_last_report():
             f"CV rows matched for import: {report.get('cv_rows_selected', 0)}"
         )
 
+
+
+st.divider()
+st.subheader("🔗 Replacement SharePoint document links")
+st.caption(
+    "Import the tab-delimited Excel export or XLSX mapping from the new "
+    "ecm_ups_coe location. Each document is matched by exact personnel name "
+    "and exact filename. Staff ID is cross-checked when available. "
+    "Partial-name matching is deliberately disabled."
+)
+mapping_upload = st.file_uploader(
+    "Upload replacement SharePoint mapping",
+    type=["txt", "tsv", "csv", "xlsx", "xlsm"],
+    key="sharepoint_mapping_upload_v1",
+)
+if mapping_upload is not None:
+    try:
+        mapping_df = load_sharepoint_mapping(
+            mapping_upload.name,
+            mapping_upload.getvalue(),
+        )
+        valid_links = int(
+            mapping_df["SharePoint URL"].map(
+                lambda value: str(value).startswith(
+                    "https://petronas.sharepoint.com/sites/ecm_ups_coe/"
+                )
+            ).sum()
+        )
+        st.info(
+            f"Loaded {len(mapping_df):,} document rows; "
+            f"{valid_links:,} point to the replacement ecm_ups_coe location."
+        )
+        st.dataframe(
+            mapping_df[
+                ["Name", "Staff ID", "CV File Name", "File Type"]
+            ].head(20),
+            width="stretch",
+            hide_index=True,
+        )
+        if st.button(
+            "🔄 Apply replacement document links",
+            type="primary",
+            disabled=mapping_df.empty,
+            key="apply_sharepoint_mapping_v1",
+            use_container_width=True,
+        ):
+            migration_session = open_session()
+            try:
+                with st.spinner(
+                    "Matching each document to its personnel record and updating the database…"
+                ):
+                    migration_result = import_sharepoint_mapping(
+                        migration_session,
+                        mapping_df,
+                    )
+                    migration_session.commit()
+                audit_ok, audit_message = record_admin_action(
+                    current_user(),
+                    "SHAREPOINT_DOCUMENT_LINK_MIGRATION",
+                    target_username=None,
+                    details={
+                        "source_filename": mapping_upload.name,
+                        "source_rows": len(mapping_df),
+                        "updated": migration_result["updated"],
+                        "added": migration_result["added"],
+                        "unmatched": migration_result["unmatched"],
+                        "ambiguous": migration_result["ambiguous"],
+                        "skipped": migration_result["skipped"],
+                        "errors": migration_result["errors"],
+                    },
+                )
+                st.success(
+                    "SharePoint link migration completed. "
+                    f"Updated: {migration_result['updated']:,} · "
+                    f"Added: {migration_result['added']:,} · "
+                    f"Unmatched: {migration_result['unmatched']:,} · "
+                    f"Ambiguous: {migration_result['ambiguous']:,} · "
+                    f"Skipped: {migration_result['skipped']:,} · "
+                    f"Errors: {migration_result['errors']:,}"
+                )
+                if not audit_ok:
+                    st.warning(
+                        "The document updates were committed, but the admin audit event "
+                        f"could not be recorded: {audit_message}"
+                    )
+                if migration_result["issues"]:
+                    with st.expander(
+                        f"Review {len(migration_result['issues']):,} rows requiring attention",
+                        expanded=True,
+                    ):
+                        st.dataframe(
+                            pd.DataFrame(migration_result["issues"]),
+                            width="stretch",
+                            hide_index=True,
+                        )
+                st.cache_data.clear()
+            except Exception as exc:
+                migration_session.rollback()
+                st.error(f"SharePoint link migration failed: {exc}")
+            finally:
+                migration_session.close()
+    except Exception as exc:
+        st.error(f"Unable to read the replacement SharePoint mapping: {exc}")
+
+st.divider()
 
 uploaded_file = st.file_uploader(
     "Upload the RE Fraternity master workbook",
