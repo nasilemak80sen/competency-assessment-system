@@ -82,6 +82,11 @@ from data_loader import (
 
 import db_ops
 
+from sharepoint_link_migration import (
+    load_sharepoint_mapping,
+    import_sharepoint_mapping,
+)
+
 
 # =============================================================================
 # ANALYTICS AND VISUALIZATION MODULES
@@ -12284,6 +12289,98 @@ elif page == "⚙️ Admin: Import Data":
                     )
                 except OSError:
                     pass
+
+    st.divider()
+    st.subheader("🔗 Migrate replacement SharePoint document links")
+    st.caption(
+        "Upload the Excel tab-delimited export or XLSX mapping from the new "
+        "ecm_ups_coe location. Links are matched to personnel using exact "
+        "normalized names and exact document filenames; Staff ID is checked "
+        "when supplied. No partial-name matching is used."
+    )
+    mapping_upload = st.file_uploader(
+        "Upload replacement SharePoint mapping",
+        type=["txt", "tsv", "csv", "xlsx", "xlsm"],
+        key="sharepoint_mapping_upload",
+    )
+    if mapping_upload is not None:
+        try:
+            mapping_df = load_sharepoint_mapping(
+                mapping_upload.name,
+                mapping_upload.getvalue(),
+            )
+            valid_count = int(
+                mapping_df["SharePoint URL"].map(
+                    lambda value: str(value).startswith(
+                        "https://petronas.sharepoint.com/sites/ecm_ups_coe/"
+                    )
+                ).sum()
+            )
+            st.info(
+                f"Loaded {len(mapping_df):,} mapping rows, "
+                f"including {valid_count:,} ecm_ups_coe links."
+            )
+            preview_columns = [
+                "Name",
+                "Staff ID",
+                "CV File Name",
+                "File Type",
+                "SharePoint URL",
+            ]
+            st.dataframe(
+                mapping_df[preview_columns].head(15),
+                width="stretch",
+                hide_index=True,
+            )
+            if st.button(
+                "🔄 Apply SharePoint link migration",
+                type="primary",
+                width="stretch",
+                key="apply_sharepoint_mapping",
+                disabled=mapping_df.empty,
+            ):
+                migration_session = None
+                try:
+                    migration_session = get_session(engine)
+                    with st.spinner(
+                        "Matching personnel and updating document links..."
+                    ):
+                        migration_result = import_sharepoint_mapping(
+                            migration_session,
+                            mapping_df,
+                        )
+                        migration_session.commit()
+                    st.success(
+                        "SharePoint migration processed. "
+                        f"Updated: {migration_result['updated']:,} · "
+                        f"Added: {migration_result['added']:,} · "
+                        f"Unmatched: {migration_result['unmatched']:,} · "
+                        f"Ambiguous: {migration_result['ambiguous']:,} · "
+                        f"Skipped: {migration_result['skipped']:,} · "
+                        f"Errors: {migration_result['errors']:,}"
+                    )
+                    if migration_result["issues"]:
+                        with st.expander(
+                            f"Review {len(migration_result['issues']):,} rows requiring attention",
+                            expanded=True,
+                        ):
+                            st.dataframe(
+                                pd.DataFrame(migration_result["issues"]),
+                                width="stretch",
+                                hide_index=True,
+                            )
+                    bump_version()
+                    st.cache_data.clear()
+                except Exception as exc:
+                    if migration_session is not None:
+                        migration_session.rollback()
+                    st.error(f"SharePoint migration failed: {exc}")
+                finally:
+                    if migration_session is not None:
+                        migration_session.close()
+        except Exception as exc:
+            st.error(f"Unable to read the SharePoint mapping: {exc}")
+
 # ═════════════════════════════════════════════════════════════════════════════
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE: ADMIN - PERSONNEL DATABASE SETTINGS
