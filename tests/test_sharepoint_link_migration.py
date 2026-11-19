@@ -149,3 +149,35 @@ def test_import_does_not_use_partial_name_matching():
 def test_normalization_is_case_and_punctuation_insensitive_but_exact():
     assert normalize_match_value("A. Hakim-Basri") == normalize_match_value("a hakim basri")
     assert normalize_match_value("Abdul Hakim") != normalize_match_value("Abdul Hakim Basri")
+
+
+
+def test_filename_matching_preserves_punctuation():
+    from sharepoint_link_migration import normalize_filename
+
+    assert normalize_filename("CV-A.pdf") != normalize_filename("CV_A.pdf")
+    assert normalize_filename("CV A.pdf") != normalize_filename("CV-A.pdf")
+
+
+def test_duplicate_personnel_names_are_flagged_as_ambiguous():
+    session = make_session()
+    session.add_all([
+        Personnel(staff_id="10004", name="Same Person", is_deleted=False),
+        Personnel(staff_id="10005", name="Same Person", is_deleted=False),
+    ])
+    session.flush()
+    frame = load_sharepoint_mapping(
+        "mapping.txt",
+        ("\\t".join(mapping_row(
+            "Same Person",
+            "",
+            "CV.pdf",
+            "https://petronas.sharepoint.com/sites/ecm_ups_coe/PE-RE/cv.pdf",
+        ))).encode("utf-8"),
+    )
+
+    result = import_sharepoint_mapping(session, frame)
+
+    assert result["ambiguous"] == 1
+    assert result["added"] == 0
+    session.close()
