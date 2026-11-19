@@ -55,6 +55,14 @@ def normalize_match_value(value: object) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def normalize_filename(value: object) -> str:
+    """Normalize case and spacing while preserving filename punctuation."""
+    if value is None or pd.isna(value):
+        return ""
+    text = unicodedata.normalize("NFKC", str(value)).casefold().strip()
+    return re.sub(r"\\s+", " ", text)
+
+
 def _clean(value: object) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -137,7 +145,7 @@ def load_sharepoint_mapping(file_name: str, file_bytes: bytes) -> pd.DataFrame:
     mapped["File Type"] = mapped["File Type"].str.upper().str.lstrip(".")
     mapped["Modified Date Parsed"] = mapped["Modified Date"].map(_excel_date)
     mapped["Normalized Name"] = mapped["Name"].map(normalize_match_value)
-    mapped["Normalized File Name"] = mapped["CV File Name"].map(normalize_match_value)
+    mapped["Normalized File Name"] = mapped["CV File Name"].map(normalize_filename)
     return mapped.reset_index(drop=True)
 
 
@@ -209,7 +217,7 @@ def import_sharepoint_mapping(session: Session, mapping_df: pd.DataFrame) -> dic
             continue
 
         normalized_name = normalize_match_value(source_name)
-        normalized_filename = normalize_match_value(source_filename)
+        normalized_filename = normalize_filename(source_filename)
         mapping_key = (normalized_name, normalized_filename)
         previous_url = seen_rows.get(mapping_key)
         if previous_url is not None:
@@ -260,7 +268,7 @@ def import_sharepoint_mapping(session: Session, mapping_df: pd.DataFrame) -> dic
         )
         exact_documents = [
             document for document in existing_documents
-            if normalize_match_value(document.cv_file_name) == normalized_filename
+            if normalize_filename(document.cv_file_name) == normalized_filename
         ]
         if len(exact_documents) > 1:
             issue("ambiguous", "Multiple existing document rows have the same filename for this person")
