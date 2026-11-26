@@ -163,7 +163,7 @@ def _metadata_from_grid(rows: list[list[str]]) -> dict:
         "person_name": "",
         "staff_id": "",
         "assessment_date": None,
-        "assessment_level": "",
+        "assessment_type": "",
         "assessor1": "",
         "assessor2": "",
         "supervisor": "",
@@ -198,8 +198,8 @@ def _metadata_from_grid(rows: list[list[str]]) -> dict:
                 metadata["supervisor"] = next(
                     (_clean(v) for v in row[index + 1:] if _clean(v)), ""
                 )
-        if not metadata["assessment_level"] and "sma 2025" in _normalise(joined):
-            metadata["assessment_level"] = "SMA 2025"
+        if not metadata["assessment_type"] and "sma 2025" in _normalise(joined):
+            metadata["assessment_type"] = "SMA 2025"
     return metadata
 
 
