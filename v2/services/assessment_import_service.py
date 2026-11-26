@@ -201,7 +201,7 @@ def _metadata_from_grid(rows: list[list[str]]) -> dict:
                 )
         if not metadata["person_name"]:
             match = re.match(
-                r"^(?:personnel\\s+|employee\\s+)?name\\s*[:\\-]?\\s+(.+)$",
+                r"^(?:personnel\s+|employee\s+)?name\s*[:\-]?\s+(.+)$",
                 joined,
                 re.IGNORECASE,
             )
@@ -209,7 +209,7 @@ def _metadata_from_grid(rows: list[list[str]]) -> dict:
                 metadata["person_name"] = match.group(1).strip()
         if not metadata["staff_id"]:
             match = re.match(
-                r"^(?:staff\\s*id|staffid|employee\\s*id)\\s*[:\\-]?\\s+(.+)$",
+                r"^(?:staff\s*id|staffid|employee\s*id)\s*[:\-]?\s+(.+)$",
                 joined,
                 re.IGNORECASE,
             )
@@ -217,7 +217,7 @@ def _metadata_from_grid(rows: list[list[str]]) -> dict:
                 metadata["staff_id"] = match.group(1).strip()
         if metadata["assessment_date"] is None:
             match = re.match(
-                r"^assessment\\s*date\\s*[:\\-]?\\s+(.+)$",
+                r"^assessment\s*date\s*[:\-]?\s+(.+)$",
                 joined,
                 re.IGNORECASE,
             )
