@@ -366,3 +366,153 @@ def test_latest_database_assessment_scores_overlay_workbook_baseline():
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_mapping_workbook_uses_map_result_and_keeps_all_grade_comparisons():
+    from io import BytesIO
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Technology Mapping"
+    sheet.append(["NAME", "Mapping Test Person"])
+    sheet.append(["STAFFID", "TEST-MAP-01"])
+    sheet.append([
+        "TI No.",
+        "Old Technology Inventory",
+        "Fill in current result here (OLD TI)",
+        "NewTechnology Inventory",
+        "",
+        "Mapping Guideline",
+        "Map Result",
+        "G03", "", "", "",
+        "Staff", "", "", "",
+        "Principal", "", "", "",
+        "Custodian", "", "", "",
+    ])
+    sheet.append([
+        "", "", "", "", "", "", "",
+        "% Close", "23", "Gap", "Status",
+        "% Close", "25", "Gap", "Status",
+        "% Close", "27", "Gap", "Status",
+        "% Close", "29", "Gap", "Status",
+    ])
+    sheet.append([
+        "B1",
+        "Fluid characterization*",
+        3,
+        "B1",
+        "Fluid Characterisation*",
+        "Maintain score from previous B1",
+        3,
+        "83%", 2, 1, "Y",
+        "67%", 3, 0, "Y",
+        "17%", 4, -1, "X",
+        "8%", 5, -2, "X",
+    ])
+    sheet.append([
+        "K4",
+        "Integrated Reservoir Management Principles and Practices*",
+        2,
+        "B12",
+        "Integrated Reservoir Management Principles and Practices*",
+        "Maintain score from previous K4",
+        2,
+        "", 2, 0, "Y",
+        "", 2, 0, "Y",
+        "", 3, -1, "X",
+        "", 4, -2, "X",
+    ])
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+
+    parsed = parse_assessment_upload("ti_mapping.xlsx", output.getvalue())
+    by_code = {item["code"]: item for item in parsed["competencies"]}
+
+    assert parsed["metadata"]["person_name"] == "Mapping Test Person"
+    assert parsed["metadata"]["staff_id"] == "TEST-MAP-01"
+    assert parsed["metadata"]["assessment_type"] == "Technology Inventory Mapping"
+    assert by_code["B1"]["old_ti_score"] == 3.0
+    assert by_code["B1"]["final_rating"] == 3.0
+    assert by_code["B1"]["mapping_guideline"] == "Maintain score from previous B1"
+    assert by_code["B1"]["grade_comparisons"]["G03"]["percent_close"] == 83.0
+    assert by_code["B1"]["grade_comparisons"]["G03"]["target"] == 2.0
+    assert by_code["B1"]["grade_comparisons"]["G03"]["gap"] == 1.0
+    assert by_code["B1"]["grade_comparisons"]["Principal"]["gap"] == -1.0
+    # Mapping follows the NEW TI code, not the old TI code.
+    assert "B12" in by_code
+    assert by_code["B12"]["old_ti_score"] == 2.0
+    assert by_code["B12"]["final_rating"] == 2.0
+
+
+def test_mapping_import_persists_old_score_and_grade_comparisons():
+    session, engine = _session()
+    try:
+        person = Personnel(
+            staff_id="TEST-MAP-02",
+            name="Mapped Assessment Person",
+            is_deleted=False,
+            is_active=True,
+        )
+        session.add(person)
+        session.commit()
+        batch_id = create_reviewed_assessment_import(
+            session,
+            personnel_id=person.id,
+            operation="create",
+            target_assessment_id=None,
+            source_filename="mapping.xlsx",
+            source_sha256="c" * 64,
+            payload={
+                "metadata": {
+                    "assessment_date": "2026-06-08",
+                    "assessment_type": "Technology Inventory Mapping",
+                },
+                "scores": {
+                    "B1": {
+                        "final_rating": 3,
+                        "req": 2,
+                        "old_ti_score": 3,
+                        "mapping_guideline": "Maintain score from previous B1",
+                        "grade_comparisons": {
+                            "G03": {
+                                "percent_close": 83,
+                                "target": 2,
+                                "gap": 1,
+                                "status": "Y",
+                            },
+                            "Staff": {
+                                "percent_close": 67,
+                                "target": 3,
+                                "gap": 0,
+                                "status": "Y",
+                            },
+                            "Principal": {
+                                "percent_close": 17,
+                                "target": 4,
+                                "gap": -1,
+                                "status": "X",
+                            },
+                            "Custodian": {
+                                "percent_close": 8,
+                                "target": 5,
+                                "gap": -2,
+                                "status": "X",
+                            },
+                        },
+                    }
+                },
+            },
+        )
+        ok, _, assessment_id = apply_reviewed_assessment_import(session, batch_id)
+        assert ok is True
+
+        scores = get_assessment_scores(session, assessment_id)
+        assert scores["B1"]["actual"] == 3
+        assert scores["B1"]["old_ti_score"] == 3
+        assert scores["B1"]["mapping_guideline"] == "Maintain score from previous B1"
+        assert scores["B1"]["grade_comparisons"]["Principal"]["gap"] == -1
+    finally:
+        session.close()
+        engine.dispose()
