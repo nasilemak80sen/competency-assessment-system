@@ -110,6 +110,7 @@ def _resolve_heading(value: Any) -> tuple[str | None, str, str | None]:
     if match:
         code = re.sub(r"\s+", "", match.group(1)).upper()
         label = match.group(2).strip(" -–—:")
+        label = re.split(r"\\bSelf\\s*Rating\\s*:?", label, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         if code not in VALID_CODES:
             return None, label, f"Unsupported competency tag: {code}"
         if label and _normalise(label) not in {
@@ -210,14 +211,19 @@ def _parse_grid(rows: list[list[str]]) -> dict:
     current_code: str | None = None
     current_record: dict | None = None
 
+    duplicate_codes: set[str] = set()
+
     def finish_current():
         nonlocal current_code, current_record
         if current_code and current_record is not None:
-            if current_code in records:
+            if current_code in duplicate_codes:
+                pass
+            elif current_code in records:
                 issues.append(
                     f"Duplicate competency section {current_code}; neither duplicate will be imported automatically."
                 )
                 records.pop(current_code, None)
+                duplicate_codes.add(current_code)
             else:
                 records[current_code] = current_record
         current_code = None
@@ -235,11 +241,11 @@ def _parse_grid(rows: list[list[str]]) -> dict:
             None,
         )
         if heading_index is not None:
+            finish_current()
             code, source_label, issue = _resolve_heading(row[heading_index])
             if issue:
                 issues.append(f"Row {row_index + 1}: {issue}")
             if code:
-                finish_current()
                 current_code = code
                 current_record = {
                     "code": code,
@@ -288,10 +294,6 @@ def _parse_grid(rows: list[list[str]]) -> dict:
     finish_current()
 
     competencies = []
-    duplicate_codes = {
-        issue.split("section ", 1)[1].split(";", 1)[0]
-        for issue in issues if "Duplicate competency section" in issue
-    }
     for code in SCORE_COLS:
         record = records.get(code)
         if record is None:
@@ -327,31 +329,43 @@ def _grid_from_text(text: str) -> list[list[str]]:
 
 
 def _parse_pdf_text(text: str) -> dict:
-    """Parse text-extractable PDFs with the same code/name anchors."""
+    """Parse text-extractable PDFs while preserving competency section boundaries."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    # Keep tab-delimited PDF extraction on the more reliable grid path.
-    if any("\t" in line for line in lines):
+    if any("\\t" in line for line in lines):
         return _parse_grid(_grid_from_text(text))
 
-    rows: list[list[str]] = []
-    for line in lines:
-        rows.append([line])
-    parsed = _parse_grid(rows)
-    if parsed["competencies"]:
-        return parsed
+    metadata = _metadata_from_grid([[line] for line in lines])
+    records: dict[str, dict] = {}
+    duplicate_codes: set[str] = set()
+    issues: list[str] = []
+    current: dict | None = None
 
-    # A PDF text extractor can place all labels on a heading line and body
-    # content on separate lines. Use explicit block scanning as a fallback.
-    metadata = _metadata_from_grid(rows)
-    records = []
-    current = None
+    def finish_current():
+        nonlocal current
+        if current is None:
+            return
+        code = current["code"]
+        if code in duplicate_codes:
+            current = None
+        elif code in records:
+            issues.append(
+                f"Duplicate competency section {code}; neither duplicate will be imported automatically."
+            )
+            records.pop(code, None)
+            duplicate_codes.add(code)
+            current = None
+        else:
+            records[code] = current
+            current = None
+
     for line_number, line in enumerate(lines, start=1):
-        code, label, issue = _resolve_heading(line)
-        if issue:
-            parsed["issues"].append(f"PDF line {line_number}: {issue}")
-        if code:
-            if current:
-                records.append(current)
+        if CODE_PATTERN.match(line):
+            finish_current()
+            code, label, issue = _resolve_heading(line)
+            if issue:
+                issues.append(f"PDF line {line_number}: {issue}")
+            if not code:
+                continue
             current = {
                 "code": code,
                 "competency_name": label or COMPETENCY_FULLNAMES.get(code, code),
@@ -364,47 +378,66 @@ def _parse_pdf_text(text: str) -> dict:
                 "superior_approval": "",
                 "source_row": line_number,
             }
-            for rating_label, key in (("Self Rating", "self_rating"), ("Final Rating", "final_rating")):
-                match = re.search(rf"{rating_label}\s*:?\s*([0-5](?:\.\d+)?)", line, re.IGNORECASE)
+            for rating_label, key in (
+                ("Self Rating", "self_rating"),
+                ("Final Rating", "final_rating"),
+            ):
+                match = re.search(
+                    rf"{rating_label}\\s*:?\\s*([0-5](?:\\.\\d+)?)",
+                    line,
+                    re.IGNORECASE,
+                )
                 if match:
                     current[key] = _parse_rating(match.group(1))
             continue
+
         if current is None:
             continue
-        self_match = re.search(r"Self Rating\s*:?\s*([0-5](?:\.\d+)?)", line, re.IGNORECASE)
-        final_match = re.search(r"Final Rating\s*:?\s*([0-5](?:\.\d+)?)", line, re.IGNORECASE)
-        if self_match:
-            current["self_rating"] = _parse_rating(self_match.group(1))
-        if final_match:
-            current["final_rating"] = _parse_rating(final_match.group(1))
+        for rating_label, key in (
+            ("Self Rating", "self_rating"),
+            ("Final Rating", "final_rating"),
+        ):
+            match = re.search(
+                rf"{rating_label}\\s*:?\\s*([0-5](?:\\.\\d+)?)",
+                line,
+                re.IGNORECASE,
+            )
+            if match:
+                current[key] = _parse_rating(match.group(1))
+
         if "assessor name" in line.casefold() or "assessor's comments" in line.casefold():
             current["assessor_comments"].append(line)
-        elif "superior's comments" in line.casefold():
+            assessor_match = re.search(
+                r"Assessor Name,\\s*Rating\\s*&?\\s*Comments:\\s*([^\\.]+)",
+                line,
+                re.IGNORECASE,
+            )
+            if assessor_match and not metadata["assessor1"]:
+                metadata["assessor1"] = assessor_match.group(1).strip()
+        elif "superior's comments" in line.casefold() or "superiors comments" in line.casefold():
             current["superior_comments"].append(line)
+        elif "assessor approval" in line.casefold():
+            current["assessor_approval"] = line
+        elif "superior approval" in line.casefold():
+            current["superior_approval"] = line
         elif line.casefold() != "picture":
             current["evidence"].append(line)
-    if current:
-        records.append(current)
 
-    by_code: dict[str, dict] = {}
-    issues = list(parsed.get("issues", []))
-    for record in records:
-        if record["code"] in by_code:
-            issues.append(f"Duplicate competency section {record['code']}; neither duplicate will be imported automatically.")
-            by_code.pop(record["code"], None)
-        else:
-            by_code[record["code"]] = record
+    finish_current()
     competencies = []
     for code in SCORE_COLS:
-        record = by_code.get(code)
-        if record:
-            for field in ("evidence", "assessor_comments", "superior_comments"):
-                record[field] = "\n".join(record[field]).strip()
-            competencies.append(record)
-    missing = [code for code in SCORE_COLS if code not in by_code]
-    missing_final = [item["code"] for item in competencies if item["final_rating"] is None]
+        record = records.get(code)
+        if record is None or code in duplicate_codes:
+            continue
+        for field in ("evidence", "assessor_comments", "superior_comments"):
+            record[field] = "\\n".join(dict.fromkeys(record[field])).strip()
+        competencies.append(record)
+    missing = [code for code in SCORE_COLS if code not in records]
+    missing_final = [row["code"] for row in competencies if row["final_rating"] is None]
     if missing_final:
-        issues.append("Final Rating is missing or not numeric for: " + ", ".join(missing_final))
+        issues.append(
+            "Final Rating is missing or not numeric for: " + ", ".join(missing_final)
+        )
     if not competencies:
         issues.append("No recognised B1-E2 competency sections were extracted from PDF text.")
     return {
