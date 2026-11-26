@@ -488,8 +488,19 @@ def _parse_mapping_grid(rows: list[list[str]]) -> dict:
 def _parse_pdf_text(text: str) -> dict:
     """Parse text-extractable PDFs while preserving competency section boundaries."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    text_grid = _grid_from_text(text)
+    if any(_normalise(value) == "map result" for row in text_grid for value in row):
+        return _parse_mapping_grid(text_grid)
     if any("\t" in line for line in lines):
-        return _parse_grid(_grid_from_text(text))
+        return _parse_grid(text_grid)
+    # Some PDF extractors replace table tabs with runs of spaces.
+    if any("map result" in line.casefold() for line in lines):
+        spaced_grid = [re.split(r"\s{2,}", line.strip()) for line in lines]
+        if any(
+            _normalise(value) == "map result"
+            for row in spaced_grid for value in row
+        ):
+            return _parse_mapping_grid(spaced_grid)
 
     metadata = _metadata_from_grid([[line] for line in lines])
     records: dict[str, dict] = {}
