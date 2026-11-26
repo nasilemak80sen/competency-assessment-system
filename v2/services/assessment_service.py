@@ -362,14 +362,14 @@ def apply_reviewed_assessment_import(
             # Keep the matrix structurally complete, but leave absent source
             # scores NULL so they remain clearly "not assessed".
             for code in SCORE_COLS:
-                session.add(
-                    CompetencyScore(
-                        assessment_id=assessment.id,
-                        personnel_id=person.id,
-                        competency_code=code,
-                        competency_type=code[0],
-                    )
+                record = CompetencyScore(
+                    assessment_id=assessment.id,
+                    personnel_id=person.id,
+                    competency_code=code,
+                    competency_type=code[0],
                 )
+                session.add(record)
+                existing_by_code[code] = record
         elif batch.operation == "revise":
             assessment = (
                 session.query(Assessment)
