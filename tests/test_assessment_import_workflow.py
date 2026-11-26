@@ -122,7 +122,7 @@ RCA and SCAL analysis.
     assert by_code["B1"]["final_rating"] == 4.0
     assert "PVT modelling" in by_code["B1"]["evidence"]
     assert "Strong evidence" in by_code["B1"]["assessor_comments"]
-    assert "Reviewed" in by_code["B1"]["superior_comments"][0]
+    assert "Reviewed" in by_code["B1"]["superior_comments"]
     assert by_code["B2"]["final_rating"] == 3.0
 
 
