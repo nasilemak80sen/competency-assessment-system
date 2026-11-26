@@ -137,6 +137,12 @@ class CompetencyScore(Base):
     requirement_score = Column(Float)
     gap_score = Column(Float)  # requirement - actual; positive means a shortfall
     achievement_pct = Column(Float)  # (actual / requirement) * 100
+    self_rating = Column(Float, nullable=True)
+    evidence = Column(Text, nullable=True)
+    assessor_comments = Column(Text, nullable=True)
+    superior_comments = Column(Text, nullable=True)
+    assessor_approval = Column(String(120), nullable=True)
+    superior_approval = Column(String(120), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     assessment = relationship("Assessment", back_populates="scores")
@@ -181,6 +187,27 @@ class SummaryScore(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     personnel = relationship("Personnel", back_populates="summary_scores")
+
+
+class AssessmentImportBatch(Base):
+    """Persistent review/approval record for an uploaded assessment source."""
+
+    __tablename__ = "assessment_import_batches"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    personnel_id = Column(Integer, ForeignKey("personnel.id"), nullable=False, index=True)
+    target_assessment_id = Column(Integer, ForeignKey("assessments.id"), nullable=True, index=True)
+    operation = Column(String(20), nullable=False, default="create")
+    status = Column(String(20), nullable=False, default="draft", index=True)
+    source_filename = Column(String(500), nullable=False)
+    source_sha256 = Column(String(64), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    uploaded_by = Column(String(120), nullable=True)
+    reviewed_by = Column(String(120), nullable=True)
+    approved_by = Column(String(120), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_at = Column(DateTime, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
 
 
 class CVDocument(Base):
