@@ -288,9 +288,11 @@ def apply_reviewed_assessment_import(
             if code not in SCORE_COLS or not isinstance(values, dict):
                 return False, f"Invalid competency import record: {code}.", None
             final_rating = values.get("final_rating")
-            if final_rating is None or final_rating == "":
-                continue
-            actual = _validated_score(final_rating, code, "final rating")
+            actual = (
+                _validated_score(final_rating, code, "final rating")
+                if final_rating not in (None, "")
+                else None
+            )
             self_rating = values.get("self_rating")
             self_rating = (
                 _validated_score(self_rating, code, "self rating")
@@ -305,28 +307,33 @@ def apply_reviewed_assessment_import(
             )
             gap = (
                 round(max(requirement - actual, 0.0), 2)
-                if requirement is not None
+                if requirement is not None and actual is not None
                 else None
             )
             achievement = (
                 round(actual / requirement * 100.0, 1)
-                if requirement is not None and requirement > 0
+                if actual is not None and requirement is not None and requirement > 0
                 else None
             )
-            validated[code] = {
-                "actual": actual,
-                "self_rating": self_rating,
-                "requirement": requirement,
-                "gap": gap,
-                "achievement_pct": achievement,
+            narrative = {
                 "evidence": values.get("evidence") or None,
                 "assessor_comments": values.get("assessor_comments") or None,
                 "superior_comments": values.get("superior_comments") or None,
                 "assessor_approval": values.get("assessor_approval") or None,
                 "superior_approval": values.get("superior_approval") or None,
             }
-        if not validated:
-            return False, "No valid Final Ratings were supplied. Nothing was changed.", None
+            if actual is None and self_rating is None and not any(narrative.values()):
+                continue
+            validated[code] = {
+                "actual": actual,
+                "self_rating": self_rating,
+                "requirement": requirement,
+                "gap": gap,
+                "achievement_pct": achievement,
+                **narrative,
+            }
+        if not validated or not any(value["actual"] is not None for value in validated.values()):
+            return False, "At least one valid Final Rating is required. Nothing was changed.", None
 
         assessment_date = metadata.get("assessment_date")
         if isinstance(assessment_date, str) and assessment_date.strip():
@@ -424,20 +431,23 @@ def apply_reviewed_assessment_import(
                 "gap": record.gap_score,
                 "self_rating": record.self_rating,
             }
-            record.actual_score = values["actual"]
-            record.self_rating = values["self_rating"]
+            if values["actual"] is not None:
+                record.actual_score = values["actual"]
+            if values["self_rating"] is not None:
+                record.self_rating = values["self_rating"]
             if values["requirement"] is not None:
                 record.requirement_score = values["requirement"]
-            record.gap_score = (
-                round(max(record.requirement_score - record.actual_score, 0.0), 2)
-                if record.requirement_score is not None
-                else None
-            )
-            record.achievement_pct = (
-                round(record.actual_score / record.requirement_score * 100.0, 1)
-                if record.requirement_score is not None and record.requirement_score > 0
-                else None
-            )
+            if record.actual_score is not None and record.requirement_score is not None:
+                record.gap_score = round(
+                    max(record.requirement_score - record.actual_score, 0.0), 2
+                )
+                record.achievement_pct = (
+                    round(record.actual_score / record.requirement_score * 100.0, 1)
+                    if record.requirement_score > 0 else None
+                )
+            else:
+                record.gap_score = None
+                record.achievement_pct = None
             # Preserve previously saved narrative details when the source
             # does not contain a value, rather than wiping useful evidence.
             for field in (
