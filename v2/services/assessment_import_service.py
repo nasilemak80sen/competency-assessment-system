@@ -328,6 +328,163 @@ def _grid_from_text(text: str) -> list[list[str]]:
     return [line.rstrip("\r\n").split("\t") for line in text.splitlines()]
 
 
+def _parse_numeric_value(value: Any) -> float | None:
+    """Parse signed gaps, targets and percentage-close values."""
+    text = _clean(value).replace(",", "")
+    match = re.search(r"-?[0-9]+(?:\\.[0-9]+)?", text)
+    return float(match.group(0)) if match else None
+
+
+def _parse_mapping_grid(rows: list[list[str]]) -> dict:
+    """Parse the legacy/new Technology Inventory mapping table.
+
+    New TI tag/name identify the competency. Map Result (Column G in the
+    established template) is the mapped current score. Old TI score and all
+    four grade-band comparisons are kept as supporting assessment data.
+    """
+    metadata = _metadata_from_grid(rows)
+    header_index = None
+    map_column = None
+    for row_index, row in enumerate(rows):
+        for column_index, value in enumerate(row):
+            if _normalise(value) == "map result":
+                header_index = row_index
+                map_column = column_index
+                break
+        if header_index is not None:
+            break
+    if header_index is None or map_column is None:
+        return _parse_grid(rows)
+
+    header = [_clean(value) for value in rows[header_index]]
+    new_code_column = None
+    for column_index, value in enumerate(header):
+        normalized = _normalise(value).replace("newtechnology", "new technology")
+        if "new" in normalized and "technology" in normalized and "inventory" in normalized:
+            new_code_column = column_index
+            break
+    if new_code_column is None:
+        new_code_column = max(map_column - 3, 0)
+
+    group_starts = {}
+    for group in ("G03", "Staff", "Principal", "Custodian"):
+        for column_index, value in enumerate(header):
+            if _normalise(value) == _normalise(group):
+                group_starts[group] = column_index
+                break
+    for group, fallback in (
+        ("G03", map_column + 1),
+        ("Staff", map_column + 5),
+        ("Principal", map_column + 9),
+        ("Custodian", map_column + 13),
+    ):
+        group_starts.setdefault(group, fallback)
+
+    records = {}
+    duplicate_codes = set()
+    issues = []
+    for row_index in range(header_index + 1, len(rows)):
+        row = [_clean(value) for value in rows[row_index]]
+        if new_code_column >= len(row):
+            continue
+        code_match = CODE_PATTERN.match(row[new_code_column]) if row[new_code_column] else None
+        if not code_match:
+            continue
+        code = re.sub(r"\\s+", "", code_match.group(1)).upper()
+        if code not in VALID_CODES:
+            issues.append(f"Row {row_index + 1}: Unsupported new TI competency tag {code}.")
+            continue
+        name_column = new_code_column + 1
+        competency_name = row[name_column] if name_column < len(row) else ""
+        if competency_name and _normalise(competency_name) not in {
+            _normalise(COMPETENCY_FULLNAMES.get(code, "")),
+            *(_normalise(alias) for alias in NAME_ALIASES.get(code, ())),
+        }:
+            issues.append(
+                f"Row {row_index + 1}: {code} is tagged with a competency name that differs "
+                "from the registered catalogue. Verify this row before approval."
+            )
+
+        map_result = _parse_rating(row[map_column]) if map_column < len(row) else None
+        old_score_column = max(new_code_column - 1, 0)
+        old_ti_score = (
+            _parse_rating(row[old_score_column])
+            if old_score_column < len(row) else None
+        )
+        guideline_column = map_column - 1
+        mapping_guideline = (
+            row[guideline_column]
+            if 0 <= guideline_column < len(row) else ""
+        )
+        grade_comparisons = {}
+        for group, start_column in group_starts.items():
+            grade_comparisons[group] = {
+                "percent_close": (
+                    _parse_numeric_value(row[start_column])
+                    if start_column < len(row) else None
+                ),
+                "target": (
+                    _parse_rating(row[start_column + 1])
+                    if start_column + 1 < len(row) else None
+                ),
+                "gap": (
+                    _parse_numeric_value(row[start_column + 2])
+                    if start_column + 2 < len(row) else None
+                ),
+                "status": (
+                    row[start_column + 3]
+                    if start_column + 3 < len(row) and row[start_column + 3]
+                    else None
+                ),
+            }
+
+        if code in records:
+            issues.append(
+                f"Duplicate competency section {code}; neither duplicate will be imported automatically."
+            )
+            records.pop(code, None)
+            duplicate_codes.add(code)
+            continue
+        if code in duplicate_codes:
+            continue
+        records[code] = {
+            "code": code,
+            "competency_name": competency_name or COMPETENCY_FULLNAMES.get(code, code),
+            "self_rating": None,
+            "final_rating": map_result,
+            "old_ti_score": old_ti_score,
+            "mapping_guideline": mapping_guideline or None,
+            "grade_comparisons": grade_comparisons,
+            "evidence": "",
+            "assessor_comments": "",
+            "superior_comments": "",
+            "assessor_approval": "",
+            "superior_approval": "",
+            "source_row": row_index + 1,
+        }
+
+    competencies = [
+        records[code] for code in SCORE_COLS
+        if code in records and code not in duplicate_codes
+    ]
+    missing = [code for code in SCORE_COLS if code not in records]
+    missing_final = [item["code"] for item in competencies if item["final_rating"] is None]
+    if missing_final:
+        issues.append("Map Result is blank or not numeric for: " + ", ".join(missing_final))
+    if not competencies:
+        issues.append("No recognised B1-E2 rows were found under New Technology Inventory.")
+    if not metadata.get("assessment_type"):
+        metadata["assessment_type"] = "Technology Inventory Mapping"
+
+    return {
+        "metadata": metadata,
+        "competencies": competencies,
+        "missing_codes": missing,
+        "missing_final_rating": missing_final,
+        "issues": issues,
+    }
+
+
 def _parse_pdf_text(text: str) -> dict:
     """Parse text-extractable PDFs while preserving competency section boundaries."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -465,7 +622,11 @@ def parse_assessment_upload(file_name: str, file_bytes: bytes) -> dict:
                         rows.append(values)
         finally:
             workbook.close()
-        result = _parse_grid(rows)
+        is_mapping_workbook = any(
+            _normalise(value) == "map result"
+            for row in rows for value in row
+        )
+        result = _parse_mapping_grid(rows) if is_mapping_workbook else _parse_grid(rows)
     elif suffix == ".pdf":
         try:
             from pypdf import PdfReader
@@ -481,7 +642,12 @@ def parse_assessment_upload(file_name: str, file_bytes: bytes) -> dict:
         result = _parse_pdf_text(text)
     elif suffix in {".txt", ".tsv", ".csv"}:
         text = file_bytes.decode("utf-8-sig", errors="replace")
-        result = _parse_grid(_grid_from_text(text))
+        text_grid = _grid_from_text(text)
+        is_mapping_text = any(
+            _normalise(value) == "map result"
+            for row in text_grid for value in row
+        )
+        result = _parse_mapping_grid(text_grid) if is_mapping_text else _parse_grid(text_grid)
     else:
         raise ValueError("Supported assessment formats are .xlsx, .xlsm, .pdf, .txt and .tsv.")
 
