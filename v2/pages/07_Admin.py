@@ -1522,7 +1522,7 @@ with assessment_tab:
                             round(
                                 max(
                                     float(pd.to_numeric(row["Target"], errors="coerce"))
-                                    - float(pd.to_numeric(row["Final Rating"], errors="coerce")),
+                                    - float(pd.to_numeric(row["Imported Result"], errors="coerce")),
                                     0.0,
                                 ),
                                 2,
@@ -1567,7 +1567,7 @@ with assessment_tab:
                         if code not in SCORE_COLS:
                             continue
                         final_value = pd.to_numeric(
-                            matrix_row.get("Final Rating"), errors="coerce"
+                            matrix_row.get("Imported Result"), errors="coerce"
                         )
                         self_value = pd.to_numeric(
                             matrix_row.get("Self Rating"), errors="coerce"
