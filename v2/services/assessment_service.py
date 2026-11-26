@@ -115,6 +115,7 @@ def save_assessment_transaction(
             personnel_id=person.id,
             assessment_date=assessment_date,
             assessment_level=assessment_level,
+            assessment_type=assessment_data.get("assessment_type") or None,
             assessor1=assessment_data.get("assessor1") or None,
             assessor2=assessment_data.get("assessor2") or None,
             supervisor=assessment_data.get("supervisor") or None,
@@ -351,6 +352,7 @@ def apply_reviewed_assessment_import(
                 personnel_id=person.id,
                 assessment_date=assessment_date,
                 assessment_level=metadata.get("assessment_level") or None,
+                assessment_type=metadata.get("assessment_type") or None,
                 assessor1=metadata.get("assessor1") or None,
                 assessor2=metadata.get("assessor2") or None,
                 supervisor=metadata.get("supervisor") or None,
@@ -384,6 +386,7 @@ def apply_reviewed_assessment_import(
             old_header = {
                 "assessment_date": assessment.assessment_date,
                 "assessment_level": assessment.assessment_level,
+                "assessment_type": assessment.assessment_type,
                 "assessor1": assessment.assessor1,
                 "assessor2": assessment.assessor2,
                 "supervisor": assessment.supervisor,
@@ -396,7 +399,7 @@ def apply_reviewed_assessment_import(
             # Blank metadata in a source file does not erase existing values.
             if assessment_date is not None:
                 assessment.assessment_date = assessment_date
-            for field in ("assessment_level", "assessor1", "assessor2", "supervisor", "remarks"):
+            for field in ("assessment_level", "assessment_type", "assessor1", "assessor2", "supervisor", "remarks"):
                 value = metadata.get(field)
                 if value not in (None, ""):
                     setattr(assessment, field, value)
