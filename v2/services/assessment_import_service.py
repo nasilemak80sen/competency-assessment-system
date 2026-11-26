@@ -110,7 +110,7 @@ def _resolve_heading(value: Any) -> tuple[str | None, str, str | None]:
     if match:
         code = re.sub(r"\s+", "", match.group(1)).upper()
         label = match.group(2).strip(" -–—:")
-        label = re.split(r"\\bSelf\\s*Rating\\s*:?", label, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        label = re.split(r"\bSelf\s*Rating\s*:?", label, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         if code not in VALID_CODES:
             return None, label, f"Unsupported competency tag: {code}"
         if label and _normalise(label) not in {
@@ -331,7 +331,7 @@ def _grid_from_text(text: str) -> list[list[str]]:
 def _parse_pdf_text(text: str) -> dict:
     """Parse text-extractable PDFs while preserving competency section boundaries."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if any("\\t" in line for line in lines):
+    if any("\t" in line for line in lines):
         return _parse_grid(_grid_from_text(text))
 
     metadata = _metadata_from_grid([[line] for line in lines])
@@ -383,7 +383,7 @@ def _parse_pdf_text(text: str) -> dict:
                 ("Final Rating", "final_rating"),
             ):
                 match = re.search(
-                    rf"{rating_label}\\s*:?\\s*([0-5](?:\\.\\d+)?)",
+                    rf"{rating_label}\s*:?\s*([0-5](?:\.\d+)?)",
                     line,
                     re.IGNORECASE,
                 )
@@ -408,7 +408,7 @@ def _parse_pdf_text(text: str) -> dict:
         if "assessor name" in line.casefold() or "assessor's comments" in line.casefold():
             current["assessor_comments"].append(line)
             assessor_match = re.search(
-                r"Assessor Name,\\s*Rating\\s*&?\\s*Comments:\\s*([^\\.]+)",
+                r"Assessor Name,\s*Rating\s*&?\s*Comments:\s*([^\.]+)",
                 line,
                 re.IGNORECASE,
             )
@@ -430,7 +430,7 @@ def _parse_pdf_text(text: str) -> dict:
         if record is None or code in duplicate_codes:
             continue
         for field in ("evidence", "assessor_comments", "superior_comments"):
-            record[field] = "\\n".join(dict.fromkeys(record[field])).strip()
+            record[field] = "\n".join(dict.fromkeys(record[field])).strip()
         competencies.append(record)
     missing = [code for code in SCORE_COLS if code not in records]
     missing_final = [row["code"] for row in competencies if row["final_rating"] is None]
