@@ -139,6 +139,9 @@ class CompetencyScore(Base):
     gap_score = Column(Float)  # requirement - actual; positive means a shortfall
     achievement_pct = Column(Float)  # (actual / requirement) * 100
     self_rating = Column(Float, nullable=True)
+    old_ti_score = Column(Float, nullable=True)
+    mapping_guideline = Column(Text, nullable=True)
+    grade_comparisons_json = Column(Text, nullable=True)
     evidence = Column(Text, nullable=True)
     assessor_comments = Column(Text, nullable=True)
     superior_comments = Column(Text, nullable=True)
