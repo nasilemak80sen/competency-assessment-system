@@ -331,7 +331,7 @@ def _grid_from_text(text: str) -> list[list[str]]:
 def _parse_numeric_value(value: Any) -> float | None:
     """Parse signed gaps, targets and percentage-close values."""
     text = _clean(value).replace(",", "")
-    match = re.search(r"-?[0-9]+(?:\\.[0-9]+)?", text)
+    match = re.search(r"-?[0-9]+(?:\.[0-9]+)?", text)
     return float(match.group(0)) if match else None
 
 
@@ -390,7 +390,7 @@ def _parse_mapping_grid(rows: list[list[str]]) -> dict:
         code_match = CODE_PATTERN.match(row[new_code_column]) if row[new_code_column] else None
         if not code_match:
             continue
-        code = re.sub(r"\\s+", "", code_match.group(1)).upper()
+        code = re.sub(r"\s+", "", code_match.group(1)).upper()
         if code not in VALID_CODES:
             issues.append(f"Row {row_index + 1}: Unsupported new TI competency tag {code}.")
             continue
