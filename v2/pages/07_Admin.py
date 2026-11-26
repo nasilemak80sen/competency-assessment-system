@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 import hashlib
 
 import pandas as pd
@@ -1453,6 +1454,36 @@ with assessment_tab:
                         "Target is shown from the selected saved assessment or the master workbook; "
                         "the importer does not infer a new target from the score."
                     )
+
+                    gap_preview = edited_import_matrix.copy()
+                    gap_preview["Proposed Gap"] = gap_preview.apply(
+                        lambda row: (
+                            round(
+                                max(
+                                    float(pd.to_numeric(row["Target"], errors="coerce"))
+                                    - float(pd.to_numeric(row["Final Rating"], errors="coerce")),
+                                    0.0,
+                                ),
+                                2,
+                            )
+                            if pd.notna(pd.to_numeric(row["Target"], errors="coerce"))
+                            and pd.notna(pd.to_numeric(row["Final Rating"], errors="coerce"))
+                            else None
+                        ),
+                        axis=1,
+                    )
+                    st.markdown("#### Proposed score and gap preview")
+                    st.dataframe(
+                        gap_preview[["Code", "Current Score", "Final Rating", "Target", "Proposed Gap"]],
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "Current Score": st.column_config.NumberColumn(format="%.1f"),
+                            "Final Rating": st.column_config.NumberColumn(format="%.1f"),
+                            "Target": st.column_config.NumberColumn(format="%.1f"),
+                            "Proposed Gap": st.column_config.NumberColumn(format="%.2f"),
+                        },
+                    )
                     confirm_name_mapping = True
                     if label_issues:
                         confirm_name_mapping = st.checkbox(
@@ -1483,15 +1514,15 @@ with assessment_tab:
                             matrix_row.get("Target"), errors="coerce"
                         )
                         narrative = {
-                            "evidence": str(matrix_row.get("Evidence") or "").strip(),
-                            "assessor_comments": str(matrix_row.get("Assessor Comments") or "").strip(),
-                            "superior_comments": str(matrix_row.get("Superior Comments") or "").strip(),
-                            "assessor_approval": str(matrix_row.get("Assessor Approval") or "").strip(),
-                            "superior_approval": str(matrix_row.get("Superior Approval") or "").strip(),
+                            "evidence": _text(matrix_row, "Evidence"),
+                            "assessor_comments": _text(matrix_row, "Assessor Comments"),
+                            "superior_comments": _text(matrix_row, "Superior Comments"),
+                            "assessor_approval": _text(matrix_row, "Assessor Approval"),
+                            "superior_approval": _text(matrix_row, "Superior Approval"),
                         }
                         if (
                             pd.notna(final_value) or pd.notna(self_value)
-                            or any(narrative.values())
+                            or pd.notna(target_value) or any(narrative.values())
                         ):
                             review_scores[code] = {
                                 "final_rating": None if pd.isna(final_value) else float(final_value),
@@ -1662,6 +1693,7 @@ with assessment_tab:
                             "Assessment": f"#{record['id']}",
                             "Date": recorded_date,
                             "Level": level_label,
+                            "Type": record.get("assessment_type") or "—",
                             "Assessors": assessor_names,
                             "Supervisor": record.get("supervisor") or "—",
                             "Score coverage": f"{record['score_count']}/{len(SCORE_COLS)}",
@@ -1708,6 +1740,7 @@ with assessment_tab:
                                     "Code": code,
                                     "Competency": COMPETENCY_FULLNAMES.get(code, code),
                                     "Group": info["label"],
+                                    "Self Rating": saved_score.get("self_rating"),
                                     "Actual": saved_score.get("actual"),
                                     "Target": saved_score.get("req"),
                                     "Gap": saved_score.get("gap"),
@@ -1720,6 +1753,7 @@ with assessment_tab:
                         width="stretch",
                         hide_index=True,
                         column_config={
+                            "Self Rating": st.column_config.NumberColumn(format="%.1f"),
                             "Actual": st.column_config.NumberColumn(format="%.1f"),
                             "Target": st.column_config.NumberColumn(format="%.1f"),
                             "Gap": st.column_config.NumberColumn(format="%.2f"),
@@ -1728,6 +1762,32 @@ with assessment_tab:
                             ),
                         },
                     )
+
+                    narrative_rows = []
+                    for code in SCORE_COLS:
+                        saved_score = chosen_scores.get(code, {})
+                        for title, field in (
+                            ("Evidence", "evidence"),
+                            ("Assessor comments", "assessor_comments"),
+                            ("Superior comments", "superior_comments"),
+                            ("Assessor approval", "assessor_approval"),
+                            ("Superior approval", "superior_approval"),
+                        ):
+                            value = saved_score.get(field)
+                            if value:
+                                narrative_rows.append({
+                                    "Code": code,
+                                    "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                                    "Information": title,
+                                    "Details": value,
+                                })
+                    if narrative_rows:
+                        with st.expander("Evidence, assessor comments and approvals"):
+                            st.dataframe(
+                                pd.DataFrame(narrative_rows),
+                                width="stretch",
+                                hide_index=True,
+                            )
                 else:
                     st.info(
                         "This assessment has no saved competency-score rows. "
