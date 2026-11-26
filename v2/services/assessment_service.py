@@ -549,6 +549,7 @@ def get_assessment_history(session, personnel_id: int):
                 "id": int(assessment.id),
                 "assessment_date": assessment.assessment_date,
                 "assessment_level": assessment.assessment_level,
+                "assessment_type": assessment.assessment_type,
                 "assessor1": assessment.assessor1,
                 "assessor2": assessment.assessor2,
                 "supervisor": assessment.supervisor,
