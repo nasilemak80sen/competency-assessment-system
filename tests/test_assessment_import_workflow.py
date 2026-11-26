@@ -522,13 +522,30 @@ def test_mapping_import_persists_old_score_and_grade_comparisons():
 def test_pdf_text_with_mapping_table_uses_map_result_column():
     from v2.services.assessment_import_service import _parse_pdf_text
 
-    text = (
-        "NAME\\tPDF Mapping Person\\n"
-        "STAFFID\\tTEST-PDF-01\\n"
-        "TI No.\\tOld Technology Inventory\\tOld Result\\tNewTechnology Inventory\\tNew Name\\tMapping Guideline\\tMap Result\\tG03\\t\\t\\t\\tStaff\\t\\t\\t\\tPrincipal\\t\\t\\t\\tCustodian\\n"
-        "\\t\\t\\t\\t\\t\\t\\t% Close\\t23\\tGap\\tStatus\\t% Close\\t25\\tGap\\tStatus\\t% Close\\t27\\tGap\\tStatus\\t% Close\\t29\\tGap\\tStatus\\n"
-        "B1\\tFluid characterization\\t3\\tB1\\tFluid Characterisation*\\tMaintain score from previous B1\\t3\\t83%\\t2\\t1\\tY\\t67%\\t3\\t0\\tY\\t17%\\t4\\t-1\\tX\\t8%\\t5\\t-2\\tX\\n"
-    )
+    rows = [
+        ["NAME", "PDF Mapping Person"],
+        ["STAFFID", "TEST-PDF-01"],
+        [
+            "TI No.", "Old Technology Inventory", "Old Result",
+            "NewTechnology Inventory", "New Name", "Mapping Guideline",
+            "Map Result", "G03", "", "", "", "Staff", "", "", "",
+            "Principal", "", "", "", "Custodian",
+        ],
+        [
+            "", "", "", "", "", "", "",
+            "% Close", "23", "Gap", "Status",
+            "% Close", "25", "Gap", "Status",
+            "% Close", "27", "Gap", "Status",
+            "% Close", "29", "Gap", "Status",
+        ],
+        [
+            "B1", "Fluid characterization", "3", "B1",
+            "Fluid Characterisation*", "Maintain score from previous B1",
+            "3", "83%", "2", "1", "Y", "67%", "3", "0", "Y",
+            "17%", "4", "-1", "X", "8%", "5", "-2", "X",
+        ],
+    ]
+    text = chr(10).join(chr(9).join(row) for row in rows)
     parsed = _parse_pdf_text(text)
     assert parsed["metadata"]["person_name"] == "PDF Mapping Person"
     assert len(parsed["competencies"]) == 1
