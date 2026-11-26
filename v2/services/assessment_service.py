@@ -329,6 +329,12 @@ def apply_reviewed_assessment_import(
                 "self_rating": self_rating,
                 "requirement": requirement,
                 "gap": gap,
+                "old_ti_score": (
+                    _validated_score(values.get("old_ti_score"), code, "old TI score")
+                    if values.get("old_ti_score") not in (None, "") else None
+                ),
+                "mapping_guideline": values.get("mapping_guideline") or None,
+                "grade_comparisons": values.get("grade_comparisons") or {},
                 "achievement_pct": achievement,
                 **narrative,
             }
@@ -430,11 +436,22 @@ def apply_reviewed_assessment_import(
                 "requirement": record.requirement_score,
                 "gap": record.gap_score,
                 "self_rating": record.self_rating,
+                "old_ti_score": record.old_ti_score,
+                "mapping_guideline": record.mapping_guideline,
+                "grade_comparisons": record.grade_comparisons_json,
             }
             if values["actual"] is not None:
                 record.actual_score = values["actual"]
             if values["self_rating"] is not None:
                 record.self_rating = values["self_rating"]
+            if values["old_ti_score"] is not None:
+                record.old_ti_score = values["old_ti_score"]
+            if values["mapping_guideline"] is not None:
+                record.mapping_guideline = values["mapping_guideline"]
+            if values["grade_comparisons"]:
+                record.grade_comparisons_json = json.dumps(
+                    values["grade_comparisons"], ensure_ascii=False, default=str
+                )
             if values["requirement"] is not None:
                 record.requirement_score = values["requirement"]
             if record.actual_score is not None and record.requirement_score is not None:
@@ -471,6 +488,9 @@ def apply_reviewed_assessment_import(
             code: {
                 "actual": values["actual"],
                 "self_rating": values["self_rating"],
+                "old_ti_score": values["old_ti_score"],
+                "mapping_guideline": values["mapping_guideline"],
+                "grade_comparisons": values["grade_comparisons"],
                 "requirement": (
                     existing_by_code[code].requirement_score
                     if code in existing_by_code else None
@@ -581,6 +601,12 @@ def get_assessment_scores(session, assessment_id: int):
             "gap": record.gap_score,
             "achievement_pct": record.achievement_pct,
             "self_rating": record.self_rating,
+            "old_ti_score": record.old_ti_score,
+            "mapping_guideline": record.mapping_guideline,
+            "grade_comparisons": (
+                json.loads(record.grade_comparisons_json)
+                if record.grade_comparisons_json else {}
+            ),
             "evidence": record.evidence,
             "assessor_comments": record.assessor_comments,
             "superior_comments": record.superior_comments,
