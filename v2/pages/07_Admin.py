@@ -1851,11 +1851,13 @@ with assessment_tab:
                                     "Code": code,
                                     "Competency": COMPETENCY_FULLNAMES.get(code, code),
                                     "Group": info["label"],
+                                    "Old TI Score": saved_score.get("old_ti_score"),
                                     "Self Rating": saved_score.get("self_rating"),
-                                    "Actual": saved_score.get("actual"),
+                                    "Actual / Mapped Result": saved_score.get("actual"),
                                     "Target": saved_score.get("req"),
                                     "Gap": saved_score.get("gap"),
                                     "Achievement %": saved_score.get("achievement_pct"),
+                                    "Mapping Guideline": saved_score.get("mapping_guideline"),
                                 }
                             )
                     st.markdown("#### Saved competency matrix")
@@ -1864,8 +1866,9 @@ with assessment_tab:
                         width="stretch",
                         hide_index=True,
                         column_config={
+                            "Old TI Score": st.column_config.NumberColumn(format="%.1f"),
                             "Self Rating": st.column_config.NumberColumn(format="%.1f"),
-                            "Actual": st.column_config.NumberColumn(format="%.1f"),
+                            "Actual / Mapped Result": st.column_config.NumberColumn(format="%.1f"),
                             "Target": st.column_config.NumberColumn(format="%.1f"),
                             "Gap": st.column_config.NumberColumn(format="%.2f"),
                             "Achievement %": st.column_config.NumberColumn(
@@ -1873,6 +1876,32 @@ with assessment_tab:
                             ),
                         },
                     )
+
+                    comparison_history_rows = []
+                    for code in SCORE_COLS:
+                        saved_score = chosen_scores.get(code, {})
+                        for group, comparison in (saved_score.get("grade_comparisons") or {}).items():
+                            comparison_history_rows.append({
+                                "Code": code,
+                                "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                                "Grade Group": group,
+                                "% Close": comparison.get("percent_close"),
+                                "Target": comparison.get("target"),
+                                "Source Gap": comparison.get("gap"),
+                                "Status": comparison.get("status"),
+                            })
+                    if comparison_history_rows:
+                        with st.expander("Historical Technology Inventory grade comparisons"):
+                            st.dataframe(
+                                pd.DataFrame(comparison_history_rows),
+                                width="stretch",
+                                hide_index=True,
+                                column_config={
+                                    "% Close": st.column_config.NumberColumn(format="%.0f%%"),
+                                    "Target": st.column_config.NumberColumn(format="%.1f"),
+                                    "Source Gap": st.column_config.NumberColumn(format="%.1f"),
+                                },
+                            )
 
                     narrative_rows = []
                     for code in SCORE_COLS:
