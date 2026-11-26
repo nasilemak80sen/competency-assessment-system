@@ -20,6 +20,7 @@ from config import (
 )
 from core.auth import current_user
 from core.bootstrap import get_master_data, open_session
+from models import AssessmentImportBatch
 from services.personnel_service import (
     add as add_personnel,
     all as get_all_personnel,
@@ -30,7 +31,10 @@ from services.assessment_service import (
     get_assessment_history,
     get_assessment_scores,
     save_assessment_transaction,
+    create_reviewed_assessment_import,
+    apply_reviewed_assessment_import,
 )
+from services.assessment_import_service import parse_assessment_upload
 
 
 # ---------------------------------------------------------------------------
@@ -952,8 +956,12 @@ with assessment_tab:
                 f"available, but database prefill may be incomplete. Details: {history_load_error}"
             )
 
-        entry_tab, history_tab = st.tabs(
-            ["➕ New Assessment", f"🕘 Assessment History ({len(history)})"]
+        entry_tab, import_tab, history_tab = st.tabs(
+            [
+                "➕ New Assessment",
+                "📥 Upload Assessment",
+                f"🕘 Assessment History ({len(history)})",
+            ]
         )
 
         with entry_tab:
@@ -1170,6 +1178,462 @@ with assessment_tab:
                         )
                     finally:
                         save_session.close()
+
+        with import_tab:
+            st.markdown("#### Upload assessment working file")
+            st.caption(
+                "Upload the established SMA / Technology Inventory assessment workbook or a "
+                "text-extractable PDF. The importer identifies B1-E2 competencies by their "
+                "class tag or exact registered competency name and reads the Final Rating as "
+                "the current assessment score. It does not recreate the old-to-new TI mapping."
+            )
+
+            import_notice = st.session_state.pop("_assessment_import_saved_notice", None)
+            if import_notice:
+                st.success(import_notice)
+
+            import_upload = st.file_uploader(
+                "Upload Excel or PDF assessment",
+                type=["xlsx", "xlsm", "pdf", "txt", "tsv"],
+                key=f"individual_assessment_upload_{assessment_person_id}",
+                help="Excel is read from cell values. PDF must contain selectable text; scanned-image PDF is not OCR processed.",
+            )
+
+            parsed_import = None
+            if import_upload is not None:
+                try:
+                    parsed_import = parse_assessment_upload(
+                        import_upload.name,
+                        import_upload.getvalue(),
+                    )
+                except Exception as exc:
+                    st.error(f"Unable to read the assessment file: {exc}")
+
+            if parsed_import is not None:
+                source_meta = parsed_import.get("metadata", {})
+                source_person_name = str(source_meta.get("person_name") or "").strip()
+                source_staff_id = str(source_meta.get("staff_id") or "").strip()
+                selected_person_name = str(assessment_person.get("name") or "").strip()
+                selected_staff_id = str(assessment_person.get("staff_id") or "").strip()
+
+                def _identity_key(value):
+                    return "".join(char.casefold() for char in str(value or "") if char.isalnum())
+
+                identity_issues = []
+                if source_person_name and _identity_key(source_person_name) != _identity_key(selected_person_name):
+                    identity_issues.append(
+                        f"The uploaded file identifies {source_person_name}, but the selected personnel is {selected_person_name}."
+                    )
+                if source_staff_id and _normalise_staff_id(source_staff_id) != _normalise_staff_id(selected_staff_id):
+                    identity_issues.append(
+                        f"The uploaded Staff ID ({source_staff_id}) does not match the selected personnel Staff ID ({selected_staff_id})."
+                    )
+
+                parser_issues = parsed_import.get("issues", [])
+                duplicate_issues = [
+                    issue for issue in parser_issues
+                    if "Duplicate competency section" in issue
+                ]
+                label_issues = [
+                    issue for issue in parser_issues
+                    if "differs from the registered catalogue" in issue
+                ]
+                fatal_issues = [
+                    issue for issue in parser_issues
+                    if "No recognised B1-E2" in issue
+                ]
+
+                overview_cols = st.columns(4)
+                overview_cols[0].metric("Competencies found", f"{parsed_import['recognized_count']}/24")
+                overview_cols[1].metric("Final Ratings", parsed_import["valid_final_count"])
+                overview_cols[2].metric("Missing from source", parsed_import["missing_count"])
+                overview_cols[3].metric("Source file", Path(import_upload.name).suffix.upper())
+
+                if identity_issues:
+                    for issue in identity_issues:
+                        st.error(issue)
+                elif source_person_name or source_staff_id:
+                    st.success("The uploaded personnel identity matches the selected database record.")
+                else:
+                    st.info(
+                        "No personnel identity was found in the source sheet. The import will be bound "
+                        "to the employee selected above; verify the document belongs to this employee."
+                    )
+
+                if parser_issues:
+                    with st.expander("Parser notes and extraction warnings", expanded=True):
+                        for issue in parser_issues:
+                            st.warning(issue)
+                if parsed_import.get("missing_codes"):
+                    with st.expander(
+                        f"Competencies not present in source ({len(parsed_import['missing_codes'])})"
+                    ):
+                        st.caption(
+                            "Missing sections are not treated as zero. When creating a new assessment "
+                            "they remain unassessed; when revising an existing assessment their current "
+                            "saved values are preserved."
+                        )
+                        st.write(", ".join(parsed_import["missing_codes"]))
+
+                operation_label = st.radio(
+                    "What should happen after approval?",
+                    ["Create a new assessment record", "Revise an existing assessment"],
+                    horizontal=True,
+                    key=f"assessment_import_operation_{assessment_person_id}",
+                    disabled=not history,
+                    help=(
+                        "Create preserves assessment history. Revise updates the selected assessment "
+                        "record and retains an audit of its previous values."
+                    ),
+                )
+                operation = "revise" if operation_label.startswith("Revise") else "create"
+                target_assessment_id = None
+                target_scores = latest_scores.copy()
+
+                if operation == "revise":
+                    history_labels = {}
+                    for history_record in history:
+                        history_date = (
+                            history_record["assessment_date"].strftime("%d %b %Y")
+                            if history_record.get("assessment_date") is not None
+                            else "Undated"
+                        )
+                        level_label = history_record.get("assessment_level") or "Level not specified"
+                        type_label = history_record.get("assessment_type") or "Assessment"
+                        label = (
+                            f"#{history_record['id']} · {history_date} · "
+                            f"{level_label} · {type_label}"
+                        )
+                        history_labels[label] = int(history_record["id"])
+                    target_label = st.selectbox(
+                        "Assessment record to revise",
+                        list(history_labels),
+                        key=f"assessment_import_target_{assessment_person_id}",
+                    )
+                    target_assessment_id = history_labels[target_label]
+                    target_session = open_session()
+                    try:
+                        target_scores = get_assessment_scores(
+                            target_session, target_assessment_id
+                        )
+                    finally:
+                        target_session.close()
+
+                parsed_by_code = {
+                    item["code"]: item
+                    for item in parsed_import.get("competencies", [])
+                }
+                matrix_rows = []
+                for competency_type, info in COMP_TYPES.items():
+                    for code in info["cols"]:
+                        source_row = parsed_by_code.get(code, {})
+                        existing_row = target_scores.get(code, {})
+                        target_value = existing_row.get("req")
+                        if target_value is None or pd.isna(target_value):
+                            workbook_target = pd.to_numeric(
+                                assessment_row.get(f"R-{code}"), errors="coerce"
+                            )
+                            target_value = (
+                                None if pd.isna(workbook_target) else float(workbook_target)
+                            )
+                        current_actual = existing_row.get("actual")
+                        if current_actual is not None and pd.isna(current_actual):
+                            current_actual = None
+                        matrix_rows.append({
+                            "Code": code,
+                            "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                            "Source": "Extracted" if source_row else "Not in file",
+                            "Current Score": current_actual,
+                            "Self Rating": source_row.get("self_rating"),
+                            "Final Rating": source_row.get("final_rating"),
+                            "Target": target_value,
+                            "Evidence": source_row.get("evidence", ""),
+                            "Assessor Comments": source_row.get("assessor_comments", ""),
+                            "Superior Comments": source_row.get("superior_comments", ""),
+                            "Assessor Approval": source_row.get("assessor_approval", ""),
+                            "Superior Approval": source_row.get("superior_approval", ""),
+                        })
+
+                default_date = None
+                if source_meta.get("assessment_date"):
+                    try:
+                        default_date = date.fromisoformat(str(source_meta["assessment_date"])[:10])
+                    except ValueError:
+                        default_date = None
+
+                st.markdown("#### Assessment information")
+                st.caption(
+                    "The source date is used when available. Leave the date unset when the source "
+                    "does not state one. Assessment level and assessment type are separate fields."
+                )
+
+                import_form_key = (
+                    f"assessment_import_review_form_{assessment_person_id}_"
+                    f"{parsed_import['source_sha256'][:10]}_{operation}"
+                )
+                with st.form(import_form_key, clear_on_submit=False):
+                    date_cols = st.columns(2)
+                    with date_cols[0]:
+                        use_assessment_date = st.checkbox(
+                            "Record assessment date",
+                            value=default_date is not None,
+                            key=f"assessment_import_use_date_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+                        assessment_date_value = st.date_input(
+                            "Assessment date",
+                            value=default_date or date.today(),
+                            disabled=not use_assessment_date,
+                            format="DD/MM/YYYY",
+                            key=f"assessment_import_date_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+                    with date_cols[1]:
+                        assessment_level_value = st.text_input(
+                            "Assessment level",
+                            value=str(_text(assessment_row, "Assessment Level") or ""),
+                            key=f"assessment_import_level_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+                        assessment_type_value = st.text_input(
+                            "Assessment type",
+                            value=str(source_meta.get("assessment_type") or "SMA"),
+                            key=f"assessment_import_type_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+
+                    assessor_cols = st.columns(3)
+                    with assessor_cols[0]:
+                        assessor1_value = st.text_input(
+                            "Assessor 1",
+                            value=str(source_meta.get("assessor1") or ""),
+                            key=f"assessment_import_assessor1_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+                    with assessor_cols[1]:
+                        assessor2_value = st.text_input(
+                            "Assessor 2",
+                            value=str(source_meta.get("assessor2") or ""),
+                            key=f"assessment_import_assessor2_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+                    with assessor_cols[2]:
+                        supervisor_value = st.text_input(
+                            "Supervisor / Superior",
+                            value=str(source_meta.get("supervisor") or ""),
+                            key=f"assessment_import_supervisor_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+
+                    edited_import_matrix = st.data_editor(
+                        pd.DataFrame(matrix_rows),
+                        key=f"assessment_import_matrix_{assessment_person_id}_{parsed_import['source_sha256'][:10]}_{operation}",
+                        width="stretch",
+                        height=760,
+                        hide_index=True,
+                        num_rows="fixed",
+                        disabled=[
+                            "Code", "Competency", "Source", "Current Score", "Target",
+                        ],
+                        column_config={
+                            "Code": st.column_config.TextColumn("Code", width="small"),
+                            "Competency": st.column_config.TextColumn("Competency", width="large"),
+                            "Source": st.column_config.TextColumn("Source", width="small"),
+                            "Current Score": st.column_config.NumberColumn("Current", format="%.1f"),
+                            "Self Rating": st.column_config.NumberColumn(
+                                "Self Rating", min_value=0.0, max_value=5.0, step=0.5, format="%.1f"
+                            ),
+                            "Final Rating": st.column_config.NumberColumn(
+                                "Final Rating", min_value=0.0, max_value=5.0, step=0.5, format="%.1f"
+                            ),
+                            "Target": st.column_config.NumberColumn("Target", format="%.1f"),
+                            "Evidence": st.column_config.TextColumn("Evidence", width="large"),
+                            "Assessor Comments": st.column_config.TextColumn("Assessor Comments", width="large"),
+                            "Superior Comments": st.column_config.TextColumn("Superior Comments", width="large"),
+                            "Assessor Approval": st.column_config.TextColumn("Assessor Approval"),
+                            "Superior Approval": st.column_config.TextColumn("Superior Approval"),
+                        },
+                    )
+
+                    st.caption(
+                        "Final Rating is the imported current score. Self Rating is retained separately. "
+                        "Target is shown from the selected saved assessment or the master workbook; "
+                        "the importer does not infer a new target from the score."
+                    )
+                    confirm_name_mapping = True
+                    if label_issues:
+                        confirm_name_mapping = st.checkbox(
+                            "I have checked the competency code/name differences shown above.",
+                            value=False,
+                            key=f"assessment_import_confirm_labels_{assessment_person_id}_{parsed_import['source_sha256'][:8]}",
+                        )
+                    review_button = st.form_submit_button(
+                        "Mark as Reviewed",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=bool(identity_issues or duplicate_issues or fatal_issues),
+                    )
+
+                if review_button:
+                    review_scores = {}
+                    for _, matrix_row in edited_import_matrix.iterrows():
+                        code = str(matrix_row.get("Code") or "")
+                        if code not in SCORE_COLS:
+                            continue
+                        final_value = pd.to_numeric(
+                            matrix_row.get("Final Rating"), errors="coerce"
+                        )
+                        self_value = pd.to_numeric(
+                            matrix_row.get("Self Rating"), errors="coerce"
+                        )
+                        target_value = pd.to_numeric(
+                            matrix_row.get("Target"), errors="coerce"
+                        )
+                        narrative = {
+                            "evidence": str(matrix_row.get("Evidence") or "").strip(),
+                            "assessor_comments": str(matrix_row.get("Assessor Comments") or "").strip(),
+                            "superior_comments": str(matrix_row.get("Superior Comments") or "").strip(),
+                            "assessor_approval": str(matrix_row.get("Assessor Approval") or "").strip(),
+                            "superior_approval": str(matrix_row.get("Superior Approval") or "").strip(),
+                        }
+                        if (
+                            pd.notna(final_value) or pd.notna(self_value)
+                            or any(narrative.values())
+                        ):
+                            review_scores[code] = {
+                                "final_rating": None if pd.isna(final_value) else float(final_value),
+                                "self_rating": None if pd.isna(self_value) else float(self_value),
+                                "req": None if pd.isna(target_value) else float(target_value),
+                                **narrative,
+                            }
+
+                    if not review_scores or not any(
+                        value.get("final_rating") is not None
+                        for value in review_scores.values()
+                    ):
+                        st.error(
+                            "At least one valid Final Rating is required before the assessment can be reviewed."
+                        )
+                    elif label_issues and not confirm_name_mapping:
+                        st.error(
+                            "Please acknowledge the competency code/name differences before marking this import as reviewed."
+                        )
+                    else:
+                        payload = {
+                            "metadata": {
+                                "assessment_date": (
+                                    assessment_date_value.isoformat()
+                                    if use_assessment_date else None
+                                ),
+                                "assessment_level": assessment_level_value.strip() or None,
+                                "assessment_type": assessment_type_value.strip() or None,
+                                "assessor1": assessor1_value.strip() or None,
+                                "assessor2": assessor2_value.strip() or None,
+                                "supervisor": supervisor_value.strip() or None,
+                                "remarks": "",
+                            },
+                            "scores": review_scores,
+                            "missing_codes": parsed_import.get("missing_codes", []),
+                            "parser_issues": parser_issues,
+                        }
+                        review_session = open_session()
+                        try:
+                            batch_id = create_reviewed_assessment_import(
+                                review_session,
+                                personnel_id=assessment_person_id,
+                                operation=operation,
+                                target_assessment_id=target_assessment_id,
+                                source_filename=import_upload.name,
+                                source_sha256=parsed_import["source_sha256"],
+                                payload=payload,
+                                actor=current_user(),
+                            )
+                            st.session_state[
+                                f"assessment_import_batch_{assessment_person_id}"
+                            ] = batch_id
+                            st.success(
+                                f"Assessment import #{batch_id} marked as reviewed. "
+                                "The live assessment records have not been changed."
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            review_session.rollback()
+                            st.error(f"Unable to save the reviewed assessment: {exc}")
+                        finally:
+                            review_session.close()
+
+            batch_state_key = f"assessment_import_batch_{assessment_person_id}"
+            pending_batch_id = st.session_state.get(batch_state_key)
+            if pending_batch_id:
+                batch_session = open_session()
+                try:
+                    reviewed_batch = batch_session.query(AssessmentImportBatch).filter_by(
+                        id=int(pending_batch_id),
+                        personnel_id=int(assessment_person_id),
+                    ).first()
+                    if reviewed_batch is not None:
+                        st.divider()
+                        st.markdown("#### Approval")
+                        st.caption(
+                            f"Import #{reviewed_batch.id} · {reviewed_batch.source_filename} · "
+                            f"Status: {reviewed_batch.status.title()}"
+                        )
+                        if reviewed_batch.status == "reviewed":
+                            st.warning(
+                                "This import has been reviewed. Approval will write the selected "
+                                "assessment and its competency evidence to the database in one transaction."
+                            )
+                            approval_ack = st.checkbox(
+                                "I approve these assessment results for database update.",
+                                key=f"assessment_import_approval_ack_{reviewed_batch.id}",
+                            )
+                            approve_col, discard_col = st.columns(2)
+                            with approve_col:
+                                approve_import = st.button(
+                                    "Approve & Apply Assessment",
+                                    type="primary",
+                                    use_container_width=True,
+                                    disabled=not approval_ack,
+                                    key=f"approve_assessment_import_{reviewed_batch.id}",
+                                )
+                            with discard_col:
+                                discard_import = st.button(
+                                    "Discard Review",
+                                    type="secondary",
+                                    use_container_width=True,
+                                    key=f"discard_assessment_import_{reviewed_batch.id}",
+                                )
+                            if approve_import:
+                                approval_session = open_session()
+                                try:
+                                    ok, message, applied_assessment_id = apply_reviewed_assessment_import(
+                                        approval_session,
+                                        int(reviewed_batch.id),
+                                        actor=current_user(),
+                                    )
+                                    if ok:
+                                        st.session_state["_assessment_import_saved_notice"] = message
+                                        st.session_state.pop(batch_state_key, None)
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
+                                finally:
+                                    approval_session.close()
+                            if discard_import:
+                                discard_session = open_session()
+                                try:
+                                    discard_batch = discard_session.get(
+                                        AssessmentImportBatch, int(reviewed_batch.id)
+                                    )
+                                    if discard_batch is not None and discard_batch.status == "reviewed":
+                                        discard_batch.status = "rejected"
+                                        discard_session.commit()
+                                    st.session_state.pop(batch_state_key, None)
+                                    st.rerun()
+                                finally:
+                                    discard_session.close()
+                        elif reviewed_batch.status == "approved":
+                            st.success("This assessment import has already been approved and applied.")
+                        elif reviewed_batch.status == "rejected":
+                            st.info("This reviewed import was discarded.")
+                finally:
+                    batch_session.close()
+            elif import_upload is None:
+                st.info("Upload an assessment workbook or PDF to begin.")
 
         with history_tab:
             st.markdown("#### Assessment history")
