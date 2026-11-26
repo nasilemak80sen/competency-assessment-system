@@ -1324,12 +1324,36 @@ with assessment_tab:
                     item["code"]: item
                     for item in parsed_import.get("competencies", [])
                 }
+                mapping_import = (
+                    str(source_meta.get("assessment_type") or "").casefold()
+                    == "technology inventory mapping"
+                )
+                staff_position_label = str(
+                    assessment_person.get("staff_position") or ""
+                ).casefold()
+                if "principal" in staff_position_label:
+                    selected_grade_group = "Principal"
+                elif "custodian" in staff_position_label:
+                    selected_grade_group = "Custodian"
+                elif "staff" in staff_position_label or "specialist" in staff_position_label:
+                    selected_grade_group = "Staff"
+                else:
+                    selected_grade_group = "G03"
+
                 matrix_rows = []
+                grade_comparison_rows = []
                 for competency_type, info in COMP_TYPES.items():
                     for code in info["cols"]:
                         source_row = parsed_by_code.get(code, {})
                         existing_row = target_scores.get(code, {})
-                        target_value = existing_row.get("req")
+                        comparisons = source_row.get("grade_comparisons") or {}
+                        selected_comparison = comparisons.get(selected_grade_group) or {}
+                        target_value = (
+                            selected_comparison.get("target")
+                            if mapping_import else None
+                        )
+                        if target_value is None:
+                            target_value = existing_row.get("req")
                         if target_value is None or pd.isna(target_value):
                             workbook_target = pd.to_numeric(
                                 assessment_row.get(f"R-{code}"), errors="coerce"
@@ -1343,17 +1367,33 @@ with assessment_tab:
                         matrix_rows.append({
                             "Code": code,
                             "Competency": COMPETENCY_FULLNAMES.get(code, code),
-                            "Source": "Extracted" if source_row else "Not in file",
+                            "Source": (
+                                "Map Result (Column G)" if mapping_import and source_row
+                                else "Final Rating" if source_row
+                                else "Not in file"
+                            ),
                             "Current Score": current_actual,
+                            "Old TI Score": source_row.get("old_ti_score"),
                             "Self Rating": source_row.get("self_rating"),
-                            "Final Rating": source_row.get("final_rating"),
+                            "Imported Result": source_row.get("final_rating"),
                             "Target": target_value,
+                            "Mapping Guideline": source_row.get("mapping_guideline", ""),
                             "Evidence": source_row.get("evidence", ""),
                             "Assessor Comments": source_row.get("assessor_comments", ""),
                             "Superior Comments": source_row.get("superior_comments", ""),
                             "Assessor Approval": source_row.get("assessor_approval", ""),
                             "Superior Approval": source_row.get("superior_approval", ""),
                         })
+                        for group, comparison in comparisons.items():
+                            grade_comparison_rows.append({
+                                "Code": code,
+                                "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                                "Grade Group": group,
+                                "% Close": comparison.get("percent_close"),
+                                "Target": comparison.get("target"),
+                                "Source Gap": comparison.get("gap"),
+                                "Status": comparison.get("status"),
+                            })
 
                 default_date = None
                 if source_meta.get("assessment_date"):
@@ -1427,19 +1467,22 @@ with assessment_tab:
                         hide_index=True,
                         num_rows="fixed",
                         disabled=[
-                            "Code", "Competency", "Source", "Current Score", "Target",
+                            "Code", "Competency", "Source", "Current Score",
+                            "Old TI Score", "Target", "Mapping Guideline",
                         ],
                         column_config={
                             "Code": st.column_config.TextColumn("Code", width="small"),
                             "Competency": st.column_config.TextColumn("Competency", width="large"),
                             "Source": st.column_config.TextColumn("Source", width="small"),
                             "Current Score": st.column_config.NumberColumn("Current", format="%.1f"),
+                            "Old TI Score": st.column_config.NumberColumn("Old TI", format="%.1f"),
                             "Self Rating": st.column_config.NumberColumn(
                                 "Self Rating", min_value=0.0, max_value=5.0, step=0.5, format="%.1f"
                             ),
-                            "Final Rating": st.column_config.NumberColumn(
-                                "Final Rating", min_value=0.0, max_value=5.0, step=0.5, format="%.1f"
+                            "Imported Result": st.column_config.NumberColumn(
+                                "Mapped / Final Result", min_value=0.0, max_value=5.0, step=0.5, format="%.1f"
                             ),
+                            "Mapping Guideline": st.column_config.TextColumn("Mapping Guideline", width="large"),
                             "Target": st.column_config.NumberColumn("Target", format="%.1f"),
                             "Evidence": st.column_config.TextColumn("Evidence", width="large"),
                             "Assessor Comments": st.column_config.TextColumn("Assessor Comments", width="large"),
@@ -1449,11 +1492,29 @@ with assessment_tab:
                         },
                     )
 
-                    st.caption(
-                        "Final Rating is the imported current score. Self Rating is retained separately. "
-                        "Target is shown from the selected saved assessment or the master workbook; "
-                        "the importer does not infer a new target from the score."
-                    )
+                    if mapping_import:
+                        st.caption(
+                            f"Imported Result is Map Result (Column G). Old TI scores and mapping "
+                            f"guidelines are retained. The main Target column uses the {selected_grade_group} "
+                            "comparison; all four grade-group comparisons are shown below."
+                        )
+                    else:
+                        st.caption(
+                            "Imported Result is the source Final Rating. Self Rating is retained separately. "
+                            "Target is shown from the selected saved assessment or the master workbook."
+                        )
+                    if grade_comparison_rows:
+                        with st.expander("All grade-group target, gap and status comparisons", expanded=True):
+                            st.dataframe(
+                                pd.DataFrame(grade_comparison_rows),
+                                width="stretch",
+                                hide_index=True,
+                                column_config={
+                                    "% Close": st.column_config.NumberColumn(format="%.0f%%"),
+                                    "Target": st.column_config.NumberColumn(format="%.1f"),
+                                    "Source Gap": st.column_config.NumberColumn(format="%.1f"),
+                                },
+                            )
 
                     gap_preview = edited_import_matrix.copy()
                     gap_preview["Proposed Gap"] = gap_preview.apply(
@@ -1467,19 +1528,20 @@ with assessment_tab:
                                 2,
                             )
                             if pd.notna(pd.to_numeric(row["Target"], errors="coerce"))
-                            and pd.notna(pd.to_numeric(row["Final Rating"], errors="coerce"))
+                            and pd.notna(pd.to_numeric(row["Imported Result"], errors="coerce"))
                             else None
                         ),
                         axis=1,
                     )
                     st.markdown("#### Proposed score and gap preview")
                     st.dataframe(
-                        gap_preview[["Code", "Current Score", "Final Rating", "Target", "Proposed Gap"]],
+                        gap_preview[["Code", "Current Score", "Old TI Score", "Imported Result", "Target", "Proposed Gap"]],
                         width="stretch",
                         hide_index=True,
                         column_config={
                             "Current Score": st.column_config.NumberColumn(format="%.1f"),
-                            "Final Rating": st.column_config.NumberColumn(format="%.1f"),
+                            "Old TI Score": st.column_config.NumberColumn(format="%.1f"),
+                            "Imported Result": st.column_config.NumberColumn(format="%.1f"),
                             "Target": st.column_config.NumberColumn(format="%.1f"),
                             "Proposed Gap": st.column_config.NumberColumn(format="%.2f"),
                         },
@@ -1528,6 +1590,14 @@ with assessment_tab:
                                 "final_rating": None if pd.isna(final_value) else float(final_value),
                                 "self_rating": None if pd.isna(self_value) else float(self_value),
                                 "req": None if pd.isna(target_value) else float(target_value),
+                                "old_ti_score": (
+                                    None if pd.isna(pd.to_numeric(matrix_row.get("Old TI Score"), errors="coerce"))
+                                    else float(pd.to_numeric(matrix_row.get("Old TI Score"), errors="coerce"))
+                                ),
+                                "mapping_guideline": _text(matrix_row, "Mapping Guideline"),
+                                "grade_comparisons": (
+                                    parsed_by_code.get(code, {}).get("grade_comparisons") or {}
+                                ),
                                 **narrative,
                             }
 
