@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from pathlib import Path
 import hashlib
+import json
 
 import pandas as pd
 import streamlit as st
@@ -1667,20 +1668,24 @@ with assessment_tab:
                         personnel_id=int(assessment_person_id),
                         status="reviewed",
                     )
-                    .order_by(AssessmentImportBatch.created_at.desc(), AssessmentImportBatch.id.desc())
+                    .order_by(
+                        AssessmentImportBatch.created_at.desc(),
+                        AssessmentImportBatch.id.desc(),
+                    )
                     .limit(10)
                     .all()
                 )
                 pending_options = {
-                    f"Import #{batch.id} · {batch.source_filename} · {batch.created_at:%d %b %Y %H:%M}":
-                    int(batch.id)
+                    (
+                        f"Import #{batch.id} · {batch.source_filename} · "
+                        f"{batch.created_at:%d %b %Y %H:%M}"
+                    ): int(batch.id)
                     for batch in pending_batches
                 }
                 if pending_batches:
                     pending_ids = {int(batch.id) for batch in pending_batches}
                     if pending_batch_id not in pending_ids:
                         pending_batch_id = int(pending_batches[0].id)
-                        st.session_state[batch_state_key] = pending_batch_id
                     if len(pending_batches) > 1:
                         pending_label = st.selectbox(
                             "Select a reviewed import awaiting approval",
@@ -1689,12 +1694,17 @@ with assessment_tab:
                             key=f"pending_assessment_import_picker_{assessment_person_id}",
                         )
                         pending_batch_id = pending_options[pending_label]
-                        st.session_state[batch_state_key] = pending_batch_id
+                    st.session_state[batch_state_key] = pending_batch_id
+                else:
+                    pending_batch_id = None
+                    st.session_state.pop(batch_state_key, None)
+
                 reviewed_batch = (
                     batch_session.query(AssessmentImportBatch)
                     .filter_by(
                         id=int(pending_batch_id),
                         personnel_id=int(assessment_person_id),
+                        status="reviewed",
                     )
                     .first()
                     if pending_batch_id else None
@@ -1767,6 +1777,7 @@ with assessment_tab:
                             st.info("This reviewed import was discarded.")
             finally:
                 batch_session.close()
+
             if pending_batch_id is None and import_upload is None:
                 st.info("Upload an assessment workbook or PDF to begin.")
 
@@ -1844,11 +1855,13 @@ with assessment_tab:
                                     "Code": code,
                                     "Competency": COMPETENCY_FULLNAMES.get(code, code),
                                     "Group": info["label"],
+                                    "Old TI Score": saved_score.get("old_ti_score"),
                                     "Self Rating": saved_score.get("self_rating"),
-                                    "Actual": saved_score.get("actual"),
+                                    "Actual / Mapped Result": saved_score.get("actual"),
                                     "Target": saved_score.get("req"),
                                     "Gap": saved_score.get("gap"),
                                     "Achievement %": saved_score.get("achievement_pct"),
+                                    "Mapping Guideline": saved_score.get("mapping_guideline"),
                                 }
                             )
                     st.markdown("#### Saved competency matrix")
@@ -1857,8 +1870,9 @@ with assessment_tab:
                         width="stretch",
                         hide_index=True,
                         column_config={
+                            "Old TI Score": st.column_config.NumberColumn(format="%.1f"),
                             "Self Rating": st.column_config.NumberColumn(format="%.1f"),
-                            "Actual": st.column_config.NumberColumn(format="%.1f"),
+                            "Actual / Mapped Result": st.column_config.NumberColumn(format="%.1f"),
                             "Target": st.column_config.NumberColumn(format="%.1f"),
                             "Gap": st.column_config.NumberColumn(format="%.2f"),
                             "Achievement %": st.column_config.NumberColumn(
@@ -1866,6 +1880,32 @@ with assessment_tab:
                             ),
                         },
                     )
+
+                    comparison_history_rows = []
+                    for code in SCORE_COLS:
+                        saved_score = chosen_scores.get(code, {})
+                        for group, comparison in (saved_score.get("grade_comparisons") or {}).items():
+                            comparison_history_rows.append({
+                                "Code": code,
+                                "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                                "Grade Group": group,
+                                "% Close": comparison.get("percent_close"),
+                                "Target": comparison.get("target"),
+                                "Source Gap": comparison.get("gap"),
+                                "Status": comparison.get("status"),
+                            })
+                    if comparison_history_rows:
+                        with st.expander("Historical Technology Inventory grade comparisons"):
+                            st.dataframe(
+                                pd.DataFrame(comparison_history_rows),
+                                width="stretch",
+                                hide_index=True,
+                                column_config={
+                                    "% Close": st.column_config.NumberColumn(format="%.0f%%"),
+                                    "Target": st.column_config.NumberColumn(format="%.1f"),
+                                    "Source Gap": st.column_config.NumberColumn(format="%.1f"),
+                                },
+                            )
 
                     narrative_rows = []
                     for code in SCORE_COLS:

@@ -516,3 +516,23 @@ def test_mapping_import_persists_old_score_and_grade_comparisons():
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_pdf_text_with_mapping_table_uses_map_result_column():
+    from v2.services.assessment_import_service import _parse_pdf_text
+
+    text = (
+        "NAME\\tPDF Mapping Person\\n"
+        "STAFFID\\tTEST-PDF-01\\n"
+        "TI No.\\tOld Technology Inventory\\tOld Result\\tNewTechnology Inventory\\tNew Name\\tMapping Guideline\\tMap Result\\tG03\\t\\t\\t\\tStaff\\t\\t\\t\\tPrincipal\\t\\t\\t\\tCustodian\\n"
+        "\\t\\t\\t\\t\\t\\t\\t% Close\\t23\\tGap\\tStatus\\t% Close\\t25\\tGap\\tStatus\\t% Close\\t27\\tGap\\tStatus\\t% Close\\t29\\tGap\\tStatus\\n"
+        "B1\\tFluid characterization\\t3\\tB1\\tFluid Characterisation*\\tMaintain score from previous B1\\t3\\t83%\\t2\\t1\\tY\\t67%\\t3\\t0\\tY\\t17%\\t4\\t-1\\tX\\t8%\\t5\\t-2\\tX\\n"
+    )
+    parsed = _parse_pdf_text(text)
+    assert parsed["metadata"]["person_name"] == "PDF Mapping Person"
+    assert len(parsed["competencies"]) == 1
+    row = parsed["competencies"][0]
+    assert row["code"] == "B1"
+    assert row["final_rating"] == 3
+    assert row["grade_comparisons"]["Custodian"]["gap"] == -2
