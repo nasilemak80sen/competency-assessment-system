@@ -1325,9 +1325,9 @@ with assessment_tab:
                     item["code"]: item
                     for item in parsed_import.get("competencies", [])
                 }
-                mapping_import = (
-                    str(source_meta.get("assessment_type") or "").casefold()
-                    == "technology inventory mapping"
+                mapping_import = any(
+                    bool(item.get("grade_comparisons"))
+                    for item in parsed_import.get("competencies", [])
                 )
                 staff_position_label = str(
                     assessment_person.get("staff_position") or ""
