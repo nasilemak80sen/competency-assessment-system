@@ -139,7 +139,7 @@ def _label_value(row: list[str], label: str) -> str:
             continue
         if target in normalized:
             inline = re.search(
-                re.escape(label) + r"\s*:?\s*([^\t]+)$",
+                re.escape(label) + r"\s*:\s*(.+)$",
                 text,
                 re.IGNORECASE,
             )
@@ -273,7 +273,7 @@ def _parse_grid(rows: list[list[str]]) -> dict:
             if not value or value.casefold() == "picture":
                 continue
             normalized = _normalise(value)
-            if "assessor name rating comments" in normalized or normalized.startswith("assessor s comments"):
+            if "assessor name rating" in normalized or normalized.startswith("assessor s comments"):
                 current_record["assessor_comments"].append(value.strip('"'))
                 assessor_match = re.search(
                     r"Assessor Name,\s*Rating\s*&?\s*Comments:\s*([^\.]+)",
