@@ -1,6 +1,7 @@
 from datetime import date
 
 import openpyxl
+import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -291,6 +292,77 @@ def test_revision_updates_only_imported_ratings_and_keeps_unmentioned_values():
         assert scores["B1"]["gap"] == 0
         assert scores["B2"]["actual"] == 3
         assert scores["B2"]["evidence"] == "Revised B2 evidence"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+
+def test_latest_database_assessment_scores_overlay_workbook_baseline():
+    from v2.core.bootstrap import _overlay_database_competency_scores
+
+    session, engine = _session()
+    try:
+        person = Personnel(
+            staff_id="TEST-OVERLAY",
+            name="Overlay Test Person",
+            is_deleted=False,
+            is_active=True,
+        )
+        session.add(person)
+        session.flush()
+        assessment = Assessment(
+            personnel_id=person.id,
+            assessment_date=date(2026, 6, 8),
+            assessment_level="Staff",
+        )
+        session.add(assessment)
+        session.flush()
+        session.add_all([
+            CompetencyScore(
+                assessment_id=assessment.id,
+                personnel_id=person.id,
+                competency_code="B1",
+                competency_type="B",
+                actual_score=4,
+                requirement_score=3,
+                gap_score=0,
+            ),
+            CompetencyScore(
+                assessment_id=assessment.id,
+                personnel_id=person.id,
+                competency_code="B2",
+                competency_type="B",
+                actual_score=None,
+                requirement_score=4,
+                gap_score=None,
+            ),
+        ])
+        session.commit()
+
+        baseline = pd.DataFrame([{
+            "Name": "Overlay Test Person",
+            "Staff ID": "TEST-OVERLAY",
+            "B1": 1,
+            "R-B1": 2,
+            "G--B1": 1,
+            "B2": 2,
+            "R-B2": 3,
+            "G--B2": 1,
+        }])
+        refreshed = _overlay_database_competency_scores(
+            baseline,
+            session,
+            [person],
+        ).iloc[0]
+
+        assert refreshed["B1"] == 4
+        assert refreshed["R-B1"] == 3
+        assert refreshed["G--B1"] == 0
+        # A missing actual score does not erase the workbook baseline value.
+        assert refreshed["B2"] == 2
+        assert refreshed["R-B2"] == 4
+        assert refreshed["G--B2"] == 1
     finally:
         session.close()
         engine.dispose()
