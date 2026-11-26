@@ -360,6 +360,7 @@ def apply_reviewed_assessment_import(
             )[:100]
             actor_display_name = actor.get("display_name")
 
+        old_header = {}
         if batch.operation == "create":
             assessment = Assessment(
                 personnel_id=person.id,
@@ -506,7 +507,10 @@ def apply_reviewed_assessment_import(
                 action=audit_action,
                 changed_by=actor_name,
                 old_values=json.dumps(
-                    old_score_values if batch.operation == "revise" else {},
+                    (
+                        {"header": old_header, "scores": old_score_values}
+                        if batch.operation == "revise" else {}
+                    ),
                     ensure_ascii=False,
                     default=str,
                 ),
@@ -515,6 +519,16 @@ def apply_reviewed_assessment_import(
                         "personnel_id": int(person.id),
                         "assessment_id": int(assessment.id),
                         "operation": batch.operation,
+                        "assessment_date": (
+                            assessment.assessment_date.isoformat()
+                            if assessment.assessment_date else None
+                        ),
+                        "assessment_level": assessment.assessment_level,
+                        "assessment_type": assessment.assessment_type,
+                        "assessor1": assessment.assessor1,
+                        "assessor2": assessment.assessor2,
+                        "supervisor": assessment.supervisor,
+                        "remarks": assessment.remarks,
                         "source_filename": batch.source_filename,
                         "source_sha256": batch.source_sha256,
                         "score_updates": new_score_values,
