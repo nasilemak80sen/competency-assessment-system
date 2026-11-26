@@ -473,8 +473,7 @@ def _parse_mapping_grid(rows: list[list[str]]) -> dict:
         issues.append("Map Result is blank or not numeric for: " + ", ".join(missing_final))
     if not competencies:
         issues.append("No recognised B1-E2 rows were found under New Technology Inventory.")
-    if not metadata.get("assessment_type"):
-        metadata["assessment_type"] = "Technology Inventory Mapping"
+    metadata["assessment_type"] = "Technology Inventory Mapping"
 
     return {
         "metadata": metadata,
