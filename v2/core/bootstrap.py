@@ -302,6 +302,101 @@ def _overlay_database_assessment_levels(df: pd.DataFrame, personnel_rows) -> pd.
     return out
 
 
+def _overlay_database_competency_scores(
+    df: pd.DataFrame,
+    session,
+    personnel_rows,
+) -> pd.DataFrame:
+    """Overlay the latest saved assessment scores onto workbook baseline rows.
+
+    The workbook remains the source for unassessed legacy values. A database
+    assessment value wins when it contains a real Actual Rating. NULL Actual
+    Ratings do not erase a workbook value, because uploaded assessment files
+    may legitimately contain only a subset of the 24 competency sections.
+    """
+    if df is None or df.empty or not personnel_rows:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    person_by_staff = {}
+    people_by_name = {}
+    for person in personnel_rows:
+        staff_key = _normalise_overlay_key(getattr(person, "staff_id", None))
+        name_key = _normalise_overlay_key(getattr(person, "name", None))
+        if staff_key:
+            person_by_staff[staff_key] = person
+        if name_key:
+            people_by_name.setdefault(name_key, []).append(person)
+    unique_by_name = {
+        key: values[0] for key, values in people_by_name.items()
+        if len(values) == 1
+    }
+
+    person_ids = [int(person.id) for person in personnel_rows if getattr(person, "id", None) is not None]
+    if not person_ids:
+        return df.copy()
+
+    assessment_rows = (
+        session.query(Assessment)
+        .options(selectinload(Assessment.scores))
+        .filter(Assessment.personnel_id.in_(person_ids))
+        .order_by(
+            Assessment.assessment_date.is_(None),
+            Assessment.assessment_date.desc(),
+            Assessment.id.desc(),
+        )
+        .all()
+    )
+    latest_by_person = {}
+    for assessment in assessment_rows:
+        latest_by_person.setdefault(int(assessment.personnel_id), assessment)
+
+    out = df.copy()
+    for index, row in out.iterrows():
+        staff_key = _normalise_overlay_key(row.get("Staff ID"))
+        name_key = _normalise_overlay_key(row.get("Name"))
+        person = person_by_staff.get(staff_key) if staff_key else None
+        if person is None and name_key:
+            person = unique_by_name.get(name_key)
+        if person is None:
+            continue
+        assessment = latest_by_person.get(int(person.id))
+        if assessment is None:
+            continue
+
+        date_columns = ("Last Assesment Date", "Last Assessment Date", "Assessment Date")
+        if assessment.assessment_date is not None:
+            for column in date_columns:
+                if column in out.columns:
+                    out.at[index, column] = assessment.assessment_date
+
+        for column, value in (
+            ("Assesor1", assessment.assessor1),
+            ("Assessor1", assessment.assessor1),
+            ("Assessor2", assessment.assessor2),
+            ("Supervisor", assessment.supervisor),
+            ("Remarks", assessment.remarks),
+            ("Assessment Type", assessment.assessment_type),
+        ):
+            if column in out.columns and value not in (None, ""):
+                out.at[index, column] = value
+
+        for score in assessment.scores:
+            code = str(score.competency_code or "").strip().upper()
+            if not code:
+                continue
+            actual_column = code
+            target_column = f"R-{code}"
+            gap_column = f"G--{code}"
+            if score.actual_score is not None and actual_column in out.columns:
+                out.at[index, actual_column] = score.actual_score
+            if score.requirement_score is not None and target_column in out.columns:
+                out.at[index, target_column] = score.requirement_score
+            if score.actual_score is not None and gap_column in out.columns and score.gap_score is not None:
+                out.at[index, gap_column] = score.gap_score
+
+    return out
+
+
 def get_master_data():
     """Load the workbook baseline and overlay editable personnel data from SQLite.
 
@@ -321,6 +416,7 @@ def get_master_data():
             .all()
         )
         df = _overlay_database_personnel_fields(df, personnel_rows)
+        df = _overlay_database_competency_scores(df, session, personnel_rows)
         assessment_rows = [
             (person.staff_id, person.name, person.assessment_level)
             for person in personnel_rows
