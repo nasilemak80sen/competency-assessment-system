@@ -1659,14 +1659,47 @@ with assessment_tab:
 
             batch_state_key = f"assessment_import_batch_{assessment_person_id}"
             pending_batch_id = st.session_state.get(batch_state_key)
-            if pending_batch_id:
-                batch_session = open_session()
-                try:
-                    reviewed_batch = batch_session.query(AssessmentImportBatch).filter_by(
+            batch_session = open_session()
+            try:
+                pending_batches = (
+                    batch_session.query(AssessmentImportBatch)
+                    .filter_by(
+                        personnel_id=int(assessment_person_id),
+                        status="reviewed",
+                    )
+                    .order_by(AssessmentImportBatch.created_at.desc(), AssessmentImportBatch.id.desc())
+                    .limit(10)
+                    .all()
+                )
+                pending_options = {
+                    f"Import #{batch.id} · {batch.source_filename} · {batch.created_at:%d %b %Y %H:%M}":
+                    int(batch.id)
+                    for batch in pending_batches
+                }
+                if pending_batches:
+                    pending_ids = {int(batch.id) for batch in pending_batches}
+                    if pending_batch_id not in pending_ids:
+                        pending_batch_id = int(pending_batches[0].id)
+                        st.session_state[batch_state_key] = pending_batch_id
+                    if len(pending_batches) > 1:
+                        pending_label = st.selectbox(
+                            "Select a reviewed import awaiting approval",
+                            list(pending_options),
+                            index=list(pending_options.values()).index(int(pending_batch_id)),
+                            key=f"pending_assessment_import_picker_{assessment_person_id}",
+                        )
+                        pending_batch_id = pending_options[pending_label]
+                        st.session_state[batch_state_key] = pending_batch_id
+                reviewed_batch = (
+                    batch_session.query(AssessmentImportBatch)
+                    .filter_by(
                         id=int(pending_batch_id),
                         personnel_id=int(assessment_person_id),
-                    ).first()
-                    if reviewed_batch is not None:
+                    )
+                    .first()
+                    if pending_batch_id else None
+                )
+                if reviewed_batch is not None:
                         st.divider()
                         st.markdown("#### Approval")
                         st.caption(
@@ -1732,9 +1765,9 @@ with assessment_tab:
                             st.success("This assessment import has already been approved and applied.")
                         elif reviewed_batch.status == "rejected":
                             st.info("This reviewed import was discarded.")
-                finally:
-                    batch_session.close()
-            elif import_upload is None:
+            finally:
+                batch_session.close()
+            if pending_batch_id is None and import_upload is None:
                 st.info("Upload an assessment workbook or PDF to begin.")
 
         with history_tab:
