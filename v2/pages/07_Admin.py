@@ -1366,6 +1366,13 @@ with assessment_tab:
                         current_actual = existing_row.get("actual")
                         if current_actual is not None and pd.isna(current_actual):
                             current_actual = None
+                        if current_actual is None:
+                            workbook_actual = pd.to_numeric(
+                                assessment_row.get(code), errors="coerce"
+                            )
+                            current_actual = (
+                                None if pd.isna(workbook_actual) else float(workbook_actual)
+                            )
                         matrix_rows.append({
                             "Code": code,
                             "Competency": COMPETENCY_FULLNAMES.get(code, code),
@@ -1374,7 +1381,7 @@ with assessment_tab:
                                 else "Final Rating" if source_row
                                 else "Not in file"
                             ),
-                            "Current Score": current_actual,
+                            "Current (DB / Workbook)": current_actual,
                             "Old TI Score": source_row.get("old_ti_score"),
                             "Self Rating": source_row.get("self_rating"),
                             "Imported Result": source_row.get("final_rating"),
@@ -1469,14 +1476,14 @@ with assessment_tab:
                         hide_index=True,
                         num_rows="fixed",
                         disabled=[
-                            "Code", "Competency", "Source", "Current Score",
+                            "Code", "Competency", "Source", "Current (DB / Workbook)",
                             "Old TI Score", "Target", "Mapping Guideline",
                         ],
                         column_config={
                             "Code": st.column_config.TextColumn("Code", width="small"),
                             "Competency": st.column_config.TextColumn("Competency", width="large"),
                             "Source": st.column_config.TextColumn("Source", width="small"),
-                            "Current Score": st.column_config.NumberColumn("Current", format="%.1f"),
+                            "Current (DB / Workbook)": st.column_config.NumberColumn("Current", format="%.1f"),
                             "Old TI Score": st.column_config.NumberColumn("Old TI", format="%.1f"),
                             "Self Rating": st.column_config.NumberColumn(
                                 "Self Rating", min_value=0.0, max_value=5.0, step=0.5, format="%.1f"
@@ -1537,11 +1544,11 @@ with assessment_tab:
                     )
                     st.markdown("#### Proposed score and gap preview")
                     st.dataframe(
-                        gap_preview[["Code", "Current Score", "Old TI Score", "Imported Result", "Target", "Proposed Gap"]],
+                        gap_preview[["Code", "Current (DB / Workbook)", "Old TI Score", "Imported Result", "Target", "Proposed Gap"]],
                         width="stretch",
                         hide_index=True,
                         column_config={
-                            "Current Score": st.column_config.NumberColumn(format="%.1f"),
+                            "Current (DB / Workbook)": st.column_config.NumberColumn(format="%.1f"),
                             "Old TI Score": st.column_config.NumberColumn(format="%.1f"),
                             "Imported Result": st.column_config.NumberColumn(format="%.1f"),
                             "Target": st.column_config.NumberColumn(format="%.1f"),
