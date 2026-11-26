@@ -105,6 +105,7 @@ class Assessment(Base):
     personnel_id = Column(Integer, ForeignKey("personnel.id"), nullable=False, index=True)
     assessment_date = Column(Date, nullable=True, index=True)
     assessment_level = Column(String(60))
+    assessment_type = Column(String(80), nullable=True)
     assessor1 = Column(String(100))
     assessor2 = Column(String(100))
     supervisor = Column(String(100))
