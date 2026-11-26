@@ -398,7 +398,7 @@ def _parse_pdf_text(text: str) -> dict:
             ("Final Rating", "final_rating"),
         ):
             match = re.search(
-                rf"{rating_label}\\s*:?\\s*([0-5](?:\\.\\d+)?)",
+                rf"{rating_label}\s*:?\s*([0-5](?:\.\d+)?)",
                 line,
                 re.IGNORECASE,
             )
