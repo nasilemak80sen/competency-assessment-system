@@ -1331,11 +1331,12 @@ with assessment_tab:
                 staff_position_label = str(
                     assessment_person.get("staff_position") or ""
                 ).casefold()
-                if "principal" in staff_position_label:
+                salary_grade = str(assessment_person.get("sg") or "").strip().upper()
+                if salary_grade in {"P7", "P8"} or "principal" in staff_position_label:
                     selected_grade_group = "Principal"
-                elif "custodian" in staff_position_label:
+                elif salary_grade in {"P9", "P10"} or "custodian" in staff_position_label:
                     selected_grade_group = "Custodian"
-                elif "staff" in staff_position_label or "specialist" in staff_position_label:
+                elif salary_grade in {"P5", "P6"} or "staff" in staff_position_label or "specialist" in staff_position_label:
                     selected_grade_group = "Staff"
                 else:
                     selected_grade_group = "G03"
