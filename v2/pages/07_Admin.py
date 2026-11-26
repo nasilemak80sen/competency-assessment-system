@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from pathlib import Path
 import hashlib
+import json
 
 import pandas as pd
 import streamlit as st
@@ -1715,6 +1716,53 @@ with assessment_tab:
                         f"Import #{reviewed_batch.id} · {reviewed_batch.source_filename} · "
                         f"Status: {reviewed_batch.status.title()}"
                     )
+                    try:
+                        reviewed_payload = json.loads(reviewed_batch.payload_json or "{}")
+                    except (TypeError, ValueError):
+                        reviewed_payload = {}
+                    reviewed_scores = reviewed_payload.get("scores") or {}
+                    if reviewed_scores:
+                        reviewed_matrix_rows = []
+                        for code in SCORE_COLS:
+                            values = reviewed_scores.get(code)
+                            if not isinstance(values, dict):
+                                continue
+                            reviewed_matrix_rows.append({
+                                "Code": code,
+                                "Competency": COMPETENCY_FULLNAMES.get(code, code),
+                                "Old TI Score": values.get("old_ti_score"),
+                                "Self Rating": values.get("self_rating"),
+                                "Imported Result": values.get("final_rating"),
+                                "Target": values.get("req"),
+                                "Mapping Guideline": values.get("mapping_guideline"),
+                                "Evidence": values.get("evidence"),
+                                "Assessor Comments": values.get("assessor_comments"),
+                                "Superior Comments": values.get("superior_comments"),
+                            })
+                        with st.expander("Inspect the exact reviewed matrix", expanded=True):
+                            st.dataframe(
+                                pd.DataFrame(reviewed_matrix_rows),
+                                width="stretch",
+                                hide_index=True,
+                            )
+                        reviewed_grade_rows = []
+                        for code, values in reviewed_scores.items():
+                            for group, comparison in (values.get("grade_comparisons") or {}).items():
+                                reviewed_grade_rows.append({
+                                    "Code": code,
+                                    "Grade Group": group,
+                                    "% Close": comparison.get("percent_close"),
+                                    "Target": comparison.get("target"),
+                                    "Source Gap": comparison.get("gap"),
+                                    "Status": comparison.get("status"),
+                                })
+                        if reviewed_grade_rows:
+                            with st.expander("Inspect reviewed grade-group comparisons"):
+                                st.dataframe(
+                                    pd.DataFrame(reviewed_grade_rows),
+                                    width="stretch",
+                                    hide_index=True,
+                                )
                     st.warning(
                         "This import has been reviewed. Approval will write the selected "
                         "assessment and its competency evidence to the database in one transaction."
