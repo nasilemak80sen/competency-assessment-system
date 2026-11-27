@@ -553,3 +553,19 @@ def test_pdf_text_with_mapping_table_uses_map_result_column():
     assert row["code"] == "B1"
     assert row["final_rating"] == 3
     assert row["grade_comparisons"]["Custodian"]["gap"] == -2
+
+
+def test_inline_metadata_is_extracted_from_collapsed_pdf_text_lines():
+    from v2.services.assessment_import_service import _metadata_from_grid
+
+    metadata = _metadata_from_grid([
+        ["NAME Muhammad Hafiz bin Khairul Azmi"],
+        ["STAFFID 1120651"],
+        ["Assessment Date: 08-Jun-2026"],
+        ["SMA 2025"],
+    ])
+
+    assert metadata["person_name"] == "Muhammad Hafiz bin Khairul Azmi"
+    assert metadata["staff_id"] == "1120651"
+    assert metadata["assessment_date"] == date(2026, 6, 8)
+    assert metadata["assessment_type"] == "SMA 2025"

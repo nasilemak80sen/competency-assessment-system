@@ -199,6 +199,30 @@ def _metadata_from_grid(rows: list[list[str]]) -> dict:
                 metadata["supervisor"] = next(
                     (_clean(v) for v in row[index + 1:] if _clean(v)), ""
                 )
+        if not metadata["person_name"]:
+            match = re.match(
+                r"^(?:personnel\s+|employee\s+)?name\s*[:\-]?\s+(.+)$",
+                joined,
+                re.IGNORECASE,
+            )
+            if match:
+                metadata["person_name"] = match.group(1).strip()
+        if not metadata["staff_id"]:
+            match = re.match(
+                r"^(?:staff\s*id|staffid|employee\s*id)\s*[:\-]?\s+(.+)$",
+                joined,
+                re.IGNORECASE,
+            )
+            if match:
+                metadata["staff_id"] = match.group(1).strip()
+        if metadata["assessment_date"] is None:
+            match = re.match(
+                r"^assessment\s*date\s*[:\-]?\s+(.+)$",
+                joined,
+                re.IGNORECASE,
+            )
+            if match:
+                metadata["assessment_date"] = _date_value(match.group(1).strip())
         if not metadata["assessment_type"] and "sma 2025" in _normalise(joined):
             metadata["assessment_type"] = "SMA 2025"
     return metadata
@@ -473,8 +497,7 @@ def _parse_mapping_grid(rows: list[list[str]]) -> dict:
         issues.append("Map Result is blank or not numeric for: " + ", ".join(missing_final))
     if not competencies:
         issues.append("No recognised B1-E2 rows were found under New Technology Inventory.")
-    if not metadata.get("assessment_type"):
-        metadata["assessment_type"] = "Technology Inventory Mapping"
+    metadata["assessment_type"] = "Technology Inventory Mapping"
 
     return {
         "metadata": metadata,
