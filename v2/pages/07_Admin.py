@@ -1717,71 +1717,80 @@ with assessment_tab:
                     if pending_batch_id else None
                 )
                 if reviewed_batch is not None:
-                st.divider()
-                st.markdown("#### Approval")
-                st.caption(
-                    f"Import #{reviewed_batch.id} · {reviewed_batch.source_filename} · "
-                    f"Status: {reviewed_batch.status.title()}"
-                )
-                if reviewed_batch.status == "reviewed":
-                    st.warning(
-                        "This import has been reviewed. Approval will write the selected "
-                        "assessment and its competency evidence to the database in one transaction."
+                    st.divider()
+                    st.markdown("#### Approval")
+                    st.caption(
+                        f"Import #{reviewed_batch.id} · {reviewed_batch.source_filename} · "
+                        f"Status: {reviewed_batch.status.title()}"
                     )
-                    approval_ack = st.checkbox(
-                        "I approve these assessment results for database update.",
-                        key=f"assessment_import_approval_ack_{reviewed_batch.id}",
-                    )
-                    approve_col, discard_col = st.columns(2)
-                    with approve_col:
-                        approve_import = st.button(
-                            "Approve & Apply Assessment",
-                            type="primary",
-                            use_container_width=True,
-                            disabled=not approval_ack,
-                            key=f"approve_assessment_import_{reviewed_batch.id}",
+                    if reviewed_batch.status == "reviewed":
+                        st.warning(
+                            "This import has been reviewed. Approval will write the selected "
+                            "assessment and its competency evidence to the database in one transaction."
                         )
-                    with discard_col:
-                        discard_import = st.button(
-                            "Discard Review",
-                            type="secondary",
-                            use_container_width=True,
-                            key=f"discard_assessment_import_{reviewed_batch.id}",
+                        approval_ack = st.checkbox(
+                            "I approve these assessment results for database update.",
+                            key=f"assessment_import_approval_ack_{reviewed_batch.id}",
                         )
-                    if approve_import:
-                        approval_session = open_session()
-                        try:
-                            ok, message, applied_assessment_id = apply_reviewed_assessment_import(
-                                approval_session,
-                                int(reviewed_batch.id),
-                                actor=current_user(),
+                        approve_col, discard_col = st.columns(2)
+                        with approve_col:
+                            approve_import = st.button(
+                                "Approve & Apply Assessment",
+                                type="primary",
+                                use_container_width=True,
+                                disabled=not approval_ack,
+                                key=f"approve_assessment_import_{reviewed_batch.id}",
                             )
-                            if ok:
-                                st.session_state["_assessment_import_saved_notice"] = message
-                                st.session_state.pop(batch_state_key, None)
-                                st.cache_data.clear()
-                                st.rerun()
-                            else:
-                                st.error(message)
-                                finally:
-                                    approval_session.close()
-                            if discard_import:
-                                discard_session = open_session()
-                                try:
-                                    discard_batch = discard_session.get(
-                                        AssessmentImportBatch, int(reviewed_batch.id)
-                                    )
-                                    if discard_batch is not None and discard_batch.status == "reviewed":
-                                        discard_batch.status = "rejected"
-                                        discard_session.commit()
+                        with discard_col:
+                            discard_import = st.button(
+                                "Discard Review",
+                                type="secondary",
+                                use_container_width=True,
+                                key=f"discard_assessment_import_{reviewed_batch.id}",
+                            )
+
+                        if approve_import:
+                            approval_session = open_session()
+                            try:
+                                ok, message, applied_assessment_id = apply_reviewed_assessment_import(
+                                    approval_session,
+                                    int(reviewed_batch.id),
+                                    actor=current_user(),
+                                )
+                                if ok:
+                                    st.session_state["_assessment_import_saved_notice"] = message
                                     st.session_state.pop(batch_state_key, None)
+                                    st.cache_data.clear()
                                     st.rerun()
-                                finally:
-                                    discard_session.close()
-                        elif reviewed_batch.status == "approved":
-                            st.success("This assessment import has already been approved and applied.")
-                        elif reviewed_batch.status == "rejected":
-                            st.info("This reviewed import was discarded.")
+                                else:
+                                    st.error(message)
+                            except Exception as exc:
+                                approval_session.rollback()
+                                st.error(f"Unable to apply the reviewed assessment: {exc}")
+                            finally:
+                                approval_session.close()
+
+                        if discard_import:
+                            discard_session = open_session()
+                            try:
+                                discard_batch = discard_session.get(
+                                    AssessmentImportBatch, int(reviewed_batch.id)
+                                )
+                                if discard_batch is not None and discard_batch.status == "reviewed":
+                                    discard_batch.status = "rejected"
+                                    discard_session.commit()
+                                st.session_state.pop(batch_state_key, None)
+                                st.rerun()
+                            except Exception as exc:
+                                discard_session.rollback()
+                                st.error(f"Unable to discard the reviewed assessment: {exc}")
+                            finally:
+                                discard_session.close()
+                elif pending_batch_id is not None:
+                    st.info(
+                        "The selected import is no longer awaiting approval. "
+                        "Refresh the page to see its latest status."
+                    )
             finally:
                 batch_session.close()
 
